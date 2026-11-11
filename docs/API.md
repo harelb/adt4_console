@@ -1505,6 +1505,7 @@ transient_local). In router mode they are plain ROS.
 | GET | `/robots/{robot}/change_detection` | `{robot, state, t, relocalized: {ok, reason}}` |
 | POST | `/robots/{robot}/change_detection/{start \| stop \| reset \| reset_start}` | `{override}` → `{ok, results: [{cmd, ok, message \| error}], override, state, relocalized}` |
 | POST | `/change_detection/clear` | `{robots: [] = all}`: AWCD base station `clear_robots` (discovered, base-local) |
+| GET | `/change_detection/changes` | the AWCD base station's merged change set (below) |
 
 - **Gate:** start and reset_start return **409** `{detail, not_relocalized: true, reason}` unless the
   robot is relocalized or `override` is set. Stop and reset are never gated.
@@ -1517,6 +1518,22 @@ transient_local). In router mode they are plain ROS.
   also checks the distance to a shown prior map. "Start anyway…" asks for confirmation and sends
   `override: true`.
 - Hub topic: `robot/{robot}/change_detection` (`{robot, state, t}`).
+
+**Detected changes** (`awcd_changes.py`). The console subscribes (transient_local) to the base
+station's `<base>/awcd_base_station/reconciled_changes` (`khronos_msgs/AwcdChanges`, discovered
+every 5 s; base-local, global map frame) and to the robots' `/awcd_changes` (fleetlink-relayed),
+the latter only to name the robots behind each change. `GET /change_detection/changes` and hub
+topic `awcd/changes` give `{available, error, topic, t, frame_id, counts: {added, removed},
+robots: {<r>: {t, added, removed}}, changes: [{key, kind: added|removed, id, short_id, label,
+center, dims, quat, stamp, change_confidence, confidence, frames, robots}]}`. `available` is false
+when ROS is off or khronos_msgs is missing; `topic` is null until a base station is seen.
+
+- **UI:** the Live tab's "Detected changes" card lists them (click: fly to it), switches the map
+  overlay and its labels, and clears the base station (`clear_robots`; a robot that is not also
+  Reset re-sends its latched report). The map draws each change as RViz's `AWCD Reconciled`
+  display does: a wireframe box, green = added, red = removed, label
+  `<robots> | <kind> <id> | <class> | cc=… n=…`. AWCD has no "moved" kind. Replan
+  recommendations the changes cause stay in the Plan tab (§20).
 
 ## 20. Scene changes and replan recommendations (`scene_repair.py`, `routes/scene_repair.py`)
 

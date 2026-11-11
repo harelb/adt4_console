@@ -122,3 +122,15 @@ def clear(body: ClearBody, request: Request):
     if not svc.ros.available:
         raise RosUnavailable(svc.ros.error or "ROS is off")
     return svc.ros.clear_change_detection(body.robots)
+
+
+@router.get("/change_detection/changes")
+def changes(request: Request):
+    """The AWCD base station's merged change set (``awcd_changes.py``); hub
+    topic ``awcd/changes`` pushes every update.  ``available`` false: ROS is off
+    or the workspace has no khronos_msgs; ``topic`` null: no base station seen."""
+    svc = services(request)
+    if not svc.ros.available or not hasattr(svc.ros, "awcd_changes"):
+        return {"available": False, "error": svc.ros.error or "ROS is off", "topic": None, "t": None,
+                "frame_id": None, "changes": [], "counts": {"added": 0, "removed": 0}, "robots": {}}  # fmt: skip
+    return svc.ros.awcd_changes()

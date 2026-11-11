@@ -23,6 +23,13 @@ import threading
 import time
 import uuid
 
+from .awcd_changes import AWCD_TYPE, AwcdChangeSet, awcd_msg_to_dict
+from .awcd_changes import CLEAR_SUFFIX as AWCD_CLEAR_SUFFIX
+from .awcd_changes import HUB_TOPIC as AWCD_HUB_TOPIC
+from .awcd_changes import RECONCILED as AWCD_RECONCILED
+from .awcd_changes import RECONCILED_SUFFIX as AWCD_RECONCILED_SUFFIX
+from .awcd_changes import ROBOT_TOPIC as AWCD_ROBOT_TOPIC
+
 log = logging.getLogger(__name__)
 
 STATUS_TABLE_TOPIC = "/global/ros_system_monitor/table_in"
@@ -563,6 +570,9 @@ class RosBridge:
         # manipulation_service.ManipulationApprovalService (set by build_services):
         # gets every robot's ManipulationApprovalRequest
         self.manipulation = None
+        # the AWCD base station's merged change set (3D overlay + change list)
+        self.awcd = AwcdChangeSet()
+        self._awcd_topics: set[str] = set()
         self._calls: queue.Queue = queue.Queue()
         self._pubs: dict[str, object] = {}
         self._lock = threading.Lock()
@@ -608,6 +618,7 @@ class RosBridge:
             self.call(self._subscribe_status).result(5)
             self.call(self._subscribe_link_status).result(5)
             self.call(self._subscribe_scene_changes).result(5)
+            self.call(self._subscribe_awcd).result(5)
             for r in robots or []:
                 self.ensure_robot(r)
         except Exception as e:  # noqa: BLE001
@@ -854,6 +865,60 @@ class RosBridge:
         return self.publish(
             SCENE_CHANGES_TOPIC, SCENE_CHANGE_TYPE, fields, match_timeout=0.5
         )
+
+    # ------------------------------------------------------------- AWCD
+    def _subscribe_awcd(self) -> None:
+        """Each robot's change report (``/awcd_changes``, relayed by fleetlink)
+        and the base station's reconciled set, discovered (its namespace is the
+        base station's name) every few seconds until it appears."""
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+        try:
+            cls = import_type(AWCD_TYPE)
+        except Exception as e:  # noqa: BLE001 — a workspace without khronos_msgs
+            self.awcd.error = f"{AWCD_TYPE} unavailable ({e})"
+            log.warning("no AWCD change display: %s", self.awcd.error)
+            return
+        latched = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL)  # fmt: skip
+        self.node.create_subscription(
+            cls, AWCD_ROBOT_TOPIC, lambda m: self._on_awcd(m, None), latched
+        )
+
+        def discover():
+            try:
+                names = self.node.get_topic_names_and_types()
+            except Exception:  # noqa: BLE001
+                return
+            for name, _types in names:
+                if name.endswith(AWCD_RECONCILED_SUFFIX) and name not in self._awcd_topics:
+                    self._awcd_topics.add(name)
+                    self.awcd.set_topic(name)
+                    self.node.create_subscription(
+                        cls, name, lambda m, n=name: self._on_awcd(m, n), latched
+                    )
+                    log.info("AWCD reconciled changes: %s", name)
+
+        discover()
+        self.node.create_timer(5.0, discover)
+
+    def _on_awcd(self, msg, topic: str | None) -> None:
+        try:
+            d = awcd_msg_to_dict(msg)
+        except Exception:  # noqa: BLE001
+            log.exception("AWCD message")
+            return
+        if topic is not None:
+            self.awcd.on_reconciled(d, topic)
+        elif d["robot"] == AWCD_RECONCILED:
+            return  # a base station publishing on the robots' topic: not a report
+        else:
+            self.awcd.on_robot(d)
+        if self.hub is not None:
+            self.hub.publish(AWCD_HUB_TOPIC, self.awcd_changes())
+
+    def awcd_changes(self) -> dict:
+        return self.awcd.state(list(self._plan.copy()))
 
     def _on_link_status(self, msg) -> None:
         try:
@@ -1129,9 +1194,7 @@ class RosBridge:
         """Drop the robots' (all: empty) cached changes at the AWCD base station
         (``<ns>/awcd_base_station/clear_robots``, discovered; base-local)."""
         names = self.run(lambda: self.node.get_service_names_and_types())
-        svc = next(
-            (n for n, _ in names if n.endswith("/awcd_base_station/clear_robots")), None
-        )
+        svc = next((n for n, _ in names if n.endswith(AWCD_CLEAR_SUFFIX)), None)
         if svc is None:
             return {
                 "ok": False,
@@ -1139,6 +1202,8 @@ class RosBridge:
             }
         res = self.call_service(svc, "dcist_launch_system_msgs/srv/ClearRobots", {"robot_names": list(robots or [])},
                                 timeout=CHANGE_DETECTION_TIMEOUT_S)  # fmt: skip
+        if res.get("success"):
+            self.awcd.forget(list(robots or []))
         return {
             "ok": bool(res.get("success")),
             "message": str(res.get("message") or ""),

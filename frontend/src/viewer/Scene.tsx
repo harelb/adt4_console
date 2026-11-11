@@ -14,6 +14,7 @@ import {MeshTiles, type TileStats} from "./MeshTiles";
 import {DETAIL_LEVEL} from "../lib/meshPlan";
 import {currentActionIndex, distinctPoints} from "./planUtil";
 import {LiveOverlays} from "./LiveOverlays";
+import {AwcdOverlay} from "./AwcdOverlay";
 import {useViewStyle} from "../stores/viewStyle";
 import {contrastFor, defaultBackground, STYLE_BACKGROUND, type ColorOpts} from "./style";
 import {useTheme} from "../stores/theme";
@@ -716,6 +717,7 @@ export function Scene({sources, bounds, cb}: {sources: SourceView[]; bounds: {mi
       <LiveOverlays />
       <RobotGlyphs />
       <PlanOverlay />
+      <AwcdOverlay />
       <PreviewOverlay bounds={bounds} />
       <MissionLayer bounds={bounds} />
       <EditOverlay />
