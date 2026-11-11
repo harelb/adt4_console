@@ -28,7 +28,7 @@ def health(request: Request):
     for s in svc.graph.sources.values():
         if s.kind == "neo4j":
             try:
-                s.read_version()
+                s.read_map_version()
                 neo4j[s.name] = True
             except Exception:  # noqa: BLE001
                 neo4j[s.name] = False

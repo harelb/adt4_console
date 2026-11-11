@@ -1,7 +1,7 @@
 """Map editing on a Neo4j source (API.md §17), on heracles ``graph_edit``.
 
 Every edit is one heracles ``GraphUnitOfWork`` (revision check, ``GraphMutation`` audit
-with provenance, both map-version counters bumped in the same transaction), so the
+with provenance, the map version bumped in the same transaction), so the
 heracles DSG publisher -- and through it plan repair on the robots -- sees whole edits
 only.  After a commit the source is invalidated and ``graph/<src>/version`` +
 ``edit/<src>`` are published on the hub.
@@ -48,6 +48,15 @@ def _ge():
     except ImportError as e:
         raise EditUnavailable(f"heracles.graph_edit unavailable: {e}") from None
     return graph_edit
+
+
+def _map_version(src) -> int:
+    """The map version (``_MapState.version``): heracles ``map_reload.get_map_version``,
+    else the source's own Cypher read (a heracles without ``map_reload``)."""
+    from .optional import optional
+
+    get = optional("heracles.map_reload", "get_map_version", "map versions of edits")
+    return int(get(src.db())) if get is not None else src.read_map_version()
 
 
 def _slug(text: str) -> str:
@@ -103,9 +112,8 @@ class EditService:
 
     def state(self, src_id: str) -> dict:
         ge = _ge()
-        db = self._db(src_id)
-        from heracles.graph_interface import get_map_version, read_version
-
+        src = self.source(src_id)
+        db = src.db()
         live = self.live()
         hist = ge.edit_history(db, limit=50)
         return {
@@ -116,8 +124,7 @@ class EditService:
             if live
             else None,
             "revision": ge.graph_revision(db),
-            "state_version": read_version(db),
-            "map_version": get_map_version(db),
+            "map_version": _map_version(src),
             "staged": self.staged(src_id),
             "can_undo": any(
                 h["undoable"] and not h["undo_of"] and h["kind"] == "map_edit"
@@ -145,7 +152,7 @@ class EditService:
         # them into the loaded graph and push a delta; it falls back to a reload
         try:
             self.graph.apply_change(
-                src_id, reason, out.get("state_version"), out.get("affected")
+                src_id, reason, out.get("map_version"), out.get("affected")
             )
         except Exception:  # noqa: BLE001
             try:
@@ -197,12 +204,10 @@ class EditService:
 
     def map_stamp(self, src_id: str) -> dict:
         """What a mission records: the edit revision and the map version it was planned on."""
-        from heracles.graph_interface import get_map_version
-
-        db = self._db(src_id)
+        src = self.source(src_id)
         return {
-            "map_revision": _ge().graph_revision(db),
-            "map_version": get_map_version(db),
+            "map_revision": _ge().graph_revision(src.db()),
+            "map_version": _map_version(src),
         }
 
     # --------------------------------------------------------------- staging

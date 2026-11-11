@@ -48,7 +48,6 @@ export interface EditState {
   live: boolean;
   launch: {experiment?: string; robots?: string[]; started_at?: number} | null;
   revision: number;
-  state_version: number;
   map_version: number;
   staged: StagedEdit[];
   can_undo: boolean;
@@ -90,6 +89,8 @@ export interface SnapshotInfo {
   mission: string | null;
   counts: Record<string, number>;
   map_version: number;
+  /** heracles' map_epoch: changes on every full load of the map */
+  map_epoch?: string;
   revision: number;
 }
 

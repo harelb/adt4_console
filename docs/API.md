@@ -316,7 +316,10 @@ viewer's hydra style draws them like hydra_visualizer's `RegionGrowingBoundaryPl
 Implementation notes: file sources load with `spark_dsg.DynamicSceneGraph.load`; mesh from
 `mesh.ply` via trimesh (or the graph mesh) → `codec.tile_mesh`, cached per source version.
 Neo4j sources: `heracles.graph_interface.db_to_spark_dsg(db)` → same path; mesh from
-`read_mesh_path`; `read_version` polled every 2 s → `graph/neo4j:<n>/version` on change.
+`read_mesh_path`; the map version (`_MapState.version`) and node count polled every 2 s →
+`graph/neo4j:<n>/version` on change. A change one version past the last one seen that
+recorded its nodes (heracles `map_reload.read_map_change`) is folded in as a delta, like an
+edit made in the console; anything else reloads.
 Live sources come from the fleetlink receiver (§8).
 
 ## 8. fleetlink (live robot → base)
@@ -1323,10 +1326,11 @@ heracles we use). **Every edit is one heracles `GraphUnitOfWork`**:
 * a `GraphMutation` audit node: `provenance_json` (`source: adt4_console`, `src`,
   `operator` from the `X-Operator` header, `client`, `via: ui|chat|publish`, `mission`),
   `summary`, `ops_json`, `inverse_json`, `affected`, `map_version`;
-* both version counters bumped **in the same transaction** (`_State{key:'global'}` with
-  `dirty_layers` as `"layer:partition"` and `_MapState`), so the heracles DSG publisher /
-  plan repair never see half an edit; then the console invalidates the source and
-  publishes `graph/<src>/version` and `edit/<src>`.
+* the map version (`_MapState.version`, with the changed layers as `"layer:partition"`
+  and node ids) bumped **in the same transaction**, so the heracles DSG publisher / plan
+  repair never see half an edit; an edit while the map is being reloaded or rebuilt is
+  refused (`MapRebuilding`, **409**). Then the console folds the affected nodes into its
+  copy of the graph and publishes `graph/<src>/version` and `edit/<src>`.
 
 ### 17.1 Ops (shared by every route, `/batch` and the chat)
 
@@ -1367,7 +1371,7 @@ heracles we use). **Every edit is one heracles `GraphUnitOfWork`**:
 
 | Route | |
 |---|---|
-| `GET /state` | `{mode: immediate|staged, live, launch, revision, state_version, map_version, staged, can_undo}` |
+| `GET /state` | `{mode: immediate|staged, live, launch, revision, map_version, staged, can_undo}` |
 | `POST /nodes` | `create_node` body (`layer, pos, class, name, symbol?, size?, bbox?, boundary?, props?`) |
 | `PATCH /nodes/{sym}` | `{set, unset?}` |
 | `DELETE /nodes/{sym}` | retire (`?reason=`); `?hard=true&confirm=delete` = DETACH DELETE |
@@ -1388,7 +1392,7 @@ heracles we use). **Every edit is one heracles `GraphUnitOfWork`**:
 
 Every edit route takes `expected_revision?`, `mission?` and `dry_run?`. A committed edit
 answers `{mutation_id, revision, changes[], summary[], affected[], dirty_layers,
-state_version, map_version, staged: false}`. `summary` lines read like a diff:
+map_version, staged: false}`. `summary` lines read like a diff:
 `O41 class vehicle -> crate`, `new region R0 'courtyard' containing 37 places, 5 objects`,
 `remove O7 (chair) (retired, can be undone)`.
 
@@ -1413,11 +1417,11 @@ published edit as one unit of work). The staged list is held by the console proc
 * `extras.json`: what a DSG round trip loses: room boundaries, `name`/`class`, admission
   and operator properties, the edges `db_to_spark_dsg` does not rebuild (`Room -> Object`
   `CONTAINS`, `Object -> Observation`, ...), `_GraphMetadata`;
-* `meta.json` / `info.json`: counts per layer + edges, versions, revision, name, author, mission.
+* `meta.json` / `info.json`: counts per layer + edges, `map_version`, `map_epoch`, revision, name, author, mission.
 
 **Restore** deletes every map-layer node (and `:Retired` ones) and the labelspaces,
-reloads `dsg.json` with `spark_dsg_to_db`, re-applies the extras and sets both version
-counters past where they were, so every reader reloads. Agents, observations and the
+reloads `dsg.json` with `spark_dsg_to_db`, re-applies the extras and sets the map version
+past where it was (heracles `reloading_map`: a new `map_epoch`), so every reader reloads. Agents, observations and the
 mutation history stay; edges to nodes that have no `nodeSymbol` are not restored.
 
 ### 17.5 Chat (`propose_map_edit`)
@@ -1748,8 +1752,8 @@ Behavioural notes:
   `Object-[:HAS_OBSERVATION]->Observation`, falling back to `_GraphMetadata.image_store_paths`;
   `file:` sources read `<run>/image_store`. The `neo4j:` trajectory falls back to the source DSG file when the
   DB has no `Agent` nodes (heracles skips keyframes that have no image folder).
-* A `neo4j:` source's `version` is the cached `_State.version`, refreshed by the 2 s
-  poller (and right after an ingest).
+* A `neo4j:` source's `version` is the console's own counter, bumped when the map version
+  or node count changes (the 2 s poller, an edit, an ingest).
 
 ## Frontend notes
 

@@ -24,48 +24,35 @@ router = APIRouter(prefix="/api/maps")
 BAG_EXCLUDES = ["recorded_data/"]
 
 
-def _notify_fn():
-    """heracles' combined helper (both counters) when this heracles has it."""
-    try:
-        from heracles.graph_interface import notify_map_change
-    except ImportError:
-        return None
-    return notify_map_change
+def _bump_fn():
+    """heracles' ``map_reload.bump_map_version`` when this heracles has it."""
+    from ..optional import optional
+
+    return optional(
+        "heracles.map_reload", "bump_map_version", "change-aware map versions"
+    )
 
 
 def bump_map_counters(db, dirty_layers=None, affected_ids=None) -> int:
-    """Bump BOTH Neo4j version counters after a write; returns ``_State.version``.
+    """Bump the map version (``_MapState.version``) after a write; returns it.
 
-    ``_State{key:'global'}.version`` is what the console (and viz agents) poll;
-    ``_MapState.version`` is what the heracles DSG publisher polls to republish
-    within 0.5 s (``heracles_ros.map_state.bump_map_version``).  A writer that
-    bumps only one leaves the other consumer stale.
+    The console's Neo4j sources, the heracles DSG publisher and plan repair all
+    watch this one counter. ``dirty_layers`` (``"layer:partition"``) and
+    ``affected_ids`` (node symbols) record what changed, so a reader holding the
+    previous version re-reads only those nodes; None (the default) means unknown,
+    i.e. everything (a load or reset).
     """
-    notify = _notify_fn()
-    if notify is not None:
-        out = notify(db, list(dirty_layers or []), list(affected_ids or []))
-        if isinstance(out, (tuple, list)) and out:  # (state_version, map_version)
-            return int(out[0])
-        if isinstance(out, int):
-            return out
-        from heracles.graph_interface import read_version
-
-        return int(read_version(db))
-    # same cypher as heracles graph_interface.record_change + map_state.bump_map_version
+    layers = None if dirty_layers is None else [str(x) for x in dirty_layers]
+    ids = None if affected_ids is None else [str(x) for x in affected_ids]
+    bump = _bump_fn()
+    if bump is not None:
+        return int(bump(db, layers, ids))
+    # a heracles without map_reload: the same counter, without the change record
     records, _, _ = db.execute(
-        "MERGE (s:_State {key: 'global'}) "
-        "ON CREATE SET s.version = 1 "
-        "ON MATCH SET s.version = s.version + 1 "
-        "SET s.dirty_layers = $dl, s.affected_ids = $ai "
-        "RETURN s.version AS v",
-        **{"dl": list(dirty_layers or []), "ai": list(affected_ids or [])},
-    )
-    version = records[0]["v"] if records else 0
-    db.execute(
         "MERGE (m:_MapState) SET m.version = coalesce(m.version, 0) + 1 "
         "RETURN m.version AS v"
     )
-    return int(version)
+    return int(records[0]["v"]) if records else 0
 
 
 def _local_name(svc) -> str:

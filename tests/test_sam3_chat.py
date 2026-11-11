@@ -71,7 +71,12 @@ class FakeSam3:
                     else:
                         code, out = (
                             200,
-                            {"symbol": "O(123)", "created": True, "state_version": 42},
+                            {
+                                "symbol": "O(123)",
+                                "created": True,
+                                "state_version": 42,
+                                "map_version": 17,
+                            },
                         )
                 elif self.path == "/discard":
                     code, out = 200, {"ok": True}
@@ -255,12 +260,13 @@ def test_commit_refreshes_neo4j_source(svc_client, sam3):
     svc.graph.notify_version = lambda sid, reason, delta=None: notified.append(
         (sid, reason)
     )
-    # the written source folds the new object in (state_version + symbol from the server)
+    # the written source folds the new object in (map_version + symbol from the server;
+    # state_version is the console's legacy counter, not what the source compares)
     r = client.post(
         "/api/sam3/commit", json={"pending_id": "p-1", "index": 1, "src": src.id}
     )
     assert r.status_code == 200 and r.json()["refreshed"] == [src.id]
-    assert applied == [(src.id, "sam3", 42, ["O(123)"])] and notified == []
+    assert applied == [(src.id, "sam3", 17, ["O(123)"])] and notified == []
     # no src: the --sam3-neo4j target is applied, every other Neo4j source reloads
     applied.clear()
     svc.settings.sam3_neo4j = "other"
@@ -268,7 +274,7 @@ def test_commit_refreshes_neo4j_source(svc_client, sam3):
     assert r.status_code == 200 and sorted(r.json()["refreshed"]) == sorted(
         [src.id, other.id]
     )
-    assert applied == [(other.id, "sam3", 42, ["O(123)"])] and notified == [
+    assert applied == [(other.id, "sam3", 17, ["O(123)"])] and notified == [
         (src.id, "sam3")
     ]
 
@@ -374,7 +380,7 @@ class FakeDb:
         self.queries = []
 
     def execute(self, q, parameters=None, **kw):
-        self.queries.append(q)
+        self.queries.append((q, kw))
         label = "_MapState" if "_MapState" in q else "_State"
         self.state[label] = self.state.get(label, 0) + 1
         return [{"v": self.state[label]}], None, None
@@ -383,29 +389,58 @@ class FakeDb:
         return self.execute(q)[0]
 
 
-def test_ingest_bumps_both_counters(monkeypatch):
+def test_bump_without_map_reload_bumps_the_map_version(monkeypatch):
+    """A heracles without map_reload: the same _MapState counter, by Cypher."""
     from adt4_console.routes import maps
 
-    monkeypatch.setattr(maps, "_notify_fn", lambda: None)
+    monkeypatch.setattr(maps, "_bump_fn", lambda: None)
     db = FakeDb()
     assert maps.bump_map_counters(db) == 1
-    assert db.state == {"_State": 1, "_MapState": 1}
-    maps.bump_map_counters(db, ["2:0"], ["O(1)"])
-    assert db.state == {"_State": 2, "_MapState": 2}
+    assert maps.bump_map_counters(db, ["2:0"], ["O(1)"]) == 2
+    assert db.state == {"_MapState": 2}  # the console's legacy _State is not touched
 
 
-def test_bump_prefers_heracles_notify(monkeypatch):
+def test_bump_uses_heracles_map_reload(monkeypatch):
     from adt4_console.routes import maps
 
     seen = []
     monkeypatch.setattr(
-        maps, "_notify_fn", lambda: lambda db, dl, ai: seen.append((dl, ai)) or 7
+        maps, "_bump_fn", lambda: lambda db, dl, ai: seen.append((dl, ai)) or 7
     )
-    assert maps.bump_map_counters(object(), ["objects"], ["O(9)"]) == 7
-    assert seen == [(["objects"], ["O(9)"])]
-    # the real heracles helper returns (state_version, map_version)
-    monkeypatch.setattr(maps, "_notify_fn", lambda: lambda db, dl, ai: (11, 4))
-    assert maps.bump_map_counters(object()) == 11
+    assert maps.bump_map_counters(object(), ["2:0"], ["O(9)"]) == 7
+    # no layers / ids: the change is recorded as unknown (readers reload)
+    assert maps.bump_map_counters(object()) == 7
+    assert seen == [(["2:0"], ["O(9)"]), (None, None)]
+
+
+def test_bump_records_the_change_in_heracles():
+    """With heracles master: bump_map_version records what changed, which the
+    console's poll reads back (read_map_change)."""
+    map_reload = pytest.importorskip("heracles.map_reload")
+    from adt4_console.routes import maps
+
+    class Db:
+        def __init__(self):
+            self.node = {}
+
+        def execute(self, q, parameters=None, **kw):
+            assert "_MapState" in q and "_State " not in q
+            n = self.node
+            n["version"] = n.get("version", 0) + 1
+            n.update(changed_version=n["version"], changed_layers=kw["layers"],
+                     changed_ids=kw["ids"])  # fmt: skip
+            return [{"v": n["version"]}], None, None
+
+        def query(self, q, **kw):
+            n = self.node
+            return [{"v": n.get("version"), "cv": n.get("changed_version"),
+                     "layers": n.get("changed_layers"), "ids": n.get("changed_ids")}]  # fmt: skip
+
+    db = Db()
+    assert maps.bump_map_counters(db, ["2:0"], ["O(9)"]) == 1
+    assert map_reload.read_map_change(db) == (1, ["2:0"], ["O(9)"])
+    assert maps.bump_map_counters(db) == 2
+    assert map_reload.read_map_change(db) == (2, None, None)
 
 
 # ----------------------------------------------------------------- transfer

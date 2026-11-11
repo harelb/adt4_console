@@ -12,7 +12,7 @@ import pytest
 
 from adt4_console.chat import clean_history, to_anthropic, to_openai
 
-from .conftest import make_client, needs_version_counter
+from .conftest import make_client
 from .test_chat_llm import _call, _chat, _client
 
 NEO4J_URI = os.environ.get("ADT4_TEST_NEO4J", "neo4j://localhost:7697")
@@ -188,7 +188,6 @@ def test_cypher_tools_and_schema_in_prompt(neo4j_chat):
 
 
 @live_neo4j
-@needs_version_counter
 def test_write_runs_only_after_approval(neo4j_chat):
     import neo4j
 
@@ -213,7 +212,7 @@ def test_write_runs_only_after_approval(neo4j_chat):
     with neo4j.GraphDatabase.driver(NEO4J_URI, auth=("neo4j", "neo4j_pw")) as d:
         assert d.execute_query(count)[0][0]["c"] == 0  # proposing ran nothing
         try:
-            v0 = svc.graph.get("neo4j:live").read_version()
+            v0 = svc.graph.get("neo4j:live").read_map_version()
             r = client.post(
                 "/api/chat/cypher_write", json={"id": card["id"], "approve": True}
             ).json()
@@ -224,7 +223,7 @@ def test_write_runs_only_after_approval(neo4j_chat):
             )
             assert d.execute_query(count)[0][0]["c"] == 1
             assert (
-                svc.graph.get("neo4j:live").read_version() > v0
+                svc.graph.get("neo4j:live").read_map_version() > v0
             )  # viewers + heracles republish
             # one approval per proposal; unknown ids are refused
             again = client.post(

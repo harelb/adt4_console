@@ -73,12 +73,6 @@ needs_rclpy = pytest.mark.skipif(
 )
 needs_lease_state = _needs("lease_state")
 needs_action_results = _needs("action_results")
-# heracles' Neo4j version counter (graph_interface.read_version)
-needs_version_counter = pytest.mark.skipif(
-    optional.optional("heracles.graph_interface", "read_version", "version counter")
-    is None,
-    reason="needs heracles.graph_interface.read_version",
-)
 
 
 def _helper(name: str) -> bool:

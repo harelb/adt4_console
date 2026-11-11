@@ -1,6 +1,8 @@
-"""Neo4jSource.apply_change: a known write (SAM3 commit, map edit) is folded into the
-loaded graph instead of reloading the whole map, and must give exactly what a full
-reload gives (records, edges, labelspaces).
+"""Neo4jSource.apply_change / poll_change: a known write (SAM3 commit, map edit) is
+folded into the loaded graph instead of reloading the whole map, and must give exactly
+what a full reload gives (records, edges, labelspaces).  The console sees writes by the
+map version (heracles ``_MapState.version``) and what the last bump recorded as changed
+(``map_reload.read_map_change``).
 
 The DB tests need a throwaway Neo4j they may wipe: ``ADT4_TEST_SCRATCH_NEO4J``
 (default neo4j://localhost:7701; skipped when nothing listens).  They only wipe a DB
@@ -58,15 +60,86 @@ def test_a_plan_repair_edit_that_moves_only_the_map_version_is_polled():
     from adt4_console.graph_service import Neo4jSource
 
     src = Neo4jSource("m", "bolt://x:1", "u", "p")
-    db = {"state": 1, "count": 5290, "map": 1}
-    src.read_version = lambda: db["state"]
+    db = {"count": 5290, "map": 1}
     src.count_nodes = lambda: db["count"]
     src.read_map_version = lambda: db["map"]
+    src.read_map_change = lambda: (db["map"], None, None)
     v0 = src.version()
     assert src.poll() is False
-    db["map"] = 2  # the edit: same _State.version, same node count
+    db["map"] = 2  # the edit: same node count
     assert src.poll() is True and src.version() == v0 + 1
     assert src.poll() is False
+    db["count"] += 1  # a writer that does not bump the version
+    assert src.poll() is True and src.version() == v0 + 2
+
+
+def _polled_source(changes):
+    """A Neo4jSource on a fake DB: ``changes`` is (version, layers, ids) of the last bump."""
+    from adt4_console.graph_service import Neo4jSource
+
+    src = Neo4jSource("m", "bolt://x:1", "u", "p")
+    db = {"count": 10, "map": 4}
+    src.count_nodes = lambda: db["count"]
+    src.read_map_version = lambda: db["map"]
+    src.read_map_change = lambda: changes.pop(0)
+    tried = []
+
+    def try_apply(version, ids):
+        tried.append((version, ids))
+        src._db_key_seen = src._db_key()
+        src._version += 1
+        return ("delta", src._version)
+
+    src._try_apply = try_apply
+    src.version()
+    return src, db, tried
+
+
+def test_poll_folds_in_a_recorded_change_one_version_on():
+    """A write made outside the console (openset_query's commit, another console's
+    edit) that recorded its nodes is folded in by the poll, like an own edit."""
+    src, db, tried = _polled_source([(5, ["2:0"], ["O50"])])
+    v0 = src.version()
+    db["map"], db["count"] = 5, 11
+    assert src.poll_change() == (True, ("delta", v0 + 1))
+    assert tried == [(5, ["O50"])] and src.poll_change() == (False, None)
+
+
+@pytest.mark.parametrize(
+    "jump, change",
+    [
+        (1, (5, None, None)),  # the writer did not say what changed (a load, a reset)
+        (1, (5, ["2:0"], [])),  # no nodes
+        (1, (6, ["2:0"], ["O1"])),  # another bump landed after the poll's key read
+        (2, (6, ["2:0"], ["O1"])),  # a version the console never saw in between
+    ],
+)
+def test_poll_reloads_what_it_cannot_fold_in(jump, change):
+    src, db, tried = _polled_source([change])
+    v0 = src.version()
+    db["map"] += jump
+    assert src.poll_change() == (True, None) and src.version() == v0 + 1
+    assert tried == [] and src.poll_change() == (False, None)
+
+
+def test_poll_once_pushes_the_polled_delta(settings):
+    from adt4_console.graph_service import GraphService, Neo4jSource
+
+    hub = FakeHub()
+    gs = GraphService(settings, hub=hub)
+    src = Neo4jSource("m", "bolt://x:1", "u", "p")
+    src.poll_change = lambda: (True, None)
+    gs.sources[src.id] = src
+    sent = []
+    gs.notify_version = lambda sid, reason, delta=None: sent.append(
+        (sid, reason, delta)
+    )
+    gs.poll_once()
+    src.poll_change = lambda: (True, ("d", 3))
+    gs.poll_once()
+    src.poll_change = lambda: (False, None)
+    gs.poll_once()
+    assert sent == [(src.id, "neo4j", None), (src.id, "neo4j", ("d", 3))]
 
 
 def test_edit_service_hands_the_affected_nodes_over(settings):
@@ -79,7 +152,7 @@ def test_edit_service_hands_the_affected_nodes_over(settings):
         "mutation_id": "m1",
         "revision": 3,
         "summary": ["x"],
-        "state_version": 12,
+        "map_version": 12,
         "affected": ["O5", "P1"],
     }
     svc._after_commit("neo4j:penn", out, "map edit")
@@ -136,6 +209,7 @@ def scratch():
     if not port_open(host, int(port)):
         pytest.skip(f"no scratch Neo4j at {SCRATCH}")
     gi = pytest.importorskip("heracles.graph_interface")
+    pytest.importorskip("heracles.map_reload")
     from heracles.query_interface import Neo4jWrapper
 
     with Neo4jWrapper(SCRATCH, NEO4J_AUTH, atomic_queries=True) as db:
@@ -159,8 +233,14 @@ def seeded(scratch):
         db.execute("MATCH (n) DETACH DELETE n")
         db.execute(f"CREATE (:{MARKER})")
         gi.spark_dsg_to_db(_seed_graph(), db)
-        gi.bump_version(db)
+        _bump(db)
         yield gi, db
+
+
+def _bump(db, layers=None, ids=None) -> int:
+    from heracles.map_reload import bump_map_version
+
+    return bump_map_version(db, layers, ids)
 
 
 def _source(name="t"):
@@ -209,7 +289,7 @@ def test_map_edits_match_a_full_reload(seeded):
         ],
     )
     sym = out["affected"][0]
-    d, v = src.apply_change(out["state_version"], out["affected"])
+    d, v = src.apply_change(out["map_version"], out["affected"])
     assert v == v0 + 1 and src.version() == v and src.loaded().version == v
     assert [r.sym for r in d.upserts] == ["O(3)"] and d.labelspaces
     assert "zz widget" in d.labelspaces["2/0"].values()
@@ -224,7 +304,7 @@ def test_map_edits_match_a_full_reload(seeded):
         [{"op": "retire_node", "symbol": sym, "reason": "test"}],
     ):
         out = _edit(db, ops)
-        res = src.apply_change(out["state_version"], out["affected"])
+        res = src.apply_change(out["map_version"], out["affected"])
         assert res is not None, ops
         _assert_matches_full_reload(src.loaded())
     assert "P(2)" not in src.loaded().records and not any(
@@ -237,18 +317,12 @@ def test_map_edits_match_a_full_reload(seeded):
 def test_sam3_style_write_matches_a_full_reload(seeded):
     """What the SAM3 query server's commit does: insert an Object, link it, then
     notify_map_change(db, dirty_layers, [symbol])."""
-    gi, db = seeded
+    _, db = seeded
     src = _source()
     before = src.loaded()
-    db.execute(
-        "CREATE (o:Object {nodeSymbol: 'O50', class: 'chair', name: 'green chair', "
-        "center: point({x: 6.0, y: 1.5, z: 0.2}), attr_type: 'ObjectNodeAttributes'})"
-    )
-    db.execute(
-        "MATCH (p:Place {nodeSymbol: 'P2'}), (o:Object {nodeSymbol: 'O50'}) CREATE (p)-[:CONTAINS]->(o)"
-    )
-    sv, _ = gi.notify_map_change(db, ["2:0"], ["O50"])
-    d, v = src.apply_change(sv, ["O50"])
+    _sam3_style_write(db)
+    mv = _notify(db, ["2:0"], ["O50"])
+    d, v = src.apply_change(mv, ["O50"])
     assert v == before.version + 1
     assert [r.sym for r in d.upserts] == ["O(50)"] and d.edges_add == [
         ("P(2)", "O(50)")
@@ -259,15 +333,59 @@ def test_sam3_style_write_matches_a_full_reload(seeded):
     _assert_matches_full_reload(src.loaded())
 
 
+def test_a_write_made_elsewhere_is_folded_in_by_the_poll(seeded):
+    """openset_query running on its own (no console commit route): it writes the
+    object and bumps the map version with what it changed; the console's poll
+    folds it in as a delta instead of reloading the map."""
+    _, db = seeded
+    src = _source()
+    before = src.loaded()
+    _sam3_style_write(db)
+    _notify(db, ["2:0"], ["O50"])
+    changed, (d, v) = src.poll_change()
+    assert changed and v == before.version + 1 and src.loaded().version == v
+    assert [r.sym for r in d.upserts] == ["O(50)"]
+    _assert_matches_full_reload(src.loaded())
+    # a graph_edit commit by someone else (another console) too
+    out = _edit(
+        db, [{"op": "update_node", "symbol": "O50", "set": {"pos": [6.5, 1.5, 0.2]}}]
+    )
+    changed, (d, v2) = src.poll_change()
+    assert changed and v2 == v + 1 and [r.sym for r in d.upserts] == ["O(50)"]
+    assert src.read_map_version() == out["map_version"]
+    _assert_matches_full_reload(src.loaded())
+    assert src.poll_change() == (False, None)
+
+
+def _notify(db, layers, ids) -> int:
+    """heracles_ros' notify_map_change where it imports (it needs spark_dsg), else
+    the bump it makes."""
+    try:
+        from heracles_ros.map_state import notify_map_change
+    except ImportError:
+        return _bump(db, layers, ids)
+    return notify_map_change(db, layers, ids)
+
+
+def _sam3_style_write(db):
+    db.execute(
+        "CREATE (o:Object {nodeSymbol: 'O50', class: 'chair', name: 'green chair', "
+        "center: point({x: 6.0, y: 1.5, z: 0.2}), attr_type: 'ObjectNodeAttributes'})"
+    )
+    db.execute(
+        "MATCH (p:Place {nodeSymbol: 'P2'}), (o:Object {nodeSymbol: 'O50'}) CREATE (p)-[:CONTAINS]->(o)"
+    )
+
+
 def test_an_unknown_write_in_between_falls_back_to_one_reload(seeded):
-    gi, db = seeded
+    _, db = seeded
     src = _source()
     v0 = src.loaded().version
-    gi.bump_version(db)  # someone else's write the console has not seen
+    _bump(db)  # someone else's write the console has not seen
     out = _edit(
         db, [{"op": "update_node", "symbol": "O0", "set": {"pos": [1.5, 0.0, 0.0]}}]
     )
-    assert src.apply_change(out["state_version"], out["affected"]) is None
+    assert src.apply_change(out["map_version"], out["affected"]) is None
     assert src.version() == v0 + 1  # one bump ...
     assert src.poll() is False  # ... and the poll does not add a second
     _assert_matches_full_reload(src.loaded())
@@ -280,23 +398,23 @@ def test_nothing_loaded_or_no_symbols_just_invalidates(seeded):
     out = _edit(
         db, [{"op": "update_node", "symbol": "O1", "set": {"pos": [9.5, 0.0, 0.0]}}]
     )
-    assert src.apply_change(out["state_version"], out["affected"]) is None
+    assert src.apply_change(out["map_version"], out["affected"]) is None
     assert src.version() == v0 + 1 and src.poll() is False
     src.loaded()
     out = _edit(
         db, [{"op": "update_node", "symbol": "O1", "set": {"pos": [9.0, 0.0, 0.0]}}]
     )
-    assert src.apply_change(out["state_version"], []) is None
+    assert src.apply_change(out["map_version"], []) is None
     _assert_matches_full_reload(src.loaded())
 
 
 def test_invalidate_is_seen_once(seeded):
     """The old double reload: invalidate() after a write, then the poll saw the
     same write as a new DB key and bumped (and reloaded) again."""
-    gi, db = seeded
+    _, db = seeded
     src = _source()
     v0 = src.version()
-    gi.bump_version(db)
+    _bump(db)
     src.invalidate()
     assert src.version() == v0 + 1
     assert src.poll() is False and src.version() == v0 + 1

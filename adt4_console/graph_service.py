@@ -5,8 +5,8 @@ tiles, node detail, images, trajectory — cached per source *version*:
 
 * ``file:<name>``  — a run dir (``<run>/hydra/backend/dsg.json``); version bumps
   when the DSG file's mtime changes.  Mesh from ``mesh.ply`` (or the graph mesh).
-* ``neo4j:<name>`` — heracles DB; version = ``_State.version`` (``read_version``),
-  polled every 2 s.  Mesh from ``read_mesh_path``.
+* ``neo4j:<name>`` — heracles DB; changes seen by the map version (``_MapState.version``)
+  and node count, polled every 2 s.  Mesh from ``read_mesh_path``.
 * ``live:<robot>`` — fleetlink receiver mirror (no caching; it changes per delta).
 """
 
@@ -1302,7 +1302,7 @@ class Neo4jSource(Source):
         self.label = f"{name} ({uri})" + (" prior" if prior else "")
         self._db = None
         self._version: int | None = None
-        self._db_key_seen: tuple[int, int, int] | None = None
+        self._db_key_seen: tuple[int, int] | None = None
         self._props_cache: dict[str, dict] = {}
         self._store = None  # image stores named by _GraphMetadata, opened lazily
         self._store_lock = threading.Lock()
@@ -1344,45 +1344,43 @@ class Neo4jSource(Source):
             raise GraphUnavailable(f"neo4j {self.uri}: {e}") from None
         return records
 
-    def read_version(self) -> int:
-        """heracles' ``_State.version``; 0 when this heracles has no version
-        counter (changes are then noticed by the node count and map version)."""
+    def read_map_version(self) -> int:
+        """heracles' map version, ``_MapState.version`` (0 without one).
+
+        Every map writer bumps it after a change (heracles ``graph_edit``,
+        ``map_reload.bump_map_version``, ``heracles_ros.map_state.notify_map_change``,
+        plan repair's scene edits, a reload). Read with Cypher, so any heracles works."""
+        rows = self.query("MATCH (m:_MapState) RETURN max(m.version) AS v")
+        v = rows[0]["v"] if rows else None
+        return int(v) if v is not None else 0
+
+    def read_map_change(self) -> tuple:
+        """``(map version, changed layers, changed node ids)`` of the last bump
+        (heracles ``map_reload.read_map_change``). The lists are None when what
+        changed is not known, or this heracles does not record it."""
         from .optional import optional
 
-        read_version = optional(
-            "heracles.graph_interface",
-            "read_version",
-            "Neo4j change detection by version",
+        read = optional(
+            "heracles.map_reload",
+            "read_map_change",
+            "incremental refresh after map changes made outside the console",
         )
-        if read_version is None:
-            self.db()  # still report an unreachable DB
-            return 0
+        if read is None:
+            return self.read_map_version(), None, None
         try:
-            return int(read_version(self.db()))
+            version, layers, ids = read(self.db())
         except GraphUnavailable:
             raise
         except Exception as e:  # noqa: BLE001
             self.close()
             raise GraphUnavailable(f"neo4j {self.uri}: {e}") from None
+        return int(version), layers, ids
 
-    def read_map_version(self) -> int:
-        """heracles' ``_MapState.version`` (0 without one): plan repair's scene edits
-        (heracles_agents remove_scene_place, undo, reset) bump only this counter,
-        not ``_State.version``, and an edit that deletes a node while it records an
-        undo ``_SceneChange`` leaves the node count unchanged too."""
-        try:
-            rows = self.query("MATCH (m:_MapState) RETURN max(m.version) AS v")
-        except GraphUnavailable:
-            raise
-        v = rows[0]["v"] if rows else None
-        return int(v) if v is not None else 0
-
-    def _db_key(self) -> tuple[int, int, int]:
-        """What identifies the DB contents: heracles' version counter alone is
-        not enough, because an ingest wipes the DB and restarts it at 1, and plan
-        repair edits move only the map version. ``[0]`` stays ``_State.version``
-        (apply_change compares it with the write it folds in)."""
-        return (self.read_version(), self.count_nodes(), self.read_map_version())
+    def _db_key(self) -> tuple[int, int]:
+        """What identifies the DB contents: ``(map version, node count)``.  Every
+        map writer bumps the version; the node count also catches a writer that
+        does not.  ``[0]`` is the map version apply_change compares with."""
+        return (self.read_map_version(), self.count_nodes())
 
     def version(self) -> int:
         """Console-side monotonic version, bumped whenever the DB key changes."""
@@ -1412,28 +1410,48 @@ class Neo4jSource(Source):
         self.invalidate()
 
     def poll(self) -> bool:
-        """Re-read the DB key; True (and a new version) if it changed.  Under the
-        source lock, so it never interleaves with :meth:`apply_change`."""
+        """Re-read the DB key; True (and a new version) if it changed."""
+        return self.poll_change()[0]
+
+    def poll_change(self) -> tuple[bool, tuple | None]:
+        """Re-read the DB key: ``(changed, delta)``.  A change that is exactly one
+        map version bump past what the console has seen, and that recorded the
+        nodes it touched (heracles ``read_map_change``: a graph_edit commit, an
+        openset_query object), is folded into the loaded graph and returned as
+        ``(GraphDelta, new version)`` like :meth:`apply_change`; any other change
+        means a full reload on next use (delta None).  Under the source lock, so
+        it never interleaves with :meth:`apply_change`."""
         with self._lock:
             key = self._db_key()
             if self._version is None:
                 self._db_key_seen, self._version = key, 1
-                return False
-            if key == self._db_key_seen:
-                return False
+                return False, None
+            seen = self._db_key_seen
+            if key == seen:
+                return False, None
+            if seen is not None and key[0] == seen[0] + 1:
+                delta = None
+                try:
+                    version, _layers, ids = self.read_map_change()
+                    if version == key[0] and ids:
+                        delta = self._try_apply(version, ids)
+                except Exception:  # noqa: BLE001
+                    log.exception("%s: incremental update failed; reloading", self.id)
+                if delta is not None:
+                    return True, delta
             self._props_cache.clear()
             self._db_key_seen = key
             self._version += 1
-            return True
+            return True, None
 
     # -- incremental updates ------------------------------------------------
-    def apply_change(self, state_version, affected) -> tuple | None:
+    def apply_change(self, map_version, affected) -> tuple | None:
         """Fold one known write into the loaded graph instead of reloading it all.
 
-        ``state_version`` is the ``_State.version`` the write bumped to and
-        ``affected`` the node symbols it touched (heracles ``notify_map_change`` /
-        graph_edit ``affected``).  When the console had seen the DB right up to
-        that write (``state_version`` is exactly one past it) and the graph is
+        ``map_version`` is the map version (``_MapState.version``) the write bumped
+        to and ``affected`` the node symbols it touched (graph_edit ``map_version``
+        and ``affected``).  When the console had seen the DB right up to
+        that write (``map_version`` is exactly one past it) and the graph is
         loaded, only the affected nodes and their edges are re-read from Neo4j and
         patched into a copy of the graph; returns ``(GraphDelta, new version)``.
         A labelspace that only gained entries (a new class) is applied too.
@@ -1443,14 +1461,14 @@ class Neo4jSource(Source):
         with self._lock:
             delta = None
             try:
-                delta = self._try_apply(state_version, affected)
+                delta = self._try_apply(map_version, affected)
             except Exception:  # noqa: BLE001
                 log.exception("%s: incremental update failed; reloading", self.id)
             if delta is None:
                 self.invalidate()
             return delta
 
-    def _try_apply(self, state_version, affected):
+    def _try_apply(self, map_version, affected):
         loaded, seen = self._loaded, self._db_key_seen
         syms = []
         for s in affected or ():
@@ -1462,13 +1480,13 @@ class Neo4jSource(Source):
         if (
             not syms
             or len(syms) > INCREMENTAL_MAX_NODES
-            or state_version is None
+            or map_version is None
             or loaded is None
             or loaded.G is None
             or self._version is None
             or loaded.version != self._version
             or seen is None
-            or int(state_version) != seen[0] + 1
+            or int(map_version) != seen[0] + 1
             or "db_labelspaces" not in loaded.extra
         ):
             return None
@@ -1492,7 +1510,7 @@ class Neo4jSource(Source):
             delta.labelspaces = labelspaces
             extra["db_labelspaces"] = db_ls
         key = self._db_key()
-        if key[0] != int(state_version):
+        if key[0] != int(map_version):
             return None  # another write landed meanwhile: its nodes are unknown
         version = self._version + 1
         edges = _codec().graph_edges(
@@ -2188,14 +2206,14 @@ class GraphService:
             msg.update(version=dv, base=dv - 1, delta=d.encode())
         self.hub.publish(f"graph/{src_id}/version", msg)
 
-    def apply_change(self, src_id: str, reason: str, state_version, affected) -> bool:
+    def apply_change(self, src_id: str, reason: str, map_version, affected) -> bool:
         """A write to Neo4j source ``src_id`` that touched ``affected`` and bumped
-        ``_State`` to ``state_version``: fold it in (or invalidate) and tell
+        the map version to ``map_version``: fold it in (or invalidate) and tell
         viewers.  True when it was applied incrementally."""
         src = self.sources.get(src_id)
         if not isinstance(src, Neo4jSource):
             return False
-        delta = src.apply_change(state_version, affected)
+        delta = src.apply_change(map_version, affected)
         self.notify_version(src_id, reason, delta)
         return delta is not None
 
@@ -2267,8 +2285,9 @@ class GraphService:
         for s in list(self.sources.values()):
             try:
                 if isinstance(s, Neo4jSource):
-                    if s.poll():
-                        self.notify_version(s.id, "neo4j")
+                    changed, delta = s.poll_change()
+                    if changed:
+                        self.notify_version(s.id, "neo4j", delta)
                 elif isinstance(s, FileSource):
                     before = s._version
                     if s.version() != before and before:
