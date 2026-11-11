@@ -1,0 +1,15 @@
+planners:
+  goto_points:
+    plugin: {type: GotoPoints}
+  language_planner:
+    plugin: {type: LanguagePlanner}
+  tsp_planner:
+    plugin: {type: Tsp}
+  visit_objects_pddl:
+    plugin: {type: Pddl}
+  rearrange_objects_pddl:
+    plugin: {type: Pddl}
+  region_rearrange_objects_pddl:
+    plugin: {type: Pddl}
+  multi_robot_pddl_constrained:
+    plugin: {type: MultiRobotPddlConstrained}

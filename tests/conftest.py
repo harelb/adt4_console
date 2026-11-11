@@ -159,7 +159,15 @@ def make_client(settings, **service_kw):
 
 
 @pytest.fixture
-def client(settings):
+def planner_plugins(monkeypatch):
+    """Known planner inputs independent of the installed ADT4 workspace."""
+    path = HERE / "fixtures" / "omniplanner_plugins.yaml"
+    monkeypatch.setenv("ADT4_OMNIPLANNER_PLUGINS", str(path))
+    return path
+
+
+@pytest.fixture
+def client(settings, planner_plugins):
     c, services = make_client(settings)
     with c:
         yield c
