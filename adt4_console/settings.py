@@ -72,11 +72,19 @@ class Settings:
     sam3_timeout_s: float = 180.0
 
     # geo + missions (API.md §14-16)
-    geo_anchors: dict[str, str] = field(default_factory=dict)  # src id/name ("*": all) -> json
+    geo_anchors: dict[str, str] = field(
+        default_factory=dict
+    )  # src id/name ("*": all) -> json
     tiles_dir: str = "~/.adt4_console/tiles"
-    tiles_live: bool = False  # fetch missing satellite tiles from the internet (and keep them)
-    missions_dir: str | None = None  # None -> memory only (tests); cli: ~/.adt4_console/missions
-    quad_images_dir: str | None = None  # where approved quad detections' images are kept
+    tiles_live: bool = (
+        False  # fetch missing satellite tiles from the internet (and keep them)
+    )
+    missions_dir: str | None = (
+        None  # None -> memory only (tests); cli: ~/.adt4_console/missions
+    )
+    quad_images_dir: str | None = (
+        None  # where approved quad detections' images are kept
+    )
     # packed mesh tiles + levels of detail cached per mesh file (mesh_lod.py);
     # None -> memory only (tests); cli: ~/.adt4_console/mesh_cache
     mesh_cache_dir: str | None = None

@@ -112,27 +112,41 @@ class EditService:
             "src": src_id,
             "mode": "staged" if self.staged_mode() else "immediate",
             "live": bool(live),
-            "launch": {k: live.get(k) for k in ("experiment", "robots", "started_at")} if live else None,
+            "launch": {k: live.get(k) for k in ("experiment", "robots", "started_at")}
+            if live
+            else None,
             "revision": ge.graph_revision(db),
             "state_version": read_version(db),
             "map_version": get_map_version(db),
             "staged": self.staged(src_id),
-            "can_undo": any(h["undoable"] and not h["undo_of"] and h["kind"] == "map_edit" for h in hist),
+            "can_undo": any(
+                h["undoable"] and not h["undo_of"] and h["kind"] == "map_edit"
+                for h in hist
+            ),
         }
 
     # ---------------------------------------------------------------- edits
     def _provenance(self, src_id: str, author: dict | None) -> dict:
-        p = {"source": "adt4_console", "src": src_id, "operator": "operator", "via": "ui"}
+        p = {
+            "source": "adt4_console",
+            "src": src_id,
+            "operator": "operator",
+            "via": "ui",
+        }
         p.update({k: v for k, v in (author or {}).items() if v is not None})
         return p
 
-    def _after_commit(self, src_id: str, out: dict, reason: str, author: dict | None = None) -> None:
+    def _after_commit(
+        self, src_id: str, out: dict, reason: str, author: dict | None = None
+    ) -> None:
         if out.get("dry_run") or not out.get("mutation_id"):
             return
         # graph_edit reports the nodes it touched (both ends of an edge op): fold
         # them into the loaded graph and push a delta; it falls back to a reload
         try:
-            self.graph.apply_change(src_id, reason, out.get("state_version"), out.get("affected"))
+            self.graph.apply_change(
+                src_id, reason, out.get("state_version"), out.get("affected")
+            )
         except Exception:  # noqa: BLE001
             try:
                 self.graph.get(src_id).invalidate()
@@ -186,7 +200,10 @@ class EditService:
         from heracles.graph_interface import get_map_version
 
         db = self._db(src_id)
-        return {"map_revision": _ge().graph_revision(db), "map_version": get_map_version(db)}
+        return {
+            "map_revision": _ge().graph_revision(db),
+            "map_version": get_map_version(db),
+        }
 
     # --------------------------------------------------------------- staging
     def staged(self, src_id: str) -> list[dict]:
@@ -203,11 +220,17 @@ class EditService:
             before = [s["op"] for s in staged]
             prov = self._provenance(src_id, author)
             dry = ge.apply_edit(db, before + ops, provenance=prov, dry_run=True)
-            n_before = len(ge.apply_edit(db, before, provenance=prov, dry_run=True)["changes"]) if before else 0
+            n_before = (
+                len(ge.apply_edit(db, before, provenance=prov, dry_run=True)["changes"])
+                if before
+                else 0
+            )
             mine = dry["changes"][n_before:]
             lines = ge.summarize(mine)
             # pin the symbols the dry run allocated, so later staged ops can name them
-            created = iter(c["symbol"] for c in mine if c["kind"] in ("create", "group"))
+            created = iter(
+                c["symbol"] for c in mine if c["kind"] in ("create", "group")
+            )
             for o in ops:
                 if o.get("op") in ("create_node", "group"):
                     sym = next(created, None)
@@ -254,7 +277,11 @@ class EditService:
         if not ops:
             return {"count": 0, "summary": [], "affected": []}
         dry = _ge().apply_edit(self._db(src_id), ops, provenance={}, dry_run=True)
-        return {"count": len(ops), "summary": dry["summary"], "affected": dry["affected"]}
+        return {
+            "count": len(ops),
+            "summary": dry["summary"],
+            "affected": dry["affected"],
+        }
 
     def publish(self, src_id: str, confirm: str, *, author: dict | None = None,
                 expected_revision: int | None = None) -> dict:  # fmt: skip
@@ -305,7 +332,9 @@ class EditService:
         return info
 
     def _snapshot_path(self, src_id: str, snap_id: str) -> pathlib.Path:
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+", snap_id or "") or snap_id.startswith("."):
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", snap_id or "") or snap_id.startswith(
+            "."
+        ):
             raise KeyError(snap_id)
         d = self._snap_dir(src_id) / snap_id
         if not (d / "info.json").is_file():
@@ -313,7 +342,9 @@ class EditService:
         return d
 
     def snapshot_info(self, src_id: str, snap_id: str) -> dict:
-        return json.loads((self._snapshot_path(src_id, snap_id) / "info.json").read_text())
+        return json.loads(
+            (self._snapshot_path(src_id, snap_id) / "info.json").read_text()
+        )
 
     def snapshot_zip(self, src_id: str, snap_id: str) -> bytes:
         d = self._snapshot_path(src_id, snap_id)
@@ -349,8 +380,13 @@ class EditService:
                 required_text=RESTORE_CONFIRM,
                 yes_label="Restore",
                 no_label="Cancel",
-                detail={"target": src.name, "uri": src.uri, "snapshot": snap_id, "now": now,
-                        "snapshot_counts": info["counts"]},  # fmt: skip
+                detail={
+                    "target": src.name,
+                    "uri": src.uri,
+                    "snapshot": snap_id,
+                    "now": now,
+                    "snapshot_counts": info["counts"],
+                },  # fmt: skip
             )
             if not answer:
                 job.log("error", "Restore aborted - database left untouched.")
@@ -364,4 +400,6 @@ class EditService:
             job.log("ok", f"Restored: {counts}")
             return {"counts": counts, "snapshot": snap_id}
 
-        return self.jobs.start("restore", f"Restore {info['name']} -> neo4j:{src.name}", run)
+        return self.jobs.start(
+            "restore", f"Restore {info['name']} -> neo4j:{src.name}", run
+        )

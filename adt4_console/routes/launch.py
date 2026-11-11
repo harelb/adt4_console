@@ -36,10 +36,15 @@ class LaunchPlanBody(BaseModel):
 def _plan(body: LaunchPlanBody, topo: dict | None = None):
     from dcist_launch_system.fleet.launch_workflow import LaunchPlan
 
-    if body.link_network and body.link_network not in ((topo or {}).get("networks") or {}):
+    if body.link_network and body.link_network not in (
+        (topo or {}).get("networks") or {}
+    ):
         raise HTTPException(400, f"unknown link network {body.link_network!r}")
     if body.link_mode:
-        from dcist_launch_system.fleet.launch_workflow import LaunchError, with_link_mode
+        from dcist_launch_system.fleet.launch_workflow import (
+            LaunchError,
+            with_link_mode,
+        )
 
         try:
             with_link_mode(topo or {}, body.link_mode)
@@ -50,7 +55,12 @@ def _plan(body: LaunchPlanBody, topo: dict | None = None):
 
 def link_choices(topo: dict | None, active: str | None) -> dict:
     """Networks a launch can put the robot links on, and the default one."""
-    from dcist_launch_system.fleet_helpers import FLEET_LINK_MODES, fleet_link_mode, fleetlink_base, link_network
+    from dcist_launch_system.fleet_helpers import (
+        FLEET_LINK_MODES,
+        fleet_link_mode,
+        fleetlink_base,
+        link_network,
+    )
 
     return {
         "link_networks": list(((topo or {}).get("networks") or {}).keys()),
@@ -198,13 +208,20 @@ def attach_prior(svc, plan, job) -> dict | None:
     p = pathlib.PurePosixPath(plan.prior_path)
     entry = _scan_one(svc, src, p.name, str(p.parent))
     if entry is None:
-        job.log("warn", f"prior {src_name}:{plan.prior_path} not found; viewer not updated")
+        job.log(
+            "warn", f"prior {src_name}:{plan.prior_path} not found; viewer not updated"
+        )
         svc.launch_state.set(new_state(plan, None))
         return None
     ident = entry.get("identity") or {}
     origin = entry.get("origin") or {}
     run_id = ri.canonical_id(entry)
-    robot = ident.get("robot") or origin.get("robot") or origin.get("source_machine") or src_name
+    robot = (
+        ident.get("robot")
+        or origin.get("robot")
+        or origin.get("source_machine")
+        or src_name
+    )
     experiment = ident.get("experiment") or origin.get("experiment") or p.name
     prior = {
         "run_id": run_id,
@@ -307,9 +324,7 @@ def _wait_hydra_exit_ssh(svc, job, m) -> bool | None:
     t0 = time.monotonic()
     last_note = t0
     while time.monotonic() - t0 < HYDRA_EXIT_WAIT_S:
-        rc, out, _ = svc.helpers.ssh_cmd(
-            m["user"], m["ip"], HYDRA_PGREP
-        )
+        rc, out, _ = svc.helpers.ssh_cmd(m["user"], m["ip"], HYDRA_PGREP)
         if rc != 0 or out.strip() not in ("up", "gone"):
             return None
         if out.strip() == "gone":
@@ -329,7 +344,10 @@ def _teardown_stack(svc, job, robot: str, m) -> bool:
     from ..terminal import stop_session
 
     session = TMUX_SESSION_NAME
-    job.log("info", f"Stopping the rest of the stack on {robot} (Ctrl-C every pane of {session}) ...")
+    job.log(
+        "info",
+        f"Stopping the rest of the stack on {robot} (Ctrl-C every pane of {session}) ...",
+    )
     ok = stop_session(
         svc.helpers.ssh_cmd, m["user"], m["ip"], session,
         lambda lvl, text: job.log(lvl, f"{robot}: {text}"),
@@ -356,7 +374,9 @@ def stop_save(robot: str, request: Request, body: StopSaveBody | None = None):
             return result
         m = svc.fleet.machine(robot)
         if m is None:
-            job.log("warn", f"{robot} is not in the topology; cannot stop its tmux session")
+            job.log(
+                "warn", f"{robot} is not in the topology; cannot stop its tmux session"
+            )
             return result
         if hydra_exited is None:
             job.log("info", "Waiting for hydra to finish saving and exit ...")
@@ -364,10 +384,16 @@ def stop_save(robot: str, request: Request, body: StopSaveBody | None = None):
             if hydra_exited:
                 job.log("ok", f"{robot}: hydra saved and exited")
         if hydra_exited is False:
-            job.log("warn", f"{robot}: hydra is still saving; left the stack running (kill it from Fleet when it is done)")
+            job.log(
+                "warn",
+                f"{robot}: hydra is still saving; left the stack running (kill it from Fleet when it is done)",
+            )
             return {**result, "teardown": False}
         if hydra_exited is None:
-            job.log("warn", f"{robot}: cannot tell whether hydra finished saving; left the stack running")
+            job.log(
+                "warn",
+                f"{robot}: cannot tell whether hydra finished saving; left the stack running",
+            )
             return {**result, "teardown": False}
         return {**result, "teardown": _teardown_stack(svc, job, robot, m)}
 

@@ -15,7 +15,12 @@ dsg = pytest.importorskip("spark_dsg")
 pytest.importorskip("hydra_image_store")
 
 # agent index -> (position, yaw deg); a3 is far from everything
-AGENTS = {0: ((0.0, 0.0, 0.0), 0.0), 1: ((1.0, 0.0, 0.0), 90.0), 2: ((2.0, 0.0, 0.0), 0.0), 3: ((20.0, 0.0, 0.0), 0.0)}
+AGENTS = {
+    0: ((0.0, 0.0, 0.0), 0.0),
+    1: ((1.0, 0.0, 0.0), 90.0),
+    2: ((2.0, 0.0, 0.0), 0.0),
+    3: ((20.0, 0.0, 0.0), 0.0),
+}
 
 
 def _T(xyz, yaw_deg):
@@ -104,9 +109,15 @@ def test_agent_without_own_keyframe_uses_nearest_anchored_keyframe(aclient):
     assert hero["dist_m"] == pytest.approx(0.2, abs=1e-3)
     assert hero["yaw_deg"] == pytest.approx(10.0, abs=0.1)
     assert info[1]["frame_id"] == fids["sk_far"]
-    assert info[1]["dist_m"] == pytest.approx(0.5, abs=1e-3) and info[1]["yaw_deg"] == pytest.approx(30.0, abs=0.1)
+    assert info[1]["dist_m"] == pytest.approx(0.5, abs=1e-3) and info[1][
+        "yaw_deg"
+    ] == pytest.approx(30.0, abs=0.1)
     # the neighbour's keyframe is 1 m away: last in the strip
-    assert info[2]["frame_id"] == fids["kf0"] and info[2]["kind"] == "keyframe" and not info[2]["own"]
+    assert (
+        info[2]["frame_id"] == fids["kf0"]
+        and info[2]["kind"] == "keyframe"
+        and not info[2]["own"]
+    )
     assert client.get(d["images"][0]).content == JPEG
 
 
@@ -117,11 +128,17 @@ def test_agent_with_nothing_anchored_falls_back_to_neighbours(aclient):
     # a2 at (2, 0) heading 0: kf0 (2 m, 0 deg) outranks them (1.02 m + 100 deg ~ 2.13)
     hero = info[0]
     expect = min(
-        [("sk_near", math.hypot(1.0, 0.2), 100.0), ("sk_far", math.hypot(1.0, 0.5), 120.0), ("kf0", 2.0, 0.0)],
+        [
+            ("sk_near", math.hypot(1.0, 0.2), 100.0),
+            ("sk_far", math.hypot(1.0, 0.5), 120.0),
+            ("kf0", 2.0, 0.0),
+        ],
         key=lambda t: t[1] + t[2] / 90.0,
     )
     assert expect[0] == "kf0"
-    assert hero["frame_id"] == fids[expect[0]] and hero["dist_m"] == pytest.approx(expect[1], abs=1e-3)
+    assert hero["frame_id"] == fids[expect[0]] and hero["dist_m"] == pytest.approx(
+        expect[1], abs=1e-3
+    )
     assert hero["anchor"] != "a(2)" and not hero["own"]
     # the strip is ordered by distance
     rest = [i["dist_m"] for i in info[1:]]
@@ -147,9 +164,9 @@ def test_index_cached_per_version(aclient):
 def test_live_records_without_rotations(tmp_path):
     """Live sources only know node positions: headings come from the frames' odometry."""
     from fleetlink import codec
+    from hydra_image_store import FrameKind, ImageStore, make_node_id
 
     from adt4_console.agent_images import AgentFrameIndex
-    from hydra_image_store import FrameKind, ImageStore, make_node_id
 
     store_dir = tmp_path / "s"
     img = tmp_path / "x.jpg"
@@ -165,11 +182,17 @@ def test_live_records_without_rotations(tmp_path):
     w.close()
     store = ImageStore.open(store_dir)
     recs = {"a(5)": codec.NodeRecord("a(5)", 2, 97, (3.0, 4.0, 0.0))}
-    idx = AgentFrameIndex.from_store(store, positions={k: r.pos for k, r in recs.items()})
+    idx = AgentFrameIndex.from_store(
+        store, positions={k: r.pos for k, r in recs.items()}
+    )
     out = idx.select("a(5)")
     assert out[0].frame_id == fid
-    assert out[0].dist_m == pytest.approx(1.0, abs=1e-6) and out[0].yaw_deg == pytest.approx(0.0, abs=1e-6)
-    assert np.allclose(idx.pos[0], (3.0, 5.0, 0.0))  # optimized position + odometric heading
+    assert out[0].dist_m == pytest.approx(1.0, abs=1e-6) and out[
+        0
+    ].yaw_deg == pytest.approx(0.0, abs=1e-6)
+    assert np.allclose(
+        idx.pos[0], (3.0, 5.0, 0.0)
+    )  # optimized position + odometric heading
 
 
 def test_neo4j_agent_and_subkeyframe_rows(tmp_path):
@@ -180,10 +203,28 @@ def test_neo4j_agent_and_subkeyframe_rows(tmp_path):
     img = tmp_path / "s.jpg"
     img.write_bytes(JPEG)
     agents = [
-        {"s": "a7", "c": [0.0, 0.0, 0.0], "w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0, "p": None, "f": None},
+        {
+            "s": "a7",
+            "c": [0.0, 0.0, 0.0],
+            "w": 1.0,
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+            "p": None,
+            "f": None,
+        },
     ]
     subs = [
-        {"c": [0.3, 0.4, 0.0], "w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0, "p": str(img), "f": 42, "a": "a7"},
+        {
+            "c": [0.3, 0.4, 0.0],
+            "w": 1.0,
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+            "p": str(img),
+            "f": 42,
+            "a": "a7",
+        },
     ]
 
     class Fake(Neo4jSource):
@@ -198,7 +239,9 @@ def test_neo4j_agent_and_subkeyframe_rows(tmp_path):
             return 1
 
     src = Fake("t", "bolt://x", "u", "p")
-    loaded = Loaded(1, {"a(7)": codec.NodeRecord("a(7)", 2, 97, (0.0, 0.0, 0.0))}, set(), {})
+    loaded = Loaded(
+        1, {"a(7)": codec.NodeRecord("a(7)", 2, 97, (0.0, 0.0, 0.0))}, set(), {}
+    )
     ims = src.agent_images("a(7)", loaded)
     assert len(ims) == 1
     i = ims[0].info()
@@ -212,10 +255,17 @@ def test_own_keyframes_by_stamp_or_identity_offset():
     from adt4_console.agent_images import own_keyframes
 
     def fr(fid, ts, anchor, aTb):
-        return NS(frame_id=fid, timestamp_ns=ts, anchor_node_id=anchor, anchor_T_body=aTb)
+        return NS(
+            frame_id=fid, timestamp_ns=ts, anchor_node_id=anchor, anchor_T_body=aTb
+        )
 
     off = _T((0.3, 0.0, 0.0), 0.0)
-    frames = [fr(1, 100, 7, off), fr(2, 200, 7, np.eye(4)), fr(3, 300, 8, off), fr(4, 400, None, None)]
+    frames = [
+        fr(1, 100, 7, off),
+        fr(2, 200, 7, np.eye(4)),
+        fr(3, 300, 8, off),
+        fr(4, 400, None, None),
+    ]
     # no stamps: the identity-offset frame of each anchor (none for 8)
     assert {a: f.frame_id for a, f in own_keyframes(frames).items()} == {7: 2}
     # stamps (ImageStore.agent_frame): nearest within 50 ms, whatever the offset

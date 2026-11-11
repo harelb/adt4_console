@@ -6,9 +6,9 @@ import types
 
 import pytest
 
+from adt4_console.ros_bridge import RosBridge
 from adt4_console.routes import launch as launch_routes
 from adt4_console.routes.launch import HYDRA_PGREP
-from adt4_console.ros_bridge import RosBridge
 from tests.conftest import make_client
 
 
@@ -16,7 +16,9 @@ class FakeHelpers:
     """stop_save_via_tmux plus a robot whose hydra exits after ``hydra_polls``
     checks and whose panes are shells once Ctrl-C was sent."""
 
-    def __init__(self, result=(True, "shutdown requested from pane core.1"), hydra_polls=1):
+    def __init__(
+        self, result=(True, "shutdown requested from pane core.1"), hydra_polls=1
+    ):
         self.result = result
         self.calls = []
         self.ssh = []
@@ -97,7 +99,10 @@ def test_stop_save_calls_hydra_then_roman(app, monkeypatch):
     assert "ROMAN map saved" in log and "hydra saved and exited" in log
     assert not helpers.calls
     # then the rest of the stack: Ctrl-C every pane, wait for shells, kill
-    assert "C-c" in helpers.ssh[0] and helpers.ssh[-1] == "tmux kill-session -t adt4_system"
+    assert (
+        "C-c" in helpers.ssh[0]
+        and helpers.ssh[-1] == "tmux kill-session -t adt4_system"
+    )
     assert "adt4_system stopped and closed" in log
 
 
@@ -277,7 +282,14 @@ def test_hydra_pgrep_does_not_match_its_own_shell():
     hydra up forever (fleetlink Stop & Save, 2026-10-21)."""
     import subprocess
 
-    out = subprocess.run(["sh", "-c", HYDRA_PGREP], capture_output=True, text=True).stdout.strip()
+    out = subprocess.run(
+        ["sh", "-c", HYDRA_PGREP], capture_output=True, text=True
+    ).stdout.strip()
     assert out == "gone"
     naive = HYDRA_PGREP.replace("'[h]ydra_ros_node'", "hydra_ros_node")
-    assert subprocess.run(["sh", "-c", naive], capture_output=True, text=True).stdout.strip() == "up"
+    assert (
+        subprocess.run(
+            ["sh", "-c", naive], capture_output=True, text=True
+        ).stdout.strip()
+        == "up"
+    )

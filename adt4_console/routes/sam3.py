@@ -19,7 +19,6 @@ console then refreshes its Neo4j source so the viewer shows the new object.
 from __future__ import annotations
 
 import logging
-
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -95,11 +94,17 @@ def _refresh(svc, src: str | None, out: dict | None = None) -> list[str]:
     else:
         ids = [k for k, s in graph.sources.items() if isinstance(s, Neo4jSource)]
     name = getattr(svc.settings, "sam3_neo4j", None)
-    target = ids[0] if len(ids) == 1 else (f"neo4j:{name}" if name and f"neo4j:{name}" in ids else None)
+    target = (
+        ids[0]
+        if len(ids) == 1
+        else (f"neo4j:{name}" if name and f"neo4j:{name}" in ids else None)
+    )
     for sid in ids:
         try:
             if sid == target and out.get("symbol"):
-                graph.apply_change(sid, "sam3", out.get("state_version"), [out["symbol"]])
+                graph.apply_change(
+                    sid, "sam3", out.get("state_version"), [out["symbol"]]
+                )
             else:
                 graph.sources[sid].invalidate()
                 graph.notify_version(sid, "sam3")
@@ -121,12 +126,21 @@ def health(request: Request):
         msg = sam3_client.not_running_message(url)
         detail = str(e)
         if detail.startswith(msg):  # keep only the why ("unreachable at ...: refused")
-            detail = detail[len(msg):].strip(" ()")
-        return {"ok": False, "url": url, "server": sam3_client.server_label(url),
-                "error": msg, "detail": detail}
+            detail = detail[len(msg) :].strip(" ()")
+        return {
+            "ok": False,
+            "url": url,
+            "server": sam3_client.server_label(url),
+            "error": msg,
+            "detail": detail,
+        }
     except sam3_client.Sam3Error as e:
-        return {"ok": False, "url": url, "server": sam3_client.server_label(url),
-                "error": str(e)}
+        return {
+            "ok": False,
+            "url": url,
+            "server": sam3_client.server_label(url),
+            "error": str(e),
+        }
     return {"ok": True, "url": url, "server": sam3_client.server_label(url), **h}
 
 
@@ -147,8 +161,12 @@ def rank(body: RankBody, request: Request):
     s = services(request).settings
     return _forward(
         lambda: sam3_client.rank(
-            body.prompt.strip(), s.sam3_url, top_k=body.top_k, source=_src(body.source),
-            min_ts=body.min_ts, thumb_dim=body.thumb_dim,
+            body.prompt.strip(),
+            s.sam3_url,
+            top_k=body.top_k,
+            source=_src(body.source),
+            min_ts=body.min_ts,
+            thumb_dim=body.thumb_dim,
         )
     )
 
@@ -161,42 +179,56 @@ def _frame_args(key, pending_id, index):
 
 
 @router.get("/frame")
-def frame(request: Request, key: str | None = Query(None, min_length=1),
-          max_dim: int = Query(1280, ge=64, le=4096),
-          pending_id: str | None = Query(None, min_length=1),
-          index: int | None = Query(None, ge=0), view: int = Query(0, ge=0)):
+def frame(
+    request: Request,
+    key: str | None = Query(None, min_length=1),
+    max_dim: int = Query(1280, ge=64, le=4096),
+    pending_id: str | None = Query(None, min_length=1),
+    index: int | None = Query(None, ge=0),
+    view: int = Query(0, ge=0),
+):
     """A keyframe (raw), or a dry-run candidate view with its mask (JSON data URI)."""
     _frame_args(key, pending_id, index)
     s = services(request).settings
-    return _forward(lambda: sam3_client.frame(key, s.sam3_url, max_dim, pending_id=pending_id,
-                                              index=index, view=view))
+    return _forward(
+        lambda: sam3_client.frame(
+            key, s.sam3_url, max_dim, pending_id=pending_id, index=index, view=view
+        )
+    )
 
 
 @router.get("/frame.jpg")
-def frame_jpg(request: Request, key: str | None = Query(None, min_length=1),
-              max_dim: int = Query(480, ge=64, le=4096),
-              pending_id: str | None = Query(None, min_length=1),
-              index: int | None = Query(None, ge=0), view: int = Query(0, ge=0)):
+def frame_jpg(
+    request: Request,
+    key: str | None = Query(None, min_length=1),
+    max_dim: int = Query(480, ge=64, le=4096),
+    pending_id: str | None = Query(None, min_length=1),
+    index: int | None = Query(None, ge=0),
+    view: int = Query(0, ge=0),
+):
     """Same as ``/frame`` as an image, for ``<img loading="lazy">`` thumbnails."""
     _frame_args(key, pending_id, index)
     s = services(request).settings
-    out = _forward(lambda: sam3_client.frame(key, s.sam3_url, max_dim, pending_id=pending_id,
-                                             index=index, view=view))
+    out = _forward(
+        lambda: sam3_client.frame(
+            key, s.sam3_url, max_dim, pending_id=pending_id, index=index, view=view
+        )
+    )
     try:
         data, media = sam3_client.data_uri_bytes(out.get("uri"))
     except sam3_client.Sam3Error as e:
         raise HTTPException(502, str(e)) from None
     # a pending view never changes; the raw frame neither
-    return Response(data, media_type=media, headers={"Cache-Control": "private, max-age=600"})
+    return Response(
+        data, media_type=media, headers={"Cache-Control": "private, max-age=600"}
+    )
 
 
 @router.post("/commit")
 def commit(body: CommitBody, request: Request):
     svc = services(request)
     s = svc.settings
-    out = _forward(
-        sam3_client.commit, body.pending_id, body.index, s.sam3_url, 60.0
-    )
+    out = _forward(sam3_client.commit, body.pending_id, body.index, s.sam3_url, 60.0)
     refreshed = _refresh(svc, body.src, out)
     return {**out, "refreshed": refreshed}
 

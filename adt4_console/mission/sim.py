@@ -19,10 +19,10 @@ import math
 import threading
 import time
 
+from ..quad import camera
 from . import planning
 from .model import Mission
 from .paths import NoPath
-from ..quad import camera
 
 log = logging.getLogger(__name__)
 
@@ -52,11 +52,15 @@ class AgentState:
         self.travelled = 0.0
         self.next_capture = 0.0
         self.status = "idle"  # idle | moving | dwelling | waiting | done
-        self.carrying: dict | None = None  # {sym, mode: carry|drag} between a pick/drag and its place
+        self.carrying: dict | None = (
+            None  # {sym, mode: carry|drag} between a pick/drag and its place
+        )
 
 
 class MissionSim:
-    def __init__(self, mission: Mission, world: planning.World, auto_approve: bool = False):
+    def __init__(
+        self, mission: Mission, world: planning.World, auto_approve: bool = False
+    ):
         self.mission = mission
         self.world = planning.World(graph=world.graph, robot_pose=world.robot_pose,
                                     quad_available=True, found={})  # fmt: skip
@@ -208,17 +212,28 @@ class MissionSim:
                 st.seg += 1
             else:
                 k = budget / seg_left
-                st.pos = [st.pos[0] + (b[0] - st.pos[0]) * k, st.pos[1] + (b[1] - st.pos[1]) * k]
+                st.pos = [
+                    st.pos[0] + (b[0] - st.pos[0]) * k,
+                    st.pos[1] + (b[1] - st.pos[1]) * k,
+                ]
                 st.travelled += budget
                 budget = 0.0
-            if t.type == "explore_area" and st.travelled >= st.next_capture and st.seg >= 1:
+            if (
+                t.type == "explore_area"
+                and st.travelled >= st.next_capture
+                and st.seg >= 1
+            ):
                 self._capture(st, t, agent)
                 st.next_capture = st.travelled + self._capture_spacing(agent)
         if st.seg >= len(st.path) - 1:
             if st.dwell_left > 0:
                 if st.status != "dwelling":
                     st.status = "dwelling"
-                    if agent.kind == "quad" and t.type in ("inspect", "request_image", "goto"):
+                    if agent.kind == "quad" and t.type in (
+                        "inspect",
+                        "request_image",
+                        "goto",
+                    ):
                         self._capture(st, t, agent)
                 st.dwell_left -= dt
                 if st.dwell_left > 0:
@@ -235,17 +250,23 @@ class MissionSim:
         if t.type in ("pick", "drag"):
             sym = t.target if isinstance(t.target, str) else None
             st.carrying = {"sym": sym, "mode": "drag" if t.type == "drag" else "carry"}
-            self._log("picked" if t.type == "pick" else "drag_start", agent=st.id, symbol=sym)
+            self._log(
+                "picked" if t.type == "pick" else "drag_start", agent=st.id, symbol=sym
+            )
         elif t.type == "place":
             sym = t.params.get("object") or (st.carrying or {}).get("sym")
             if sym:
                 self.moved[str(sym)] = [round(v, 2) for v in st.pos]
-            self._log("placed", agent=st.id, symbol=sym, pos=[round(v, 2) for v in st.pos])
+            self._log(
+                "placed", agent=st.id, symbol=sym, pos=[round(v, 2) for v in st.pos]
+            )
             st.carrying = None
 
     def _capture_spacing(self, agent) -> float:
         fx, fy, cx, cy = camera.intrinsics()
-        along = 2 * agent.altitude * cy / fy  # ground metres covered by the image height
+        along = (
+            2 * agent.altitude * cy / fy
+        )  # ground metres covered by the image height
         return max(2.0, along * (1 - CAPTURE_OVERLAP))
 
     def _finish(self, tid: str, state: str, note: str | None = None) -> None:
@@ -261,32 +282,55 @@ class MissionSim:
         pose = {"x": st.pos[0], "y": st.pos[1], "z": agent.altitude, "yaw": st.yaw}
         self._n_img += 1
         img_id = f"i{self._n_img}"
-        self.captures[img_id] = {"pose": pose, "task": t.id, "agent": st.id, "t": round(self.t, 2)}
+        self.captures[img_id] = {
+            "pose": pose,
+            "task": t.id,
+            "agent": st.id,
+            "t": round(self.t, 2),
+        }
         query = str(t.params.get("query") or "").strip().lower()
         K = camera.intrinsics()
         for i, ob in enumerate(self.mission.planted):
             u, v = camera.ground_to_pixel(ob.pos[0], ob.pos[1], pose, K)
             if not (0 <= u < camera.WIDTH and 0 <= v < camera.HEIGHT):
                 continue
-            if not query or not label_matches(query, ob.label) or (query, i) in self._seen:
+            if (
+                not query
+                or not label_matches(query, ob.label)
+                or (query, i) in self._seen
+            ):
                 continue
             self._seen.add((query, i))
             self._n_cand += 1
             cid = f"c{self._n_cand}"
             r = max(3.0, ob.size_m / 2 / agent.altitude * K[0])
-            gx, gy = camera.pixel_to_ground(round(u), round(v), pose, K)  # what the pixel says
+            gx, gy = camera.pixel_to_ground(
+                round(u), round(v), pose, K
+            )  # what the pixel says
             self.candidates[cid] = {
                 "id": cid, "label": ob.label, "query": query, "event": f"found:{query}",
                 "pos": [round(gx, 2), round(gy, 2)], "image": img_id, "task": t.id,
                 "agent": st.id, "bbox": [round(u - r), round(v - r), round(u + r), round(v + r)],
                 "status": "pending", "sym": None, "t": round(self.t, 2),
             }  # fmt: skip
-            self._log("candidate", candidate=cid, label=ob.label, pos=self.candidates[cid]["pos"])
+            self._log(
+                "candidate",
+                candidate=cid,
+                label=ob.label,
+                pos=self.candidates[cid]["pos"],
+            )
             if self.auto_approve:
                 self.decide(cid, True)
         self._log("image", image=img_id, agent=st.id)
 
-    def annotate(self, img_id: str, bbox, label: str, query: str | None = None, record: bool = True) -> dict:
+    def annotate(
+        self,
+        img_id: str,
+        bbox,
+        label: str,
+        query: str | None = None,
+        record: bool = True,
+    ) -> dict:
         """The operator boxed something in an image: a candidate at the box
         centre's ground point (nadir projection)."""
         c = self.captures[img_id]
@@ -302,30 +346,49 @@ class MissionSim:
             "agent": c["agent"], "bbox": [round(b) for b in bbox], "status": "pending",
             "sym": None, "t": round(self.t, 2), "manual": True,
         }  # fmt: skip
-        self._log("candidate", candidate=cid, label=label, pos=self.candidates[cid]["pos"], manual=True)
+        self._log(
+            "candidate",
+            candidate=cid,
+            label=label,
+            pos=self.candidates[cid]["pos"],
+            manual=True,
+        )
         if record:
-            self.decisions.append({"t": round(self.t, 3), "annotate": [img_id, list(bbox), label, query]})
+            self.decisions.append(
+                {"t": round(self.t, 3), "annotate": [img_id, list(bbox), label, query]}
+            )
         return self.candidates[cid]
 
     def render(self, img_id: str, mosaic) -> bytes:
         c = self.captures[img_id]
-        jpeg, _ = camera.render_nadir(c["pose"], mosaic, [p.model_dump() for p in self.mission.planted])
+        jpeg, _ = camera.render_nadir(
+            c["pose"], mosaic, [p.model_dump() for p in self.mission.planted]
+        )
         return jpeg
 
     # ------------------------------------------------------------ operator
-    def decide(self, cid: str, approve: bool, sym: str | None = None, record: bool = True) -> dict:
+    def decide(
+        self, cid: str, approve: bool, sym: str | None = None, record: bool = True
+    ) -> dict:
         c = self.candidates.get(cid)
         if c is None:
             raise KeyError(cid)
         if c["status"] != "pending":
             # "Add to map" after "Accept": the run-only symbol becomes the map's
-            if approve and sym and c["status"] == "approved" and str(c.get("sym") or "").startswith("sim:"):
+            if (
+                approve
+                and sym
+                and c["status"] == "approved"
+                and str(c.get("sym") or "").startswith("sim:")
+            ):
                 c["sym"] = sym
                 f = self.world.found.get(c["query"])
                 if f is not None and not f.get("sym"):
                     f["sym"] = sym
                 if record:
-                    self.decisions.append({"t": round(self.t, 3), "cid": cid, "approve": True, "sym": sym})
+                    self.decisions.append(
+                        {"t": round(self.t, 3), "cid": cid, "approve": True, "sym": sym}
+                    )
             return c
         c["status"] = "approved" if approve else "rejected"
         if approve:
@@ -335,9 +398,13 @@ class MissionSim:
             ev = c["event"]
             if ev not in self.fired:
                 self.fired.add(ev)
-                self._log("found", query=q, candidate=cid, symbol=c["sym"], pos=c["pos"])
+                self._log(
+                    "found", query=q, candidate=cid, symbol=c["sym"], pos=c["pos"]
+                )
         if record:
-            self.decisions.append({"t": round(self.t, 3), "cid": cid, "approve": approve, "sym": sym})
+            self.decisions.append(
+                {"t": round(self.t, 3), "cid": cid, "approve": approve, "sym": sym}
+            )
         return c
 
     def _apply_decisions_due(self) -> None:
@@ -359,12 +426,21 @@ class MissionSim:
             "t": round(self.t, 2),
             "finished": self.finished,
             "agents": {
-                aid: {"pos": [round(v, 2) for v in st.pos], "yaw": round(st.yaw, 3),
-                      "task": st.task, "status": st.status, "carrying": st.carrying}  # fmt: skip
+                aid: {
+                    "pos": [round(v, 2) for v in st.pos],
+                    "yaw": round(st.yaw, 3),
+                    "task": st.task,
+                    "status": st.status,
+                    "carrying": st.carrying,
+                }  # fmt: skip
                 for aid, st in self.agents.items()
             },
             "tasks": {
-                tid: {"state": s, "times": self.task_times.get(tid), "note": self.task_note.get(tid) or None}
+                tid: {
+                    "state": s,
+                    "times": self.task_times.get(tid),
+                    "note": self.task_note.get(tid) or None,
+                }
                 for tid, s in self.task_state.items()
             },
             "candidates": list(self.candidates.values()),
@@ -412,8 +488,14 @@ class SimRunner:
     def state(self) -> dict:
         with self.lock:
             snap = self.sim.snapshot()
-        return {**snap, "playing": self.playing, "speed": self.speed, "mission": self.mission.id,
-                "kind": self.kind, "revision": self.mission.revision}
+        return {
+            **snap,
+            "playing": self.playing,
+            "speed": self.speed,
+            "mission": self.mission.id,
+            "kind": self.kind,
+            "revision": self.mission.revision,
+        }
 
     def _emit(self) -> None:
         try:
@@ -423,7 +505,9 @@ class SimRunner:
 
     def start_thread(self) -> None:
         if self._thread is None:
-            self._thread = threading.Thread(target=self._run, name=f"sim-{self.mission.id}", daemon=True)
+            self._thread = threading.Thread(
+                target=self._run, name=f"sim-{self.mission.id}", daemon=True
+            )
             self._thread.start()
 
     def _run(self) -> None:

@@ -41,10 +41,24 @@ def _deps(ssh):
 
 
 def test_preflight_route_reports_checks_and_verdicts(settings):
-    ssh = PreflightSSH([("hardware_launch/config/gauss/ouster.yaml", _out(("ouster", "nogo", "Ouster does not answer ping at 203.0.113.99")))])
+    ssh = PreflightSSH(
+        [
+            (
+                "hardware_launch/config/gauss/ouster.yaml",
+                _out(("ouster", "nogo", "Ouster does not answer ping at 203.0.113.99")),
+            )
+        ]
+    )
     client, _ = make_client(settings, launch_deps=_deps(ssh))
     with client:
-        r = client.post("/api/launch/preflight", json={"robots": ["euclid", "gauss"], "session": "spot-default", "experiment": "e"})
+        r = client.post(
+            "/api/launch/preflight",
+            json={
+                "robots": ["euclid", "gauss"],
+                "session": "spot-default",
+                "experiment": "e",
+            },
+        )
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["verdicts"] == {"euclid": "go", "gauss": "nogo"}
@@ -52,13 +66,18 @@ def test_preflight_route_reports_checks_and_verdicts(settings):
     [ouster] = [c for c in data["checks"] if c["name"] == "ouster"]
     assert ouster["machine"] == "gauss" and ouster["hint"]
     # the robots got their own platform's checks
-    assert any("spot_reach" in c for c in ssh.calls) and any("clearpath-platform" in c for c in ssh.calls)
+    assert any("spot_reach" in c for c in ssh.calls) and any(
+        "clearpath-platform" in c for c in ssh.calls
+    )
 
 
 def test_preflight_route_unknown_robot(settings):
     client, _ = make_client(settings, launch_deps=_deps(PreflightSSH()))
     with client:
-        r = client.post("/api/launch/preflight", json={"robots": ["nope"], "session": "s", "experiment": "e"})
+        r = client.post(
+            "/api/launch/preflight",
+            json={"robots": ["nope"], "session": "s", "experiment": "e"},
+        )
     assert r.status_code == 400
 
 
@@ -73,14 +92,21 @@ def _wait_confirm(client, job_id, timeout=10):
 
 
 def test_launch_nogo_needs_confirmation_naming_the_issue(settings):
-    ssh = PreflightSSH(default=_out(("spot_reach", "nogo", "Spot does not answer ping at 203.0.113.3")))
+    ssh = PreflightSSH(
+        default=_out(("spot_reach", "nogo", "Spot does not answer ping at 203.0.113.3"))
+    )
     client, svc = make_client(settings, launch_deps=_deps(ssh))
     with client:
-        job_id = client.post("/api/launch", json={"robots": ["euclid"], "session": "spot-default", "experiment": "e"}).json()["job_id"]
+        job_id = client.post(
+            "/api/launch",
+            json={"robots": ["euclid"], "session": "spot-default", "experiment": "e"},
+        ).json()["job_id"]
         job = _wait_confirm(client, job_id)
         conf = job["confirm"]
         assert conf["kind"] == "preflight_nogo" and conf["yes_label"] == "Launch anyway"
-        assert [(i["machine"], i["name"]) for i in conf["detail"]["issues"]] == [("euclid", "spot_reach")]
+        assert [(i["machine"], i["name"]) for i in conf["detail"]["issues"]] == [
+            ("euclid", "spot_reach")
+        ]
         assert "Spot does not answer ping at 203.0.113.3" in conf["message"]
         client.post(f"/api/jobs/{job_id}/confirm", json={"answer": False})
         job = svc.jobs.wait(job_id).to_dict()

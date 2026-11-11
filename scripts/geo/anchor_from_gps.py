@@ -3,6 +3,7 @@
 
 Run with the spark_env python (no ROS needed).
 """
+
 import argparse
 import csv
 import json
@@ -58,10 +59,13 @@ def load_traj(path):
 
 def quat_to_R(q):
     w, x, y, z = q
-    return np.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
 
 
 def pair_up(fixes, traj, lever, max_dt, min_status, shift_s=0.0):
@@ -99,7 +103,7 @@ def umeyama2d(src, dst, with_scale=False):
     U, S, Vt = np.linalg.svd(H)
     D = np.diag([1, np.sign(np.linalg.det(Vt.T @ U.T))])
     R = Vt.T @ D @ U.T
-    sc = (S * np.diag(D)).sum() / (s ** 2).sum(1).mean() if with_scale else 1.0
+    sc = (S * np.diag(D)).sum() / (s**2).sum(1).mean() if with_scale else 1.0
     t = mu_d - sc * R @ mu_s
     return R, t, sc
 
@@ -128,12 +132,24 @@ def main():
     ap.add_argument("--lever-arm", type=float, nargs=3, default=[-0.22, 0.0, 0.54])
     ap.add_argument("--max-dt", type=float, default=0.2)
     ap.add_argument("--epsg", type=int, default=32618)
-    ap.add_argument("--min-status", type=int, default=2,
-                    help="lowest NavSatFix status used (2 = RTK-corrected; plain fixes, 0, are metres off)")
-    ap.add_argument("--body-height", type=float, default=0.5,
-                    help="trajectory z minus this = ground z in map frame")
-    ap.add_argument("--time-search", type=float, default=2.0,
-                    help="+- seconds of time shift searched as a diagnostic")
+    ap.add_argument(
+        "--min-status",
+        type=int,
+        default=2,
+        help="lowest NavSatFix status used (2 = RTK-corrected; plain fixes, 0, are metres off)",
+    )
+    ap.add_argument(
+        "--body-height",
+        type=float,
+        default=0.5,
+        help="trajectory z minus this = ground z in map frame",
+    )
+    ap.add_argument(
+        "--time-search",
+        type=float,
+        default=2.0,
+        help="+- seconds of time shift searched as a diagnostic",
+    )
     ap.add_argument("--no-plot", action="store_true")
     a = ap.parse_args()
     if a.epsg != 32618:
@@ -147,10 +163,15 @@ def main():
     print(f"fixes: {len(fixes)} ({time.time() - t0:.1f}s, cache {cache})")
     traj = load_traj(a.trajectory)
     lever = np.array(a.lever_arm)
-    print(f"trajectory: {len(traj)} poses, span {(traj[-1, 0] - traj[0, 0]) / 1e9:.0f}s; "
-          f"fix span {(fixes[-1, 0] - fixes[0, 0]) / 1e9:.0f}s; "
-          f"overlap {max(traj[0, 0], fixes[0, 0]) / 1e9:.0f}..{min(traj[-1, 0], fixes[-1, 0]) / 1e9:.0f}")
-    print("status counts:", {int(s): int((fixes[:, 4] == s).sum()) for s in np.unique(fixes[:, 4])})
+    print(
+        f"trajectory: {len(traj)} poses, span {(traj[-1, 0] - traj[0, 0]) / 1e9:.0f}s; "
+        f"fix span {(fixes[-1, 0] - fixes[0, 0]) / 1e9:.0f}s; "
+        f"overlap {max(traj[0, 0], fixes[0, 0]) / 1e9:.0f}..{min(traj[-1, 0], fixes[-1, 0]) / 1e9:.0f}"
+    )
+    print(
+        "status counts:",
+        {int(s): int((fixes[:, 4] == s).sum()) for s in np.unique(fixes[:, 4])},
+    )
 
     mp, up, zs = pair_up(fixes, traj, lever, a.max_dt, a.min_status)
     if len(mp) < 3:
@@ -162,8 +183,10 @@ def main():
     Rs, ts, scs = umeyama2d(mp[keep, :2], up[keep], with_scale=True)
     rs = residuals(Rs, ts, scs, mp[keep, :2], up[keep])
     print(f"pairs {len(mp)} -> kept {int(keep.sum())}")
-    print(f"rigid: yaw {np.degrees(yaw):.3f} deg, t {t}, RMS {np.sqrt((r**2).mean()):.3f} "
-          f"median {np.median(r):.3f} max {r.max():.3f}")
+    print(
+        f"rigid: yaw {np.degrees(yaw):.3f} deg, t {t}, RMS {np.sqrt((r**2).mean()):.3f} "
+        f"median {np.median(r):.3f} max {r.max():.3f}"
+    )
     print(f"with-scale diag: scale {scs:.5f} RMS {np.sqrt((rs**2).mean()):.3f}")
     best = (0.0, np.sqrt((r**2).mean()))
     for sh in np.arange(-a.time_search, a.time_search + 1e-9, 0.25):
@@ -171,7 +194,7 @@ def main():
         if len(m2) < 3:
             continue
         _, _, r2, _ = fit(m2, u2)
-        rms2 = np.sqrt((r2 ** 2).mean())
+        rms2 = np.sqrt((r2**2).mean())
         if rms2 < best[1] - 1e-9:
             best = (float(sh), float(rms2))
     print(f"time-shift search best: shift {best[0]:+.2f}s RMS {best[1]:.3f}")
@@ -182,15 +205,25 @@ def main():
     lon_c, lat_c = utm_to_lonlat(cu[0], cu[1])
     origin = t
     res = {
-        "epsg": a.epsg, "yaw": yaw, "t": [float(t[0]), float(t[1])],
+        "epsg": a.epsg,
+        "yaw": yaw,
+        "t": [float(t[0]), float(t[1])],
         "z0": z0,
         "z0_note": f"median trajectory z minus {a.body_height} m (Spot body height above ground)",
-        "rms": float(np.sqrt((r ** 2).mean())), "median_residual": float(np.median(r)),
-        "max_residual": float(r.max()), "n": int(keep.sum()),
-        "scale_diagnostic": float(scs), "time_shift_best": best[0],
-        "source": {"bag": str(mcap), "topic": a.topic, "trajectory": str(a.trajectory),
-                   "lever_arm": list(a.lever_arm), "max_dt": a.max_dt,
-                   "time": time.strftime("%Y-%m-%dT%H:%M:%S")},
+        "rms": float(np.sqrt((r**2).mean())),
+        "median_residual": float(np.median(r)),
+        "max_residual": float(r.max()),
+        "n": int(keep.sum()),
+        "scale_diagnostic": float(scs),
+        "time_shift_best": best[0],
+        "source": {
+            "bag": str(mcap),
+            "topic": a.topic,
+            "trajectory": str(a.trajectory),
+            "lever_arm": list(a.lever_arm),
+            "max_dt": a.max_dt,
+            "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        },
         "lonlat_center": [float(lon_c), float(lat_c)],
     }
     out.write_text(json.dumps(res, indent=2))
@@ -202,8 +235,10 @@ def main():
 
 def plot(path, R, t, traj, up, epsg):
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
     tu = (R @ traj[:, 1:3].T).T + t
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.plot(up[:, 0], up[:, 1], "b.", ms=3, label="GPS")
@@ -212,6 +247,7 @@ def plot(path, R, t, traj, up, epsg):
     ax.legend()
     try:
         import contextily as cx
+
         cx.add_basemap(ax, crs=f"EPSG:{epsg}", source=cx.providers.Esri.WorldImagery)
     except Exception as e:
         print("basemap unavailable:", e)

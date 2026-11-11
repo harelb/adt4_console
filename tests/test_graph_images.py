@@ -40,11 +40,23 @@ def build_store(store_dir, src):
     for k, v in enumerate((40, 90, 160)):
         f = src / f"{k}.jpg"
         _png_free_jpeg(f, v)
-        fids.append(w.add_frame_ref(sid, k + 1, kind=FrameKind.OBSERVATION, rgb=f, link="copy"))
+        fids.append(
+            w.add_frame_ref(sid, k + 1, kind=FrameKind.OBSERVATION, rgb=f, link="copy")
+        )
     w.bind_track(5, make_node_id("O", 0))
-    w.add_observation(5, fids[0], timestamp_ns=1, score=0.9, kept=True, mask=_mask(), bbox2d=(20, 10, 44, 30))
+    w.add_observation(
+        5,
+        fids[0],
+        timestamp_ns=1,
+        score=0.9,
+        kept=True,
+        mask=_mask(),
+        bbox2d=(20, 10, 44, 30),
+    )
     w.add_observation(5, fids[1], timestamp_ns=2, score=0.4, kept=True)
-    w.add_observation(5, fids[2], timestamp_ns=3, score=0.1, kept=False)  # not kept: no image
+    w.add_observation(
+        5, fids[2], timestamp_ns=3, score=0.1, kept=False
+    )  # not kept: no image
     w.bind_track(6, make_node_id("O", 2))
     w.add_observation(6, fids[2], timestamp_ns=3, score=0.7, kept=True)
     w.close()
@@ -81,7 +93,10 @@ def test_imaged_lists_objects_with_kept_images(gclient):
 def test_node_detail_reports_masks(gclient):
     d = gclient.get("/api/graph/file:syn/node/O(0)").json()
     assert d["n_images"] == 2 and d["masks"] == [True, False]
-    assert [i["kind"] for i in d["image_info"]] == [None, None]  # object images, not agent frames
+    assert [i["kind"] for i in d["image_info"]] == [
+        None,
+        None,
+    ]  # object images, not agent frames
     assert gclient.get("/api/graph/file:syn/node/O(1)").json()["masks"] == []
 
 
@@ -140,12 +155,15 @@ def test_crop_box_square_and_clamped():
 
 
 def test_neo4j_observation_rows_carry_masks(tmp_path):
-    from adt4_console.graph_service import _neo4j_image
     from hydra_image_store.codec import rle_encode
+
+    from adt4_console.graph_service import _neo4j_image
 
     rgb = tmp_path / "f.jpg"
     _png_free_jpeg(rgb, 100)
-    im = _neo4j_image({"p": str(rgb), "rle": rle_encode(_mask()), "bb": [20, 10, 44, 30]})
+    im = _neo4j_image(
+        {"p": str(rgb), "rle": rle_encode(_mask()), "bb": [20, 10, 44, 30]}
+    )
     assert im.has_mask and im.bbox2d == (20, 10, 44, 30)
     assert im.mask(shape=(H, W)).sum() == _mask().sum()
     mp = tmp_path / "m.png"
@@ -165,12 +183,16 @@ def test_live_source_reads_mirror_store(tmp_path):
     src = LiveSource("hamilton", _Live())
     assert src.image_store() is None  # nothing mirrored yet: no images, no error
     assert src.node_detail_extra("O(0)", None) == ({}, [])
-    build_store(tmp_path / "live" / "hamilton" / "s1" / "image_store", tmp_path / "imgs")
+    build_store(
+        tmp_path / "live" / "hamilton" / "s1" / "image_store", tmp_path / "imgs"
+    )
     src._mirror = None  # skip the rescan interval
     _, images = src.node_detail_extra("O(0)", None)
     assert len(images) == 2 and images[0].has_mask
     assert src._imaged_syms() == {"O(0)", "O(2)"}
-    off = LiveSource("hamilton", type("L", (), {"store_root": None, "receiver": None})())
+    off = LiveSource(
+        "hamilton", type("L", (), {"store_root": None, "receiver": None})()
+    )
     assert off.image_store() is None
 
 
@@ -216,8 +238,9 @@ def test_live_source_opens_only_the_current_mirror(tmp_path):
     import os
     import time
 
-    from adt4_console.graph_service import LiveSource
     from hydra_image_store import ImageStore
+
+    from adt4_console.graph_service import LiveSource
 
     old = tmp_path / "live" / "hamilton" / "old" / "image_store"
     build_store(old, tmp_path / "imgs_old")
@@ -236,7 +259,10 @@ def test_live_source_opens_only_the_current_mirror(tmp_path):
 
     live = type("L", (), {"store_root": str(tmp_path / "live"), "receiver": _Rx(new)})()
     src = LiveSource("hamilton", live)
-    assert src.node_detail_extra("O(0)", None) == ({}, [])  # old session's O(0) not shown
+    assert src.node_detail_extra("O(0)", None) == (
+        {},
+        [],
+    )  # old session's O(0) not shown
     live.receiver = _Rx(old)
     src._mirror = None
     _, images = src.node_detail_extra("O(0)", None)
@@ -270,9 +296,13 @@ def test_store_with_sub_keyframes_is_not_opened_nor_modified(tmp_path, caplog):
     s.close()
     with sqlite3.connect(db) as c:
         c.execute("UPDATE frames SET kind = 1 WHERE timestamp_ns = 2")
-    files = sorted(p for p in db.parent.glob("store.sqlite*") if not p.name.endswith("-shm"))
+    files = sorted(
+        p for p in db.parent.glob("store.sqlite*") if not p.name.endswith("-shm")
+    )
     digest = [hashlib.sha256(p.read_bytes()).hexdigest() for p in files]
-    assert needs_convert(run) and needs_convert(run / "image_store") and needs_convert(db)
+    assert (
+        needs_convert(run) and needs_convert(run / "image_store") and needs_convert(db)
+    )
     with caplog.at_level("WARNING"):
         assert open_image_store(run) is None
     assert "hydra-image-store-adt4 convert" in caplog.text

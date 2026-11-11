@@ -10,9 +10,9 @@ labels, labelspace and the region -> place parent edges.
 import msgpack
 import numpy as np
 import pytest
+from fleetlink import codec
 
 from adt4_console.graph_service import FileSource, graph_stats
-from fleetlink import codec
 
 dsg = pytest.importorskip("spark_dsg")
 
@@ -70,10 +70,14 @@ def test_file_source_serves_regions(tmp_path):
 
 def test_region_records_roundtrip_through_delta():
     """Live links: region names and labels survive the delta codec."""
-    rec = codec.NodeRecord(sym="r(4)", layer=4, part=0, pos=(1.0, 2.0, 0.0), label=5, name="road")
+    rec = codec.NodeRecord(
+        sym="r(4)", layer=4, part=0, pos=(1.0, 2.0, 0.0), label=5, name="road"
+    )
     state = codec.GraphState()
     delta = state.diff({rec.sym: rec}, {("r(4)", "P(1)")})
-    back = codec.GraphDelta.decode(msgpack.unpackb(msgpack.packb(delta.encode()), raw=False, strict_map_key=False))
+    back = codec.GraphDelta.decode(
+        msgpack.unpackb(msgpack.packb(delta.encode()), raw=False, strict_map_key=False)
+    )
     (up,) = back.upserts
     assert (up.sym, up.layer, up.name, up.label) == ("r(4)", 4, "road", 5)
     assert ("r(4)", "P(1)") in {tuple(e) for e in back.edges_add}

@@ -214,7 +214,11 @@ class TeleopService:
                 d.sent += 1
         if send:
             self._send(robot, cmd)
-        return {"ok": True, "sent": send, "cmd": {"vx": cmd[0], "vy": cmd[1], "wz": cmd[2]}}
+        return {
+            "ok": True,
+            "sent": send,
+            "cmd": {"vx": cmd[0], "vy": cmd[1], "wz": cmd[2]},
+        }
 
     def release(self, robot: str, owner: str | None, reason: str = "released") -> None:
         """Owner done (socket closed, Stop): zero the robot if it was moving.

@@ -71,7 +71,9 @@ class GeoAnchor:
             "z0": self.z0,
         }
 
-    def local_affine(self, cx: float = 0.0, cy: float = 0.0, span: float = 600.0) -> dict:
+    def local_affine(
+        self, cx: float = 0.0, cy: float = 0.0, span: float = 600.0
+    ) -> dict:
         """Least-squares affine map↔lon/lat around ``(cx, cy)`` (±``span``/2 m),
         for the browser (tile placement, cursor readout); ``max_err_m`` is the
         worst error on the fitting grid (millimetres at this scale)."""
@@ -155,7 +157,9 @@ class TileCache:
                 self.urls.setdefault(name, m["url"])
         self._fetch = fetch or _http_get
         self._lock = threading.Lock()
-        self._failed: dict[str, float] = {}  # url -> time, so a dead link is not hammered
+        self._failed: dict[
+            str, float
+        ] = {}  # url -> time, so a dead link is not hammered
 
     def _manifests(self) -> dict[str, dict]:
         """``tiles.json`` of every layer dir under the root ({} for a dir without one)."""
@@ -178,7 +182,8 @@ class TileCache:
             out.append(
                 {
                     "id": name,
-                    "attribution": manifest.get("attribution") or LAYER_ATTRIBUTION.get(name, ""),
+                    "attribution": manifest.get("attribution")
+                    or LAYER_ATTRIBUTION.get(name, ""),
                     "zmin": manifest.get("zmin"),
                     "zmax": manifest.get("zmax"),
                     "bbox_lonlat": manifest.get("bbox_lonlat"),

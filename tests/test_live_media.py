@@ -180,7 +180,10 @@ FRAME_ALIGN = {
 
 class AlignReceiver(MediaReceiver):
     def state(self, robot):
-        return {"pose": {"x": 1, "y": 2, "z": 3, "frame": "euclid/odom"}, "frame_align": FRAME_ALIGN}
+        return {
+            "pose": {"x": 1, "y": 2, "z": 3, "frame": "euclid/odom"},
+            "frame_align": FRAME_ALIGN,
+        }
 
     def link(self, robot):
         return {**super().link(robot), "frame_align": FRAME_ALIGN}
@@ -193,4 +196,7 @@ def test_frame_align_in_state_and_links(settings):
     with client:
         st = client.get("/api/live/euclid/state").json()
         assert st["frame_align"] == FRAME_ALIGN and st["pose"]["frame"] == "euclid/odom"
-        assert client.get("/api/live").json()["robots"]["euclid"]["frame_align"]["child"] == "euclid/odom"
+        assert (
+            client.get("/api/live").json()["robots"]["euclid"]["frame_align"]["child"]
+            == "euclid/odom"
+        )

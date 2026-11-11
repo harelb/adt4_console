@@ -53,7 +53,9 @@ def _driver(src):
     return src.db().driver
 
 
-def run_read(src, query: str, max_rows: int = MAX_ROWS, timeout_s: float = READ_TIMEOUT_S) -> dict:
+def run_read(
+    src, query: str, max_rows: int = MAX_ROWS, timeout_s: float = READ_TIMEOUT_S
+) -> dict:
     """``{columns, rows, row_count, truncated}`` or ``{error}`` (sent back to the
     model so it can correct the query, like heracles_agents)."""
     import neo4j
@@ -80,7 +82,12 @@ def run_read(src, query: str, max_rows: int = MAX_ROWS, timeout_s: float = READ_
                 "propose_cypher_write so the operator can approve it."
             )
         return {"error": msg[:1500]}
-    return {"columns": cols, "rows": rows, "row_count": len(rows), "truncated": truncated}
+    return {
+        "columns": cols,
+        "rows": rows,
+        "row_count": len(rows),
+        "truncated": truncated,
+    }
 
 
 def run_write(src, query: str, timeout_s: float = WRITE_TIMEOUT_S) -> dict:
@@ -90,7 +97,10 @@ def run_write(src, query: str, timeout_s: float = WRITE_TIMEOUT_S) -> dict:
     @neo4j.unit_of_work(timeout=timeout_s)
     def work(tx):
         res = tx.run(query)
-        rows = [{k: to_jsonable(v) for k, v in rec.items()} for _, rec in zip(range(50), res)]
+        rows = [
+            {k: to_jsonable(v) for k, v in rec.items()}
+            for _, rec in zip(range(50), res)
+        ]
         c = res.consume().counters
         counters = {
             k: getattr(c, k)
@@ -219,18 +229,25 @@ def describe(src) -> str:
         props = ", ".join(sorted(x["k"] for x in keys.get("rows", [])))
         lines.append(f"- {r['l']}: {r['c']}  ({props})")
     rels = run_read(
-        src, "MATCH ()-[r]->() RETURN type(r) AS t, count(*) AS c ORDER BY c DESC", max_rows=40
+        src,
+        "MATCH ()-[r]->() RETURN type(r) AS t, count(*) AS c ORDER BY c DESC",
+        max_rows=40,
     )
     if rels.get("rows"):
         lines.append(
             "Relationships: " + ", ".join(f"{x['t']} ({x['c']})" for x in rels["rows"])
         )
-    ls = run_read(src, "MATCH (l:_Labelspace) RETURN l.layer AS layer, l.names AS names", max_rows=10)
+    ls = run_read(
+        src,
+        "MATCH (l:_Labelspace) RETURN l.layer AS layer, l.names AS names",
+        max_rows=10,
+    )
     for r in ls.get("rows", []):
         names = [n for n in (r.get("names") or []) if n and n != "unknown"]
         if names:
             lines.append(
-                f"Labelspace ({r.get('layer')}): " + ", ".join(names)
+                f"Labelspace ({r.get('layer')}): "
+                + ", ".join(names)
                 + ". Map synonyms to these labels."
             )
     # what is actually there (a labelspace name can have no objects)

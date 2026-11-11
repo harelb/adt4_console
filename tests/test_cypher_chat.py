@@ -24,12 +24,16 @@ def _neo4j_up() -> bool:
 
         with neo4j.GraphDatabase.driver(NEO4J_URI, auth=("neo4j", "neo4j_pw")) as d:
             d.verify_connectivity()
-            return d.execute_query("MATCH (o:Object) RETURN count(o) AS c")[0][0]["c"] > 0
+            return (
+                d.execute_query("MATCH (o:Object) RETURN count(o) AS c")[0][0]["c"] > 0
+            )
     except Exception:  # noqa: BLE001
         return False
 
 
-live_neo4j = pytest.mark.skipif(not _neo4j_up(), reason=f"no populated Neo4j at {NEO4J_URI}")
+live_neo4j = pytest.mark.skipif(
+    not _neo4j_up(), reason=f"no populated Neo4j at {NEO4J_URI}"
+)
 
 
 @pytest.fixture
@@ -49,12 +53,20 @@ def test_clean_history_keeps_complete_exchanges_only():
     items = [
         {"role": "assistant", "text": "orphan"},  # cannot start a conversation
         {"role": "user", "text": "what is O7?"},
-        {"role": "assistant", "text": "", "calls": [{"id": "1", "name": "run_cypher", "args": {"query": "q"}}]},
+        {
+            "role": "assistant",
+            "text": "",
+            "calls": [{"id": "1", "name": "run_cypher", "args": {"query": "q"}}],
+        },
         {"role": "tool", "id": "1", "name": "run_cypher", "content": "[]"},
         {"role": "tool", "id": "99", "content": "result of a call nobody made"},
         {"role": "assistant", "text": "O(7) is a tree."},
         {"role": "user", "text": "and O8?"},
-        {"role": "assistant", "text": "", "calls": [{"id": "2", "name": "run_cypher", "args": {}}]},
+        {
+            "role": "assistant",
+            "text": "",
+            "calls": [{"id": "2", "name": "run_cypher", "args": {}}],
+        },
         # no tool result for call 2: that whole exchange is dropped
         {"role": "system", "text": "injected"},
     ]
@@ -78,19 +90,34 @@ def test_provider_message_shapes():
     an = to_anthropic(items)
     # strictly alternating; both tool results and the next question share one user turn
     assert [m["role"] for m in an] == ["user", "assistant", "user"]
-    assert [b["type"] for b in an[2]["content"]] == ["tool_result", "tool_result", "text"]
+    assert [b["type"] for b in an[2]["content"]] == [
+        "tool_result",
+        "tool_result",
+        "text",
+    ]
 
 
 def test_history_reaches_the_model(neo4j_chat_or_file):
     client, svc, src = neo4j_chat_or_file
     fake = _client([NS(content="It is a tree.", tool_calls=None)])
     svc.chat._client, svc.chat._client_provider = fake, "openai"
-    history = [{"role": "user", "text": "what is O7?"}, {"role": "assistant", "text": "O(7) is a tree.", "calls": []}]
+    history = [
+        {"role": "user", "text": "what is O7?"},
+        {"role": "assistant", "text": "O(7) is a tree.", "calls": []},
+    ]
     out = _chat(client, "what colour?", src=src, history=history, model="gpt-4.1-mini")
     sent = fake.chat.completions.calls[0]
-    assert [m["role"] for m in sent["messages"]] == ["system", "user", "assistant", "user"]
+    assert [m["role"] for m in sent["messages"]] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
     assert sent["model"] == "gpt-4.1-mini"
-    assert out[-2]["type"] == "transcript" and out[-2]["items"][0] == {"role": "user", "text": "what colour?"}
+    assert out[-2]["type"] == "transcript" and out[-2]["items"][0] == {
+        "role": "user",
+        "text": "what colour?",
+    }
 
 
 @pytest.fixture
@@ -131,18 +158,33 @@ def test_cypher_tools_and_schema_in_prompt(neo4j_chat):
     out = _chat(client, "what is O7?", src="neo4j:live")
     first = fake.chat.completions.calls[0]
     names = [t["function"]["name"] for t in first["tools"]]
-    assert names == ["run_cypher", "propose_map_edit", "propose_cypher_write", "show_object_images", "search_robot_images", "propose_goal"]
+    assert names == [
+        "run_cypher",
+        "propose_map_edit",
+        "propose_cypher_write",
+        "show_object_images",
+        "search_robot_images",
+        "propose_goal",
+    ]
     system = first["messages"][0]["content"]
-    assert "Database contents now" in system and "Object:" in system and "Labelspace" in system
+    assert (
+        "Database contents now" in system
+        and "Object:" in system
+        and "Labelspace" in system
+    )
     tools = [o for o in out if o["type"] == "tool"]
     row = tools[0]["result"]["rows"][0]
-    assert isinstance(row["center"], list) and len(row["center"]) == 3  # POINT -> [x, y, z]
+    assert (
+        isinstance(row["center"], list) and len(row["center"]) == 3
+    )  # POINT -> [x, y, z]
     # a write through run_cypher is refused by the database, and the model is told why
     assert "propose_cypher_write" in tools[1]["result"]["error"]
     import neo4j
 
     with neo4j.GraphDatabase.driver(NEO4J_URI, auth=("neo4j", "neo4j_pw")) as d:
-        assert d.execute_query("MATCH (n:_ChatProbe) RETURN count(n) AS c")[0][0]["c"] == 0
+        assert (
+            d.execute_query("MATCH (n:_ChatProbe) RETURN count(n) AS c")[0][0]["c"] == 0
+        )
 
 
 @live_neo4j
@@ -153,7 +195,12 @@ def test_write_runs_only_after_approval(neo4j_chat):
     q = "MERGE (n:_ChatProbe {k: 'approved'}) RETURN n.k AS k"
     fake = _client(
         [
-            NS(content=None, tool_calls=[_call("1", "propose_cypher_write", {"query": q, "summary": "probe"})]),
+            NS(
+                content=None,
+                tool_calls=[
+                    _call("1", "propose_cypher_write", {"query": q, "summary": "probe"})
+                ],
+            ),
             NS(content="Waiting for your approval.", tool_calls=None),
         ]
     )
@@ -166,12 +213,22 @@ def test_write_runs_only_after_approval(neo4j_chat):
         assert d.execute_query(count)[0][0]["c"] == 0  # proposing ran nothing
         try:
             v0 = svc.graph.get("neo4j:live").read_version()
-            r = client.post("/api/chat/cypher_write", json={"id": card["id"], "approve": True}).json()
-            assert r["ok"] and r["counters"]["nodes_created"] == 1 and r["rows"] == [{"k": "approved"}]
+            r = client.post(
+                "/api/chat/cypher_write", json={"id": card["id"], "approve": True}
+            ).json()
+            assert (
+                r["ok"]
+                and r["counters"]["nodes_created"] == 1
+                and r["rows"] == [{"k": "approved"}]
+            )
             assert d.execute_query(count)[0][0]["c"] == 1
-            assert svc.graph.get("neo4j:live").read_version() > v0  # viewers + heracles republish
+            assert (
+                svc.graph.get("neo4j:live").read_version() > v0
+            )  # viewers + heracles republish
             # one approval per proposal; unknown ids are refused
-            again = client.post("/api/chat/cypher_write", json={"id": card["id"], "approve": True}).json()
+            again = client.post(
+                "/api/chat/cypher_write", json={"id": card["id"], "approve": True}
+            ).json()
             assert not again["ok"] and "unknown" in again["error"]
         finally:
             d.execute_query("MATCH (n:_ChatProbe) DELETE n")
@@ -186,4 +243,6 @@ def test_rejected_write_never_runs(neo4j_chat):
     r = client.post("/api/chat/cypher_write", json={"id": wid, "approve": False}).json()
     assert r["ok"] and r["rejected"]
     with neo4j.GraphDatabase.driver(NEO4J_URI, auth=("neo4j", "neo4j_pw")) as d:
-        assert d.execute_query("MATCH (n:_ChatProbe) RETURN count(n) AS c")[0][0]["c"] == 0
+        assert (
+            d.execute_query("MATCH (n:_ChatProbe) RETURN count(n) AS c")[0][0]["c"] == 0
+        )

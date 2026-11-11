@@ -29,8 +29,16 @@ def _robot_store(root, n):
         ids.append(
             # anchored at its own agent node (identity offset): an own keyframe, which
             # fleetlink's default keyframes mode sends
-            w.add_frame_ref(sid, ts, kind=FrameKind.KEYFRAME, rgb=rp, depth=dp, link="copy",
-                            anchor_node_id=make_node_id("a", i), anchor_T_body=np.eye(4))
+            w.add_frame_ref(
+                sid,
+                ts,
+                kind=FrameKind.KEYFRAME,
+                rgb=rp,
+                depth=dp,
+                link="copy",
+                anchor_node_id=make_node_id("a", i),
+                anchor_T_body=np.eye(4),
+            )
         )
     w.close()
     return ids
@@ -127,4 +135,7 @@ def test_store_send_route_switches_the_mirror(settings, tmp_path):
         client.post("/api/live/hamilton/store_send", json={"enabled": False})
         run(20)
         assert core.store_send is False
-        assert client.get("/api/live").json()["robots"]["hamilton"]["store_send"]["robot"] is False
+        assert (
+            client.get("/api/live").json()["robots"]["hamilton"]["store_send"]["robot"]
+            is False
+        )

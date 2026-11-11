@@ -8,13 +8,11 @@ import subprocess
 import types
 
 import pytest
-
 from dcist_launch_system import fleet_helpers
 from dcist_launch_system.fleet import run_identity as ri
+from ruamel.yaml import YAML
 
 from adt4_console.routes import maps as maps_route
-
-from ruamel.yaml import YAML
 
 from .conftest import TOPOLOGY, make_client
 from .test_launch_topology import FakeSSH
@@ -22,7 +20,9 @@ from .test_maps_listing import make_store
 
 # hamilton's address on the network the fake fleet detects (mit_wifi), from the real
 # topology so an address change there does not break these tests
-HAMILTON_IP = YAML(typ="safe").load(TOPOLOGY.read_text())["machines"]["hamilton"]["addresses"]["mit_wifi"]
+HAMILTON_IP = YAML(typ="safe").load(TOPOLOGY.read_text())["machines"]["hamilton"][
+    "addresses"
+]["mit_wifi"]
 
 
 @pytest.fixture(autouse=True)
@@ -55,17 +55,27 @@ class Fleet:
 
     def ssh_cmd(self, user, ip, cmd, timeout=5):
         env = dict(os.environ, HOME=str(self.home(ip)))
-        r = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=timeout + 30, env=env)
+        r = subprocess.run(
+            ["sh", "-c", cmd],
+            capture_output=True,
+            text=True,
+            timeout=timeout + 30,
+            env=env,
+        )
         return r.returncode, r.stdout.strip(), r.stderr.strip()
 
     def _expand(self, ip, path):
         return str(self.home(ip) / path[2:]) if path.startswith("~/") else path
 
-    def rsync_transfer(self, su, sip, spath, du, dip, dpath, exclude=None, progress_callback=None, **_):
+    def rsync_transfer(
+        self, su, sip, spath, du, dip, dpath, exclude=None, progress_callback=None, **_
+    ):
         self.rsyncs.append((sip, spath, dip, dpath))
         src, dst = self._expand(sip, spath), self._expand(dip, dpath)
         pathlib.Path(dst).mkdir(parents=True, exist_ok=True)
-        cmd = ["rsync", "-a"] + [x for pat in (exclude or []) for x in ("--exclude", pat)]
+        cmd = ["rsync", "-a"] + [
+            x for pat in (exclude or []) for x in ("--exclude", pat)
+        ]
         r = subprocess.run(cmd + [src + "/", dst + "/"], capture_output=True, text=True)
         return r.returncode == 0, "direct", r.stderr
 
@@ -114,10 +124,14 @@ def _transfer(c, svc, **kw):
 def test_transfer_names_copy_and_second_transfer_is_noop(settings, fleet):
     run = make_run(fleet.root(HAMILTON_IP), "map_x", robot="hamilton")
     rid = ri.read_run_info(run)["run_id"]
-    make_run(fleet.root(), "map_x", robot="local")  # the base's own run, same experiment
+    make_run(
+        fleet.root(), "map_x", robot="local"
+    )  # the base's own run, same experiment
     c, svc = make_client(settings, helpers=fleet.helpers())
     with c:
-        plan = c.get("/api/maps/transfer/plan", params={"src": "hamilton", "experiment": "map_x"}).json()
+        plan = c.get(
+            "/api/maps/transfer/plan", params={"src": "hamilton", "experiment": "map_x"}
+        ).json()
         assert plan["status"] == "new" and plan["dest_name"] == "map_x__hamilton"
         job = _transfer(c, svc)
         assert job["result"]["dest_name"] == "map_x__hamilton"
@@ -135,7 +149,10 @@ def test_transfer_names_copy_and_second_transfer_is_noop(settings, fleet):
         assert any("Already up to date" in line["text"] for line in job["log"])
         # forced: copies again into the same dir
         job = _transfer(c, svc, force=True)
-        assert job["result"]["dest_name"] == "map_x__hamilton" and len(fleet.rsyncs) == n + 1
+        assert (
+            job["result"]["dest_name"] == "map_x__hamilton"
+            and len(fleet.rsyncs) == n + 1
+        )
 
         # robot changes the run → listing says outdated, transfer updates in place
         body = c.get("/api/maps").json()
@@ -146,7 +163,9 @@ def test_transfer_names_copy_and_second_transfer_is_noop(settings, fleet):
         body = c.get("/api/maps").json()
         ham = {e["name"]: e for e in body["machines"]["hamilton"]}
         assert ham["map_x"]["copy"]["state"] == "outdated"
-        plan = c.get("/api/maps/transfer/plan", params={"src": "hamilton", "experiment": "map_x"}).json()
+        plan = c.get(
+            "/api/maps/transfer/plan", params={"src": "hamilton", "experiment": "map_x"}
+        ).json()
         assert plan["status"] == "update" and plan["state"] == "outdated"
         job = _transfer(c, svc)
         assert job["result"]["status"] == "update"
@@ -166,8 +185,12 @@ def test_collision_picks_suffix_and_never_overwrites(settings, fleet):
     other_id = ri.read_run_info(other)["run_id"]
     c, svc = make_client(settings, helpers=fleet.helpers())
     with c:
-        plan = c.get("/api/maps/transfer/plan", params={"src": "hamilton", "experiment": "map_x"}).json()
-        assert plan["status"] == "collision" and plan["dest_name"] == "map_x__hamilton__2"
+        plan = c.get(
+            "/api/maps/transfer/plan", params={"src": "hamilton", "experiment": "map_x"}
+        ).json()
+        assert (
+            plan["status"] == "collision" and plan["dest_name"] == "map_x__hamilton__2"
+        )
         assert "holds a different run" in plan["note"]
         job = _transfer(c, svc)
     assert job["result"]["dest_name"] == "map_x__hamilton__2"
@@ -194,7 +217,9 @@ def test_store_repacked_only_when_changed(settings, fleet, monkeypatch):
         (run / "roman" / "2.pkl").write_bytes(b"x")  # map files change, store does not
         job = _transfer(c, svc, **kw)
         assert len(packs) == 1 and job["result"]["image_store"] == "unchanged"
-        job = _transfer(c, svc, images="all", compression="lossless")  # settings changed
+        job = _transfer(
+            c, svc, images="all", compression="lossless"
+        )  # settings changed
         assert len(packs) == 2
 
 
@@ -208,7 +233,10 @@ def test_legacy_copy_matched_by_contents(settings, fleet):
         ham = {e["name"]: e for e in body["machines"]["hamilton"]}
         assert ham["old_run"]["copy"]["state"] == "in_sync"
         assert ham["old_run"]["copy"]["matched_by"] == "contents"
-        plan = c.get("/api/maps/transfer/plan", params={"src": "hamilton", "experiment": "old_run"}).json()
+        plan = c.get(
+            "/api/maps/transfer/plan",
+            params={"src": "hamilton", "experiment": "old_run"},
+        ).json()
         assert plan["dest_name"] == "old_run" and plan["status"] == "update"
         job = _transfer(c, svc, experiment="old_run")  # adopts the copy, writes origin
         assert job["result"]["dest_name"] == "old_run"
@@ -231,11 +259,16 @@ def test_listing_not_copied_and_verify_uses_pairing(settings, fleet):
             svc,
             c.post(
                 "/api/maps/verify",
-                json={"experiment": "solo", "names": {"hamilton": "solo", "local": "solo__hamilton"}},
+                json={
+                    "experiment": "solo",
+                    "names": {"hamilton": "solo", "local": "solo__hamilton"},
+                },
             ).json()["job_id"],
         )
     assert job["state"] == "succeeded"
-    assert sorted(fleet.hashed) == sorted([("127.0.0.1", "solo__hamilton"), (HAMILTON_IP, "solo")])
+    assert sorted(fleet.hashed) == sorted(
+        [("127.0.0.1", "solo__hamilton"), (HAMILTON_IP, "solo")]
+    )
 
 
 # --- launch → prior in the viewer ---------------------------------------------
@@ -245,17 +278,28 @@ def _launch_deps():
     from dcist_launch_system.fleet.launch_workflow import LaunchDeps
 
     ssh = FakeSSH([("tmux has-session", (1, "", ""))])
-    return LaunchDeps(ssh=ssh, rsync=lambda *a, **k: (True, "direct", "ok"), sleep=lambda s: None)
+    return LaunchDeps(
+        ssh=ssh, rsync=lambda *a, **k: (True, "direct", "ok"), sleep=lambda s: None
+    )
 
 
 def _launch(c, svc, **plan):
-    body = {"robots": ["euclid"], "session": "spot-default", "experiment": "reloc_1", "mode": "relocalize", "preflight": False, **plan}
+    body = {
+        "robots": ["euclid"],
+        "session": "spot-default",
+        "experiment": "reloc_1",
+        "mode": "relocalize",
+        "preflight": False,
+        **plan,
+    }
     job = _wait(svc, c.post("/api/launch", json=body).json()["job_id"])
     assert job["state"] == "succeeded", job["log"]
     return job
 
 
-def test_launch_registers_base_copy_of_prior_and_survives_restart(settings, fleet, tmp_path):
+def test_launch_registers_base_copy_of_prior_and_survives_restart(
+    settings, fleet, tmp_path
+):
     settings.launch_state_path = str(tmp_path / "state" / "active_launch.json")
     run = make_run(fleet.root(HAMILTON_IP), "map_x", robot="hamilton")
     c, svc = make_client(settings, helpers=fleet.helpers(), launch_deps=_launch_deps())
@@ -263,21 +307,30 @@ def test_launch_registers_base_copy_of_prior_and_survives_restart(settings, flee
         _transfer(c, svc)  # base copy map_x__hamilton
         # launch with the robot's original as the prior: the base copy is what the viewer shows
         job = _launch(c, svc, prior_path="~/adt4_output/map_x", prior_source="hamilton")
-        assert any("viewer: prior: map_x (hamilton)" in line["text"] for line in job["log"])
+        assert any(
+            "viewer: prior: map_x (hamilton)" in line["text"] for line in job["log"]
+        )
         active = c.get("/api/launch/active").json()
         sid = "file:prior:map_x__hamilton"
         assert active["default_sources"] == [sid, "live:euclid"]
-        assert active["active"]["prior"]["local_path"] == str(fleet.root() / "map_x__hamilton")
+        assert active["active"]["prior"]["local_path"] == str(
+            fleet.root() / "map_x__hamilton"
+        )
         srcs = {s["id"]: s for s in c.get("/api/graph/sources").json()}
         assert srcs[sid]["label"] == "prior: map_x (hamilton)"
     assert run.is_dir()
     # console restart mid-run: the association and the source come back
     c2, svc2 = make_client(settings, helpers=fleet.helpers())
     with c2:
-        assert c2.get("/api/launch/active").json()["default_sources"] == [sid, "live:euclid"]
+        assert c2.get("/api/launch/active").json()["default_sources"] == [
+            sid,
+            "live:euclid",
+        ]
         assert sid in {s["id"] for s in c2.get("/api/graph/sources").json()}
     # a launch without a prior replaces the association
-    c3, svc3 = make_client(settings, helpers=fleet.helpers(), launch_deps=_launch_deps())
+    c3, svc3 = make_client(
+        settings, helpers=fleet.helpers(), launch_deps=_launch_deps()
+    )
     with c3:
         _launch(c3, svc3, mode="mapping")
         assert c3.get("/api/launch/active").json()["default_sources"] == ["live:euclid"]
@@ -288,14 +341,19 @@ def test_launch_prior_only_on_robot_is_pending_until_copied(settings, fleet):
     c, svc = make_client(settings, helpers=fleet.helpers(), launch_deps=_launch_deps())
     with c:
         job = _launch(c, svc, prior_path="~/adt4_output/map_x", prior_source="hamilton")
-        assert any("prior not on this machine yet" in line["text"] for line in job["log"])
+        assert any(
+            "prior not on this machine yet" in line["text"] for line in job["log"]
+        )
         active = c.get("/api/launch/active").json()
         assert active["active"]["prior"]["pending"] is True
         assert active["default_sources"] == ["live:euclid"]
         job = _transfer(c, svc)
         assert any("now in the viewer" in line["text"] for line in job["log"])
         active = c.get("/api/launch/active").json()
-        assert active["default_sources"] == ["file:prior:map_x__hamilton", "live:euclid"]
+        assert active["default_sources"] == [
+            "file:prior:map_x__hamilton",
+            "live:euclid",
+        ]
 
 
 def test_launch_with_local_prior(settings, fleet):

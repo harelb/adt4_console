@@ -35,7 +35,9 @@ class QuadLink:
         self._ctx = None
         self._push = None
         self._req = None
-        self.last_image: dict | None = None  # header of the newest image (pose = telemetry)
+        self.last_image: dict | None = (
+            None  # header of the newest image (pose = telemetry)
+        )
         self.last_command: dict | None = None
 
     @property
@@ -107,7 +109,9 @@ class QuadLink:
             try:
                 push.send_pyobj(cmd, flags=zmq.NOBLOCK)
             except zmq.Again:
-                raise QuadUnavailable("the quad is not connected to the command socket") from None
+                raise QuadUnavailable(
+                    "the quad is not connected to the command socket"
+                ) from None
         self.last_command = {"map": [x, y], "quad": cmd, "t": time.time()}
         return {"ok": True, "sent": cmd}
 
@@ -133,7 +137,9 @@ class QuadLink:
                 self._req.close()
                 self._req = None
             else:
-                raise QuadUnavailable(f"quad image server {self.image_uri} not answering")
+                raise QuadUnavailable(
+                    f"quad image server {self.image_uri} not answering"
+                )
         header, jpeg = protocol.parse_image_reply(frames)
         if jpeg is None:
             raise QuadUnavailable(f"quad image server: {header.get('error')}")

@@ -107,7 +107,9 @@ def render(img, w: int | None = None, mask: bool = False, crop: bool = False) ->
     if w:
         w = max(MIN_W, min(MAX_W, int(w)))
         if w < out.width:
-            out = out.resize((w, max(1, round(out.height * w / out.width))), Image.LANCZOS)
+            out = out.resize(
+                (w, max(1, round(out.height * w / out.width))), Image.LANCZOS
+            )
     buf = io.BytesIO()
     out.save(buf, "JPEG", quality=85)
     return buf.getvalue()

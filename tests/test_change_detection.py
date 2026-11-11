@@ -4,7 +4,12 @@ from adt4_console.routes.change_detection import relocalized
 
 from .conftest import make_client
 
-FA_OK = {"parent": "map", "child": "euclid/odom", "ok": True, "T": [0, 0, 0, 1, 0, 0, 0]}
+FA_OK = {
+    "parent": "map",
+    "child": "euclid/odom",
+    "ok": True,
+    "T": [0, 0, 0, 1, 0, 0, 0],
+}
 
 
 def test_relocalized_verdicts():
@@ -12,12 +17,27 @@ def test_relocalized_verdicts():
     assert "older agent" in relocalized({"pose": {}})["reason"]
     assert not relocalized({"frame_align": {**FA_OK, "ok": False}})["ok"]
     assert not relocalized({"frame_align": {**FA_OK, "child": "map"}})["ok"]
-    assert relocalized({"frame_align": FA_OK})["ok"]  # no ROMAN info: the transform decides
+    assert relocalized({"frame_align": FA_OK})[
+        "ok"
+    ]  # no ROMAN info: the transform decides
     no_match = relocalized({"frame_align": FA_OK, "reloc": {"prior_lcs": 0}})
     assert not no_match["ok"] and "no prior-map match" in no_match["reason"]
-    ok = relocalized({"frame_align": FA_OK, "reloc": {"prior_lcs": 3, "recent_jumps": [{"dxy": 4.0, "dyaw": 1}]}})
+    ok = relocalized(
+        {
+            "frame_align": FA_OK,
+            "reloc": {"prior_lcs": 3, "recent_jumps": [{"dxy": 4.0, "dyaw": 1}]},
+        }
+    )
     assert ok["ok"] and "3 prior-map matches" in ok["reason"]
-    sus = relocalized({"frame_align": FA_OK, "reloc": {"prior_lcs": 3, "recent_jumps": [{"dxy": 4, "dyaw": 0}, {"dxy": 0.1, "dyaw": 45}]}})
+    sus = relocalized(
+        {
+            "frame_align": FA_OK,
+            "reloc": {
+                "prior_lcs": 3,
+                "recent_jumps": [{"dxy": 4, "dyaw": 0}, {"dxy": 0.1, "dyaw": 45}],
+            },
+        }
+    )
     assert not sus["ok"] and "suspect" in sus["reason"]
 
 
@@ -36,7 +56,11 @@ class FakeRos:
 
     def change_detection_cmd(self, robot, cmd):
         self.calls.append((robot, cmd))
-        return {"ok": True, "cmd": cmd, "message": {"start": "started", "reset": "reset requested"}.get(cmd, cmd)}
+        return {
+            "ok": True,
+            "cmd": cmd,
+            "message": {"start": "started", "reset": "reset requested"}.get(cmd, cmd),
+        }
 
     def clear_change_detection(self, robots):
         return {"ok": True, "robots": robots}
@@ -55,16 +79,28 @@ def test_routes_gate_start_until_relocalized(settings):
         assert r.status_code == 409 and r.json()["not_relocalized"] and ros.calls == []
         # stop / reset are never gated
         assert client.post("/api/robots/euclid/change_detection/stop").json()["ok"]
-        r = client.post("/api/robots/euclid/change_detection/reset_start", json={"override": True}).json()
-        assert r["ok"] and r["override"] and ros.calls[-2:] == [("euclid", "reset"), ("euclid", "start")]
+        r = client.post(
+            "/api/robots/euclid/change_detection/reset_start", json={"override": True}
+        ).json()
+        assert (
+            r["ok"]
+            and r["override"]
+            and ros.calls[-2:] == [("euclid", "reset"), ("euclid", "start")]
+        )
         states["euclid"]["reloc"]["prior_lcs"] = 2
         r = client.post("/api/robots/euclid/change_detection/start", json={}).json()
         assert r["ok"] and not r["override"] and ros.calls[-1] == ("euclid", "start")
-        assert client.post("/api/robots/euclid/change_detection/bogus").status_code == 404
-        assert client.post("/api/change_detection/clear", json={"robots": ["euclid"]}).json()["robots"] == ["euclid"]
+        assert (
+            client.post("/api/robots/euclid/change_detection/bogus").status_code == 404
+        )
+        assert client.post(
+            "/api/change_detection/clear", json={"robots": ["euclid"]}
+        ).json()["robots"] == ["euclid"]
 
 
 def test_ros_off_is_503(settings):
     client, svc = make_client(settings)
     with client:
-        assert client.post("/api/robots/euclid/change_detection/stop").status_code == 503
+        assert (
+            client.post("/api/robots/euclid/change_detection/stop").status_code == 503
+        )

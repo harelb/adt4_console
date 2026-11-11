@@ -85,7 +85,12 @@ def _pack_blob(tile: dict) -> Blob:
 class TileProducts:
     """Every (tile key, level) blob of one tiled mesh, plus the manifest rows."""
 
-    def __init__(self, signature: str, levels: tuple[int, ...], blobs: dict[tuple[str, int], Blob]):
+    def __init__(
+        self,
+        signature: str,
+        levels: tuple[int, ...],
+        blobs: dict[tuple[str, int], Blob],
+    ):
         self.signature = signature
         self.levels = levels
         self.blobs = blobs
@@ -103,11 +108,19 @@ class TileProducts:
             b = self._bundles.get(level)
             if b is not None or level not in self.levels:
                 return b
-            parts = [gzip.decompress(bl.gz) for (_, lv), bl in sorted(self.blobs.items()) if lv == level]
+            parts = [
+                gzip.decompress(bl.gz)
+                for (_, lv), bl in sorted(self.blobs.items())
+                if lv == level
+            ]
             if not parts:
                 return None
             n = len(parts)
-            head = bytes([0xDC]) + n.to_bytes(2, "big") if n < 65536 else bytes([0xDD]) + n.to_bytes(4, "big")
+            head = (
+                bytes([0xDC]) + n.to_bytes(2, "big")
+                if n < 65536
+                else bytes([0xDD]) + n.to_bytes(4, "big")
+            )
             raw = head + b"".join(parts)  # each part is already a msgpack map
             b = Blob(gzip_bytes(raw), len(raw), f"{self.signature[:12]}b{level}e{_codec().PACKED_TILE_ENCODING}",
                      sum(bl.nf for (_, lv), bl in self.blobs.items() if lv == level))  # fmt: skip
@@ -122,7 +135,13 @@ class TileProducts:
             for lv in self.levels:
                 b = self.blobs.get((k, lv))
                 lod.append([len(b.gz), b.etag] if b is not None else None)
-            out[k] = {"hash": t["hash"], "nv": t["nv"], "nf": t["nf"], "origin": t["origin"], "lod": lod}
+            out[k] = {
+                "hash": t["hash"],
+                "nv": t["nv"],
+                "nf": t["nf"],
+                "origin": t["origin"],
+                "lod": lod,
+            }
         return out
 
     def total_bytes(self, level: int) -> int:
@@ -141,15 +160,28 @@ class TileProducts:
         jobs = []
         for lv in levels:
             cell = LODS[lv]["cell"]
-            lt = codec.decimate_tiles(tiles, cell) if cell else {k: t for k, t in tiles.items() if t.get("nf")}
+            lt = (
+                codec.decimate_tiles(tiles, cell)
+                if cell
+                else {k: t for k, t in tiles.items() if t.get("nf")}
+            )
             for k, t in lt.items():
                 old = prev.blobs.get((k, lv)) if prev is not None else None
-                jobs.append((k, lv, t, old if old is not None and old.etag == _tile_etag(t) else None))
+                jobs.append(
+                    (
+                        k,
+                        lv,
+                        t,
+                        old if old is not None and old.etag == _tile_etag(t) else None,
+                    )
+                )
         todo = [(k, lv, t) for k, lv, t, old in jobs if old is None]
         blobs = {(k, lv): old for k, lv, _, old in jobs if old is not None}
         if todo:
             with ThreadPoolExecutor(max(1, min(workers, len(todo)))) as ex:
-                for (k, lv, _), b in zip(todo, ex.map(lambda j: _pack_blob(j[2]), todo)):
+                for (k, lv, _), b in zip(
+                    todo, ex.map(lambda j: _pack_blob(j[2]), todo)
+                ):
                     blobs[(k, lv)] = b
         log.info("mesh LODs: %d tiles × %d levels (%d packed) in %.2fs", len(tiles), len(levels),
                  len(todo), time.time() - t0)  # fmt: skip
@@ -216,7 +248,9 @@ class MeshDiskCache:
         threading.Thread(target=run, name="mesh-cache-write", daemon=True).start()
 
     def _prune(self) -> None:
-        files = sorted(self.root.glob("*.msgpack"), key=lambda p: p.stat().st_mtime, reverse=True)
+        files = sorted(
+            self.root.glob("*.msgpack"), key=lambda p: p.stat().st_mtime, reverse=True
+        )
         for p in files[DISK_KEEP:]:
             try:
                 p.unlink()

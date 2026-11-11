@@ -60,14 +60,20 @@ def add_object(src, label: str, pos, *, size_m: float = 1.5, image_path: str | N
         src.invalidate()
     except Exception:  # noqa: BLE001
         pass
-    return {"sym": sym, "map_version": out.get("state_version"), "mutation_id": out.get("mutation_id")}
+    return {
+        "sym": sym,
+        "map_version": out.get("state_version"),
+        "mutation_id": out.get("mutation_id"),
+    }
 
 
 def _legacy_create(db, label, x, y, z, size_m, stamp_ns, source):
     """Pre-graph_edit path (no audit / undo): symbol, labelspace append, node, counters."""
     from ..routes.maps import bump_map_counters
 
-    rows, _, _ = db.execute("MATCH (l:_Labelspace {layer: 'object'}) RETURN l.ids AS ids, l.names AS names")
+    rows, _, _ = db.execute(
+        "MATCH (l:_Labelspace {layer: 'object'}) RETURN l.ids AS ids, l.names AS names"
+    )
     if rows and label not in (rows[0]["names"] or []):
         ids, names = list(rows[0]["ids"] or []), list(rows[0]["names"] or [])
         db.execute("MATCH (l:_Labelspace {layer: 'object'}) SET l.ids = $ids, l.names = $names",

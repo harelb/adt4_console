@@ -33,7 +33,9 @@ def _bridge(topo=TOPO):
 
 
 def _pose(x, y, z=0.0):
-    return types.SimpleNamespace(pose=types.SimpleNamespace(position=types.SimpleNamespace(x=x, y=y, z=z)))
+    return types.SimpleNamespace(
+        pose=types.SimpleNamespace(position=types.SimpleNamespace(x=x, y=y, z=z))
+    )
 
 
 def _path(poses, sec=1761100000, nanosec=5000):
@@ -49,7 +51,10 @@ def test_platform_rule():
     assert [rb.platform(r) for r in ("hamilton", "euclid", "gauss", "lewis", "nobody")] == [
         "spot", "spot", "phoenix", "phoenix", "spot",
     ]  # fmt: skip
-    assert RosBridge(types.SimpleNamespace(ros=False, planner_ns="w")).platform("gauss") == "spot"
+    assert (
+        RosBridge(types.SimpleNamespace(ros=False, planner_ns="w")).platform("gauss")
+        == "spot"
+    )
     with pytest.raises(NotSupported, match="stand is spot only"):
         rb.require_spot("gauss", "stand")
     rb.require_spot("euclid", "stand")
@@ -115,7 +120,10 @@ def test_spot_subscriptions_unchanged(fake_types):
     rb.node = FakeNode()
     rb._subscribe_robot("hamilton")
     subs = dict((t, c) for c, t in rb.node.subs)
-    assert subs["/hamilton/omniplanner_node/compiled_plan_out"] == "robot_executor_msgs/msg/ActionSequenceMsg"
+    assert (
+        subs["/hamilton/omniplanner_node/compiled_plan_out"]
+        == "robot_executor_msgs/msg/ActionSequenceMsg"
+    )
     for t in (
         "/hamilton/spot_executor_node/action_result",
         "/hamilton/spot_executor/action_result",
@@ -146,7 +154,11 @@ def _calls(rb, monkeypatch, res=None, exc=None):
         return {"success": True, "message": ""} if res is None else res
 
     monkeypatch.setattr(rb, "call_service", call_service)
-    monkeypatch.setattr(rb, "publish", lambda *a, **k: pytest.fail("phoenix publishes no executor topic"))
+    monkeypatch.setattr(
+        rb,
+        "publish",
+        lambda *a, **k: pytest.fail("phoenix publishes no executor topic"),
+    )
     return calls
 
 
@@ -155,8 +167,14 @@ def test_phoenix_stop_resume_toggle_manual_mode(monkeypatch, cmd, data):
     rb = _bridge()
     calls = _calls(rb, monkeypatch)
     out = rb.executor_cmd("gauss", cmd)
-    assert calls == [("/gauss/toggle_manual_mode", "std_srvs/srv/SetBool", {"data": data})]
-    assert out["ok"] and out["manual_mode"] is data and out["service"] == "/gauss/toggle_manual_mode"
+    assert calls == [
+        ("/gauss/toggle_manual_mode", "std_srvs/srv/SetBool", {"data": data})
+    ]
+    assert (
+        out["ok"]
+        and out["manual_mode"] is data
+        and out["service"] == "/gauss/toggle_manual_mode"
+    )
 
 
 def test_phoenix_pause_not_supported(monkeypatch):
@@ -169,11 +187,17 @@ def test_phoenix_pause_not_supported(monkeypatch):
 
 def test_phoenix_toggle_failures(monkeypatch):
     rb = _bridge()
-    _calls(rb, monkeypatch, exc=TimeoutError("service /gauss/toggle_manual_mode not available"))
+    _calls(
+        rb,
+        monkeypatch,
+        exc=TimeoutError("service /gauss/toggle_manual_mode not available"),
+    )
     out = rb.executor_cmd("gauss", "stop")
     assert not out["ok"] and "not available" in out["error"]
     rb = _bridge()
-    _calls(rb, monkeypatch, res={"success": False, "message": ""})  # relay's default response
+    _calls(
+        rb, monkeypatch, res={"success": False, "message": ""}
+    )  # relay's default response
     out = rb.executor_cmd("gauss", "stop")
     assert not out["ok"] and "no answer" in out["error"]
 
@@ -190,7 +214,12 @@ def test_phoenix_fleetlink_mode(monkeypatch):
     calls = _calls(rb, monkeypatch)
     _feed(rb, "gauss")  # relay.yaml without the phoenix service row
     out = rb.executor_cmd("gauss", "stop")
-    assert out == {**out, "ok": False, "error": "service not relayed", "via": "fleetlink"}
+    assert out == {
+        **out,
+        "ok": False,
+        "error": "service not relayed",
+        "via": "fleetlink",
+    }
     assert calls == []  # failed at once, no 10 s wait
     _feed(rb, "gauss", services={"/gauss/toggle_manual_mode": {"dir": "down"}})
     out = rb.executor_cmd("gauss", "stop")
@@ -215,7 +244,9 @@ def test_spot_fleetlink_delivered_to_nobody_is_not_ok(monkeypatch):
     topic = "/euclid/spot_executor_node/pause"
     monkeypatch.setattr(rb, "publish", lambda *a, **k: 1)
     _feed(rb, "euclid", topics={topic: {"acked": 0, "subs": 0}})
-    threading.Timer(0.1, lambda: _feed(rb, "euclid", topics={topic: {"acked": 1, "subs": 0}})).start()
+    threading.Timer(
+        0.1, lambda: _feed(rb, "euclid", topics={topic: {"acked": 1, "subs": 0}})
+    ).start()
     out = rb.executor_cmd("euclid", "pause", deliver_timeout=3.0)
     assert out["delivered"] and out["subscribers"] == 0 and out["ok"] is False
     assert "on euclid" in out["error"]
@@ -227,7 +258,9 @@ def test_spot_fleetlink_delivered_to_nobody_is_not_ok(monkeypatch):
 # ---------------------------------------------------------------- teleop
 def test_teleop_table_phoenix_twist_stamped():
     sent = []
-    svc = ts.TeleopService(lambda topic, t, f: sent.append((topic, t, f)), platform_of=_bridge().platform)
+    svc = ts.TeleopService(
+        lambda topic, t, f: sent.append((topic, t, f)), platform_of=_bridge().platform
+    )
     out = svc.command("gauss", "a", 9, 9, -9)
     assert out["cmd"] == {"vx": 1.0, "vy": 0.0, "wz": -1.2}  # Husky caps, no strafe
     topic, mtype, fields = sent[-1]
@@ -247,7 +280,10 @@ def test_teleop_table_phoenix_twist_stamped():
     assert sent[-1] == (
         "/hamilton/spot_executor_node/cmd_vel",
         "geometry_msgs/msg/Twist",
-        {"linear": {"x": 1.6, "y": 0.4, "z": 0.0}, "angular": {"x": 0.0, "y": 0.0, "z": 0.8}},
+        {
+            "linear": {"x": 1.6, "y": 0.4, "z": 0.0},
+            "angular": {"x": 0.0, "y": 0.0, "z": 0.8},
+        },
     )
     assert svc.caps("hamilton") == ts.CAPS
 
@@ -258,7 +294,9 @@ def app(settings, monkeypatch):
     client, svc = make_client(settings)
     sent, calls = [], []
     monkeypatch.setattr(svc.ros, "available", True)
-    monkeypatch.setattr(svc.ros, "publish_now", lambda topic, t, f: sent.append((topic, t, f)))
+    monkeypatch.setattr(
+        svc.ros, "publish_now", lambda topic, t, f: sent.append((topic, t, f))
+    )
     monkeypatch.setattr(svc.ros, "ensure_robot", lambda r: None)
     monkeypatch.setattr(svc.ros, "link_status", lambda r: None)
 
@@ -302,16 +340,25 @@ def test_teleop_view_and_robots_carry_platform(app):
     d = client.get("/api/robots/hamilton/teleop").json()
     assert d["platform"] == "spot" and d["caps"] == ts.CAPS
     robots = {r["robot"]: r["platform"] for r in client.get("/api/plan/robots").json()}
-    assert robots["gauss"] == "phoenix" and robots["hamilton"] == "spot" and robots["euclid"] == "spot"
+    assert (
+        robots["gauss"] == "phoenix"
+        and robots["hamilton"] == "spot"
+        and robots["euclid"] == "spot"
+    )
     machines = {m["name"]: m for m in client.get("/api/fleet").json()["machines"]}
-    assert machines["gauss"]["platform"] == "phoenix" and machines["hamilton"]["platform"] == "spot"
+    assert (
+        machines["gauss"]["platform"] == "phoenix"
+        and machines["hamilton"]["platform"] == "spot"
+    )
     assert machines["willow"]["platform"] == ""
 
 
 # ------------------------------------------------------- phoenix STOP latch
 def test_halt_latches_and_releases_every_driver():
     sent = []
-    svc = ts.TeleopService(lambda topic, t, f: sent.append(f), platform_of=_bridge().platform)
+    svc = ts.TeleopService(
+        lambda topic, t, f: sent.append(f), platform_of=_bridge().platform
+    )
     assert svc.command("gauss", "phone", 0.5, 0, 0)["ok"]
     svc.halt("gauss")
     assert svc.session("gauss") is None  # the phone's session is gone
@@ -328,11 +375,18 @@ def test_halt_latches_and_releases_every_driver():
     # a fresh arm (or Resume) clears it
     assert svc.rearm("gauss") and not svc.rearm("gauss")
     assert svc.stopped("gauss") is None
-    assert svc.command("gauss", "phone", 0.3, 0, 0)["ok"] and sent[-1]["twist"]["linear"]["x"] == 0.3
+    assert (
+        svc.command("gauss", "phone", 0.3, 0, 0)["ok"]
+        and sent[-1]["twist"]["linear"]["x"] == 0.3
+    )
 
 
 def _ws_cmd(ws, vx, seq):
-    ws.send_text(json.dumps({"type": "cmd", "vx": vx, "vy": 0.0, "wz": 0.0, "seq": seq, "t": 1.0}))
+    ws.send_text(
+        json.dumps(
+            {"type": "cmd", "vx": vx, "vy": 0.0, "wz": 0.0, "seq": seq, "t": 1.0}
+        )
+    )
     return json.loads(ws.receive_text())
 
 
@@ -352,7 +406,9 @@ def test_phoenix_stop_cuts_teleop_until_resume(app, path):
         # the still-armed phone and a second (laptop) client: refused
         err = _ws_cmd(phone, 0.5, 2)
         assert err["type"] == "error" and "Resume" in err["error"]
-        r = client.post("/api/robots/gauss/teleop/cmd_vel", json={"vx": 0.3, "session": "laptop"})
+        r = client.post(
+            "/api/robots/gauss/teleop/cmd_vel", json={"vx": 0.3, "session": "laptop"}
+        )
         assert r.status_code == 409 and "Resume" in r.json()["detail"]
         assert len(sent) == n
         # Resume clears the latch
@@ -364,7 +420,9 @@ def test_phoenix_stop_cuts_teleop_until_resume(app, path):
 def test_phoenix_stop_latch_cleared_by_fresh_arm_not_by_failed_resume(app, monkeypatch):
     client, svc, sent, _ = app
     client.post("/api/robots/gauss/teleop/stop")
-    monkeypatch.setattr(svc.ros, "call_service", lambda *a, **k: {"success": False, "message": "no"})
+    monkeypatch.setattr(
+        svc.ros, "call_service", lambda *a, **k: {"success": False, "message": "no"}
+    )
     assert not client.post("/api/robots/gauss/teleop/resume").json()["ok"]
     assert svc.teleop.stopped("gauss") is not None
     with client.websocket_connect("/api/robots/gauss/teleop/ws") as ws:
@@ -373,13 +431,18 @@ def test_phoenix_stop_latch_cleared_by_fresh_arm_not_by_failed_resume(app, monke
         assert json.loads(ws.receive_text())["type"] == "armed"
         assert _ws_cmd(ws, 0.5, 3)["type"] == "ack"
     client.post("/api/robots/gauss/teleop/stop")
-    assert client.post("/api/robots/gauss/teleop/arm").json() == {"ok": True, "stopped": None}
+    assert client.post("/api/robots/gauss/teleop/arm").json() == {
+        "ok": True,
+        "stopped": None,
+    }
     assert svc.teleop.stopped("gauss") is None
 
 
 def test_spot_stop_does_not_latch(app, monkeypatch):
     client, svc, _, _ = app
-    monkeypatch.setattr(svc.ros, "executor_cmd", lambda r, c, deliver_timeout=3.0: {"ok": True})
+    monkeypatch.setattr(
+        svc.ros, "executor_cmd", lambda r, c, deliver_timeout=3.0: {"ok": True}
+    )
     r = client.post("/api/robots/hamilton/teleop/stop").json()
     assert r["zeroed"] and "stopped" not in r
     assert svc.teleop.stopped("hamilton") is None

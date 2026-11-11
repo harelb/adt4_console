@@ -54,10 +54,18 @@ def tmux_session_action(name: str, session: str, action: str, request: Request):
             return {"machine": name, "session": session} if ok else False
 
         job = svc.jobs.start("tmux_stop", f"Stop {session} on {name}", run)
-        return {"ok": True, "machine": name, "session": session, "action": action, "job_id": job.id}
+        return {
+            "ok": True,
+            "machine": name,
+            "session": session,
+            "action": action,
+            "job_id": job.id,
+        }
     rc, out, err = svc.helpers.ssh_cmd(m["user"], m["ip"], cmd, timeout=8)
     if rc != 0:
-        raise HTTPException(502, f"{action} {session} on {name} failed: {err or out or rc}")
+        raise HTTPException(
+            502, f"{action} {session} on {name} failed: {err or out or rc}"
+        )
     if svc.settings.fleet_poll:
         svc.fleet.request_status_refresh()
     return {"ok": True, "machine": name, "session": session, "action": action}
@@ -75,7 +83,10 @@ async def terminal(websocket: WebSocket, name: str):
     if m is None or (session is not None and not term.valid_session(session)):
         await websocket.close(code=CLOSE_BAD_TARGET)
         return
-    machine = {**m, "local": m.get("local") or m.get("ip") in svc.helpers.get_local_ips()}
+    machine = {
+        **m,
+        "local": m.get("local") or m.get("ip") in svc.helpers.get_local_ips(),
+    }
     await websocket.accept()
     try:
         p = term.Pty(

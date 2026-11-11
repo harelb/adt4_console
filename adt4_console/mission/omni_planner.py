@@ -39,13 +39,24 @@ from .paths import point_in_polygon
 log = logging.getLogger(__name__)
 
 DOMAIN = "RegionObjectRearrangementDomain_MultiRobot_FD_Explore"
-SUPPORTED = ("goto-poi", "inspect", "pick-object", "place-object", "start-drag", "release-drag")
+SUPPORTED = (
+    "goto-poi",
+    "inspect",
+    "pick-object",
+    "place-object",
+    "start-drag",
+    "release-drag",
+)
 # FD manipulation action -> console task type; the object is the action's 2nd argument
 GRAB = {"pick-object": "pick", "start-drag": "drag"}
 DROP = {"place-object": False, "release-drag": True}  # -> dragged?
 ENGINES = {"fast_downward": "Fast Downward", "grstaps": "GRSTAPS-X"}
 DEFAULT_ENGINE = "fast_downward"
-CONSTRAINTS = {"forbidden-poi": 1, "forbidden-edge": 2, "before": 2}  # predicate -> arity
+CONSTRAINTS = {
+    "forbidden-poi": 1,
+    "forbidden-edge": 2,
+    "before": 2,
+}  # predicate -> arity
 
 
 class OmniUnavailable(Exception):
@@ -82,13 +93,22 @@ def _modules():
         import dsg_pddl.domains
         import dsg_pddl.dsg_pddl_grounding_multirobot as grounding
         import dsg_pddl.dsg_pddl_planning as planning
-        from dsg_pddl.pddl_grounding import ConstraintFact, MultiRobotPddlDomain, PddlGoal
+        from dsg_pddl.pddl_grounding import (
+            ConstraintFact,
+            MultiRobotPddlDomain,
+            PddlGoal,
+        )
         from dsg_pddl.pddl_utils import pddl_symbol_to_node_symbol
     except ImportError as e:
         raise OmniUnavailable(f"omniplanner is not importable: {e}") from None
     if not hasattr(grounding, "generate_goal_relevant_multirobot_pddl"):
-        raise OmniUnavailable("this omniplanner has no goal-relevant multi-robot grounding")
-    if shutil.which("fast-downward") is None and shutil.which("fast-downward.py") is None:
+        raise OmniUnavailable(
+            "this omniplanner has no goal-relevant multi-robot grounding"
+        )
+    if (
+        shutil.which("fast-downward") is None
+        and shutil.which("fast-downward.py") is None
+    ):
         raise OmniUnavailable("Fast Downward is not on PATH")
     with as_file(files(dsg_pddl.domains).joinpath(DOMAIN + ".pddl")) as path:
         domain = MultiRobotPddlDomain(open(path).read())
@@ -121,7 +141,9 @@ def engines() -> list[dict]:
     out = []
     for eid, label in ENGINES.items():
         reason = available(eid)
-        out.append({"id": eid, "label": label, "available": reason is None, "reason": reason})
+        out.append(
+            {"id": eid, "label": label, "available": reason is None, "reason": reason}
+        )
     return out
 
 
@@ -130,9 +152,13 @@ def _constraint_facts(constraints, ConstraintFact):
     for c in constraints or []:
         pred, syms = c["predicate"], [str(s).lower() for s in c["symbols"]]
         if pred not in CONSTRAINTS:
-            raise ValueError(f"unknown constraint {pred!r} (one of {', '.join(CONSTRAINTS)})")
+            raise ValueError(
+                f"unknown constraint {pred!r} (one of {', '.join(CONSTRAINTS)})"
+            )
         if len(syms) != CONSTRAINTS[pred]:
-            raise ValueError(f"{pred} takes {CONSTRAINTS[pred]} symbol(s), got {len(syms)}")
+            raise ValueError(
+                f"{pred} takes {CONSTRAINTS[pred]} symbol(s), got {len(syms)}"
+            )
         facts.append(ConstraintFact(predicate=pred, symbols=syms))
     return facts
 
@@ -178,14 +204,20 @@ def _geofence_constraints(G, geofences, ConstraintFact):
     """forbidden-poi for every mesh place inside a no-go polygon."""
     import spark_dsg
 
-    polys = [g["polygon"] if isinstance(g, dict) else g.polygon for g in geofences or []]
+    polys = [
+        g["polygon"] if isinstance(g, dict) else g.polygon for g in geofences or []
+    ]
     if not polys:
         return []
     out = []
     for node in G.get_layer(spark_dsg.DsgLayers.MESH_PLACES).nodes:
         xy = np.asarray(node.attributes.position)[:2]
         if any(point_in_polygon(xy, p) for p in polys):
-            out.append(ConstraintFact(predicate="forbidden-poi", symbols=[node.id.str(True).lower()]))
+            out.append(
+                ConstraintFact(
+                    predicate="forbidden-poi", symbols=[node.id.str(True).lower()]
+                )
+            )
     return out
 
 
@@ -193,7 +225,12 @@ def _height_lookup(G):
     """(x, y) -> z of the nearest mesh place, to draw routes on the ground."""
     import spark_dsg
 
-    pos = np.array([n.attributes.position for n in G.get_layer(spark_dsg.DsgLayers.MESH_PLACES).nodes])
+    pos = np.array(
+        [
+            n.attributes.position
+            for n in G.get_layer(spark_dsg.DsgLayers.MESH_PLACES).nodes
+        ]
+    )
     if len(pos) == 0:
         return lambda x, y: 0.0
     try:
@@ -202,27 +239,43 @@ def _height_lookup(G):
         tree = cKDTree(pos[:, :2])
         return lambda x, y: float(pos[tree.query([x, y])[1], 2])
     except ImportError:
-        return lambda x, y: float(pos[np.argmin(np.hypot(pos[:, 0] - x, pos[:, 1] - y)), 2])
+        return lambda x, y: float(
+            pos[np.argmin(np.hypot(pos[:, 0] - x, pos[:, 1] - y)), 2]
+        )
 
 
-def _solve_grstaps(goal, starts, G, constraints, geofences, kinds=None, areas=None) -> dict:
+def _solve_grstaps(
+    goal, starts, G, constraints, geofences, kinds=None, areas=None
+) -> dict:
     from dsg_pddl.pddl_grounding import ConstraintFact
 
     from . import grstaps_engine
 
-    facts = _constraint_facts(constraints, ConstraintFact) + _geofence_constraints(G, geofences, ConstraintFact)
+    facts = _constraint_facts(constraints, ConstraintFact) + _geofence_constraints(
+        G, geofences, ConstraintFact
+    )
     try:
         out = grstaps_engine.solve(goal, starts, G, facts, _height_lookup(G), robot_types=kinds,
                                    region_polygons={s: a["polygon"] for s, a in (areas or {}).items()})  # fmt: skip
     except grstaps_engine.GrstapsFailed as e:
-        raise PlanningFailed(str(e), planner_log=e.planner_log, engine="grstaps") from None
+        raise PlanningFailed(
+            str(e), planner_log=e.planner_log, engine="grstaps"
+        ) from None
     if out.get("left_out"):
         out["left_out"] = sorted(out["left_out"])
     return out
 
 
-def solve(goal: str, starts: dict, G, constraints=None, geofences=None, engine: str = DEFAULT_ENGINE,
-          kinds: dict | None = None, areas=None) -> dict:
+def solve(
+    goal: str,
+    starts: dict,
+    G,
+    constraints=None,
+    geofences=None,
+    engine: str = DEFAULT_ENGINE,
+    kinds: dict | None = None,
+    areas=None,
+) -> dict:
     """Plan ``goal`` for robots at ``starts`` ({pddl robot name: [x, y]}).
 
     Returns {actions: [(robot, action tuple, path [[x, y, z], ...])], routes:
@@ -240,7 +293,9 @@ def solve(goal: str, starts: dict, G, constraints=None, geofences=None, engine: 
                          "switch the planner, or name a map region (r...)")  # fmt: skip
     om = _modules()
     if any(c["predicate"] == "before" for c in constraints or []):
-        raise ValueError("Fast Downward cannot order targets (before): plan it with GRSTAPS-X")
+        raise ValueError(
+            "Fast Downward cannot order targets (before): plan it with GRSTAPS-X"
+        )
     facts = _constraint_facts(constraints, om["ConstraintFact"])
     facts += _geofence_constraints(G, geofences, om["ConstraintFact"])
     robots = {r: np.asarray(p, dtype=float)[:2] for r, p in starts.items()}
@@ -248,9 +303,15 @@ def solve(goal: str, starts: dict, G, constraints=None, geofences=None, engine: 
     t0 = time.perf_counter()
     try:
         extra = {}
-        if kinds and "robot_types" in getattr(om["PddlGoal"], "__dataclass_fields__", {}):
-            extra["robot_types"] = {r: kinds.get(r, "spot") for r in robots}  # husky -> no arm
-        goal_obj = om["PddlGoal"](pddl_goal=goal, robot_id=first, constraints=facts, **extra)
+        if kinds and "robot_types" in getattr(
+            om["PddlGoal"], "__dataclass_fields__", {}
+        ):
+            extra["robot_types"] = {
+                r: kinds.get(r, "spot") for r in robots
+            }  # husky -> no arm
+        goal_obj = om["PddlGoal"](
+            pddl_goal=goal, robot_id=first, constraints=facts, **extra
+        )
         grounded = om["ground_problem"](om["domain"], G, robots, goal_obj).value
         t1 = time.perf_counter()
         plan = om["make_plan"](grounded, G)
@@ -262,7 +323,9 @@ def solve(goal: str, starts: dict, G, constraints=None, geofences=None, engine: 
                   "problem_file": getattr(e, "problem_file", None)}  # fmt: skip
         log.warning("omniplanner could not plan %s: %s%s", goal, first_line,
                     "".join(f"\n  | {line}" for line in (fd or {}).get("log", [])[-15:]))  # fmt: skip
-        raise PlanningFailed(f"{type(e).__name__}: {first_line}", fd, engine="fast_downward") from None
+        raise PlanningFailed(
+            f"{type(e).__name__}: {first_line}", fd, engine="fast_downward"
+        ) from None
     t2 = time.perf_counter()
     stats = getattr(grounded, "fd_stats", None) or {}
     z_of = _height_lookup(G)
@@ -274,7 +337,9 @@ def solve(goal: str, starts: dict, G, constraints=None, geofences=None, engine: 
         actions.append((robot, tuple(str(a) for a in act), pts3))
         if pts3:
             route = routes.setdefault(robot, [])
-            for p in pts3:  # no repeated points (where hops meet): they break line drawing
+            for (
+                p
+            ) in pts3:  # no repeated points (where hops meet): they break line drawing
                 if not route or p[:2] != route[-1][:2]:
                     route.append(p)
             driven[robot] = driven.get(robot, 0.0) + sum(
@@ -330,24 +395,42 @@ def plan_pddl(goal: str, agents: list[dict], src: str | None, service, constrain
     for a in ground:
         s = start_of(m0, world, a.id)
         if s is None:
-            raise ValueError(f"{a.id} has no start (give it one, or bind it to a robot with a pose)")
+            raise ValueError(
+                f"{a.id} has no start (give it one, or bind it to a robot with a pose)"
+            )
         starts[pddl_name(a.id)] = s[:2]
         back[pddl_name(a.id)] = a.id
     kinds = {pddl_name(a.id): a.kind for a in ground}
-    out = solve(goal, starts, G, constraints, m0.geofences, engine=engine, kinds=kinds, areas=m0.goal.get("areas"))
+    out = solve(
+        goal,
+        starts,
+        G,
+        constraints,
+        m0.geofences,
+        engine=engine,
+        kinds=kinds,
+        areas=m0.goal.get("areas"),
+    )
     if engine == "grstaps":
         m0.tasks = _grstaps_tasks(out["steps"], back)
         if not m0.tasks:
             raise ValueError("the goal is already satisfied: the plan has no actions")
         sched = out["schedule"]
-        m0.goal["schedule"] = {**sched, "rows": [{**r, "robot": back.get(r["robot"], r["robot"])} for r in sched["rows"]]}
+        m0.goal["schedule"] = {
+            **sched,
+            "rows": [
+                {**r, "robot": back.get(r["robot"], r["robot"])} for r in sched["rows"]
+            ],
+        }
         info = {"driven_m": {back.get(r, r): round(v, 1) for r, v in out["driven_m"].items()},
                 "planning_s": round(out["solve_s"], 2), "points_of_interest": out["pois"], "engine": engine,
                 "makespan_s": sched["makespan"], "planner_log": out["planner_log"], "fast_downward": None,
                 "left_out": [back.get(r, r) for r in out.get("left_out", [])],
                 "regions": out.get("regions") or {}}  # fmt: skip
         return Mission.model_validate(m0.model_dump()), info
-    unsupported = sorted({act[0] for _, act, _ in out["actions"] if act[0] not in SUPPORTED})
+    unsupported = sorted(
+        {act[0] for _, act, _ in out["actions"] if act[0] not in SUPPORTED}
+    )
     if unsupported:
         raise ValueError(f"the plan needs {', '.join(unsupported)}, which the console's robots cannot "
                          "execute; plan visits, inspections and end positions only")  # fmt: skip
@@ -362,7 +445,9 @@ def plan_pddl(goal: str, agents: list[dict], src: str | None, service, constrain
         prev = last.get(aid)
         at_prev = prev is not None and prev.type == "goto"
         if act[0] == "inspect" and at_prev and prev.target == target:
-            prev.type = "inspect"  # goto then inspect = the console's inspect (goto + dwell)
+            prev.type = (
+                "inspect"  # goto then inspect = the console's inspect (goto + dwell)
+            )
             prev.note += f"; {' '.join(act)}"
             continue
         if act[0] in GRAB or act[0] in DROP:
@@ -370,12 +455,25 @@ def plan_pddl(goal: str, agents: list[dict], src: str | None, service, constrain
             if act[0] in GRAB:
                 typ, tgt, params = GRAB[act[0]], obj, {}
             else:
-                typ, tgt, params = "place", target, {"object": obj, **({"dragged": True} if DROP[act[0]] else {})}
-            if at_prev and prev.target == tgt:  # the goto that got there becomes the manipulation
+                typ, tgt, params = (
+                    "place",
+                    target,
+                    {"object": obj, **({"dragged": True} if DROP[act[0]] else {})},
+                )
+            if (
+                at_prev and prev.target == tgt
+            ):  # the goto that got there becomes the manipulation
                 prev.type, prev.params = typ, {**prev.params, **params}
                 prev.note += f"; {' '.join(act)}"
                 continue
-            t = Task(id=new_id("t"), agent=aid, type=typ, target=tgt, note=" ".join(act), params=params)
+            t = Task(
+                id=new_id("t"),
+                agent=aid,
+                type=typ,
+                target=tgt,
+                note=" ".join(act),
+                params=params,
+            )
             tasks.append(t)
             last[aid] = t
             continue
@@ -426,8 +524,15 @@ def _goals_by_robot(out: dict, G) -> dict[str, list[str]]:
     return goals
 
 
-def preview(goal: str, robots: list[dict], src: str | None, service, constraints=None,
-            engine: str = DEFAULT_ENGINE, areas=None) -> dict:
+def preview(
+    goal: str,
+    robots: list[dict],
+    src: str | None,
+    service,
+    constraints=None,
+    engine: str = DEFAULT_ENGINE,
+    areas=None,
+) -> dict:
     """What omniplanner would do with ``goal`` for these robots, without a mission:
     {routes, driven_m, actions, robots, ground_s, solve_s, pois}. ``robots``:
     [{name, start?}] (no start: the robot's live pose)."""
@@ -445,9 +550,19 @@ def preview(goal: str, robots: list[dict], src: str | None, service, constraints
         if s is not None:
             starts[pddl_name(a.id)] = s[:2]
     if not starts:
-        raise ValueError("no robot has a pose: connect the robots, or add agents with starts in the mission planner")
+        raise ValueError(
+            "no robot has a pose: connect the robots, or add agents with starts in the mission planner"
+        )
     kinds = {pddl_name(a.id): a.kind for a in m0.agents}
-    out = solve(goal, starts, world.graph.G, constraints, engine=engine, kinds=kinds, areas=areas)
+    out = solve(
+        goal,
+        starts,
+        world.graph.G,
+        constraints,
+        engine=engine,
+        kinds=kinds,
+        areas=areas,
+    )
     return {
         "goals": _goals_by_robot(out, world.graph.G),
         "engine": check_engine(engine),

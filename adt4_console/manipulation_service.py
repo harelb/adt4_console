@@ -138,7 +138,9 @@ def depth_overlay_png(depth, scale) -> bytes:
     t = np.clip((meters - low) / (high - low), 0.0, 1.0)
     rgba = np.zeros(depth.shape + (4,), dtype=np.uint8)
     for channel in range(3):
-        rgba[..., channel] = np.interp(t, _DEPTH_STOPS, _DEPTH_COLORS[:, channel]).astype(np.uint8)
+        rgba[..., channel] = np.interp(
+            t, _DEPTH_STOPS, _DEPTH_COLORS[:, channel]
+        ).astype(np.uint8)
     rgba[..., 3] = np.where(depth_valid(depth), 255, 0).astype(np.uint8)
     out = io.BytesIO()
     Image.fromarray(rgba, "RGBA").save(out, format="PNG")
@@ -151,7 +153,9 @@ def depth_at(depth, scale, x, y, width, height, radius=2):
     rows, cols = depth.shape
     dx = min(cols - 1, max(0, int((x + 0.5) * cols / width)))
     dy = min(rows - 1, max(0, int((y + 0.5) * rows / height)))
-    window = depth[max(0, dy - radius) : dy + radius + 1, max(0, dx - radius) : dx + radius + 1]
+    window = depth[
+        max(0, dy - radius) : dy + radius + 1, max(0, dx - radius) : dx + radius + 1
+    ]
     values = window[depth_valid(window)]
     return None if values.size == 0 else round(float(np.median(values)) / scale, 3)
 
@@ -172,7 +176,13 @@ def quaternion_matrix(w, x, y, z):
     )
 
 
-EMPTY_GEOMETRY = {"cameras": {}, "ground": None, "robot": None, "standoff": 0.0, "max_distance": 0.0}
+EMPTY_GEOMETRY = {
+    "cameras": {},
+    "ground": None,
+    "robot": None,
+    "standoff": 0.0,
+    "max_distance": 0.0,
+}
 
 
 def walk_geometry(message, count) -> dict:
@@ -195,21 +205,34 @@ def walk_geometry(message, count) -> dict:
             break
         fx, fy, cx, cy = intrinsics[4 * index : 4 * index + 4]
         pose = poses[7 * index : 7 * index + 7]
-        if fx <= 0 or fy <= 0 or not all(np.isfinite(intrinsics[4 * index : 4 * index + 4] + pose)):
+        if (
+            fx <= 0
+            or fy <= 0
+            or not all(np.isfinite(intrinsics[4 * index : 4 * index + 4] + pose))
+        ):
             continue
         try:
             rotation = quaternion_matrix(*pose[3:])
         except ValueError:
             continue
         geometry["cameras"][index] = (fx, fy, cx, cy, np.array(pose[:3]), rotation)
-    if len(ground) == 6 and np.all(np.isfinite(ground)) and np.linalg.norm(ground[3:]) > 0.5:
-        geometry["ground"] = (np.array(ground[:3]), np.array(ground[3:]) / np.linalg.norm(ground[3:]))
+    if (
+        len(ground) == 6
+        and np.all(np.isfinite(ground))
+        and np.linalg.norm(ground[3:]) > 0.5
+    ):
+        geometry["ground"] = (
+            np.array(ground[:3]),
+            np.array(ground[3:]) / np.linalg.norm(ground[3:]),
+        )
     if len(robot) == 3 and np.all(np.isfinite(robot)):
         geometry["robot"] = tuple(robot)
     return geometry
 
 
-def ground_estimate(geometry, index, x, y, min_range=0.2, max_range=15.0, min_move=0.05):
+def ground_estimate(
+    geometry, index, x, y, min_range=0.2, max_range=15.0, min_move=0.05
+):
     """Reproduce the robot's walk-to plan for pixel (x, y): spot_tools
     ``walk_to_utils.pixel_to_ground_point`` + ``walk_to_geometry.plan_walk``.
 
@@ -287,7 +310,9 @@ class ManipulationApprovalService:
         self.clock, self.request_ttl = clock, request_ttl
         self._lock = threading.RLock()
         self._requests: dict[str, dict] = {}
-        self._current: dict[str, str] = {}  # "<robot>" / "simulation:<robot>" -> request id
+        self._current: dict[
+            str, str
+        ] = {}  # "<robot>" / "simulation:<robot>" -> request id
 
     @property
     def available(self) -> bool:
@@ -319,14 +344,22 @@ class ManipulationApprovalService:
 
     @staticmethod
     def _public(request) -> dict:
-        return {k: copy.deepcopy(v) for k, v in request.items() if not k.startswith("_")}
+        return {
+            k: copy.deepcopy(v) for k, v in request.items() if not k.startswith("_")
+        }
 
     def pending(self) -> dict:
         with self._lock:
             self._expire_locked()
-            requests = [self._public(r) for r in self._requests.values() if r["status"] in OPEN]
+            requests = [
+                self._public(r) for r in self._requests.values() if r["status"] in OPEN
+            ]
             requests.sort(key=lambda r: (r["simulated"], r["received_at"]))
-            return {"available": self.available, "error": self.error, "requests": requests}
+            return {
+                "available": self.available,
+                "error": self.error,
+                "requests": requests,
+            }
 
     def _notify(self) -> None:
         if self.hub is None:
@@ -368,11 +401,17 @@ class ManipulationApprovalService:
                     item["width"], item["height"] = int(image.width), int(image.height)
                     encoded[index] = (image_png(image), "image/png")
                 else:
-                    data, media, item["width"], item["height"] = compressed_image(compressed[index])
+                    data, media, item["width"], item["height"] = compressed_image(
+                        compressed[index]
+                    )
                     encoded[index] = (data, media)
             except (ValueError, OSError) as exc:
                 item["error"] = str(exc)
-            if index in encoded and index < len(depth_messages) and index < len(depth_scales):
+            if (
+                index in encoded
+                and index < len(depth_messages)
+                and index < len(depth_scales)
+            ):
                 try:
                     decoded = decode_depth(depth_messages[index], depth_scales[index])
                 except (ValueError, OSError) as exc:
@@ -420,7 +459,10 @@ class ManipulationApprovalService:
             "_depth_png": {},
             "depth_range_m": list(DEPTH_RANGE_M),
             "_geometry": geometry,
-            "walk_to": {"standoff_m": geometry["standoff"], "max_distance_m": geometry["max_distance"]},
+            "walk_to": {
+                "standoff_m": geometry["standoff"],
+                "max_distance_m": geometry["max_distance"],
+            },
             "has_detection": has_detection,
             "detection_image_index": image_index,
             "image_x": x,
@@ -431,7 +473,8 @@ class ManipulationApprovalService:
             self._expire_locked()
             if simulated and self._live_open_locked():
                 raise ApprovalError(
-                    409, "A live manipulation request is pending; resolve it before opening a simulation"
+                    409,
+                    "A live manipulation request is pending; resolve it before opening a simulation",
                 )
             old = self._current.get(key)
             if old in self._requests and self._requests[old]["status"] in OPEN:
@@ -444,7 +487,9 @@ class ManipulationApprovalService:
         return self._public(request)
 
     def _live_open_locked(self) -> bool:
-        return any(not r["simulated"] and r["status"] in OPEN for r in self._requests.values())
+        return any(
+            not r["simulated"] and r["status"] in OPEN for r in self._requests.values()
+        )
 
     def get_image(self, identifier: str, index: int) -> tuple[bytes, str]:
         """(bytes, media type) of one candidate image."""
@@ -500,7 +545,9 @@ class ManipulationApprovalService:
                 "y": y,
                 "has_depth": index in request.get("_depth", {}),
                 "depth_m": depth_m,
-                "ground": ground_estimate(request.get("_geometry") or EMPTY_GEOMETRY, index, x, y),
+                "ground": ground_estimate(
+                    request.get("_geometry") or EMPTY_GEOMETRY, index, x, y
+                ),
             }
 
     # ---------------------------------------------------------- responses
@@ -511,7 +558,9 @@ class ManipulationApprovalService:
             raise ApprovalError(404, "Unknown manipulation request")
         key = ("simulation:" if request["simulated"] else "") + request["robot"]
         if request["status"] not in statuses or self._current.get(key) != identifier:
-            raise ApprovalError(409, f"Request is {request['status']}; refresh the pending dialog")
+            raise ApprovalError(
+                409, f"Request is {request['status']}; refresh the pending dialog"
+            )
         if request["expires_at"] <= self.clock():
             request["status"] = "expired"
             raise ApprovalError(409, "Manipulation request expired")
@@ -539,30 +588,57 @@ class ManipulationApprovalService:
             request = self._active_locked(identifier)
             payload = dict(RESPONSE_DEFAULTS, approve=bool(approve))
             if approve and walk_to:
-                raise ApprovalError(422, "A response is either an approval or a walk-to request, not both")
+                raise ApprovalError(
+                    422,
+                    "A response is either an approval or a walk-to request, not both",
+                )
             if (stand_x is not None or stand_y is not None) and not walk_to:
-                raise ApprovalError(422, "A stand point only applies to a walk-to request")
+                raise ApprovalError(
+                    422, "A stand point only applies to a walk-to request"
+                )
             if approve or walk_to:
                 purpose = "Approve" if approve else "Walk-to"
                 selection = request["selection"] or {}
                 values = [image_index, image_x, image_y]
                 if all(v is None for v in values):
-                    values = [selection.get("image_index"), selection.get("x"), selection.get("y")]
+                    values = [
+                        selection.get("image_index"),
+                        selection.get("x"),
+                        selection.get("y"),
+                    ]
                 index, x, y = values
                 if any(type(v) is not int for v in values):
-                    raise ApprovalError(422, f"{purpose} requires an image and a valid pixel")
-                if index < 0 or index >= len(request["images"]) or index not in request["_images"]:
+                    raise ApprovalError(
+                        422, f"{purpose} requires an image and a valid pixel"
+                    )
+                if (
+                    index < 0
+                    or index >= len(request["images"])
+                    or index not in request["_images"]
+                ):
                     raise ApprovalError(422, "Selected image is unavailable")
                 image = request["images"][index]
                 if not (0 <= x < image["width"] and 0 <= y < image["height"]):
-                    raise ApprovalError(422, f"{purpose} pixel is outside the selected image")
-                payload.update(image_index=index, image_x=x, image_y=y, walk_to=bool(walk_to))
+                    raise ApprovalError(
+                        422, f"{purpose} pixel is outside the selected image"
+                    )
+                payload.update(
+                    image_index=index, image_x=x, image_y=y, walk_to=bool(walk_to)
+                )
                 if walk_to and (stand_x is not None or stand_y is not None):
                     if type(stand_x) is not int or type(stand_y) is not int:
-                        raise ApprovalError(422, "Stand point needs both pixel coordinates")
-                    if not (0 <= stand_x < image["width"] and 0 <= stand_y < image["height"]):
-                        raise ApprovalError(422, "Stand point is outside the selected image")
-                    payload.update(has_stand_point=True, stand_x=stand_x, stand_y=stand_y)
+                        raise ApprovalError(
+                            422, "Stand point needs both pixel coordinates"
+                        )
+                    if not (
+                        0 <= stand_x < image["width"] and 0 <= stand_y < image["height"]
+                    ):
+                        raise ApprovalError(
+                            422, "Stand point is outside the selected image"
+                        )
+                    payload.update(
+                        has_stand_point=True, stand_x=stand_x, stand_y=stand_y
+                    )
             if request["simulated"]:
                 request["status"] = "simulated"
                 request["response"] = payload
@@ -576,7 +652,11 @@ class ManipulationApprovalService:
                 }
             else:
                 if not self.available:
-                    raise ApprovalError(503, self.error or "ROS unavailable: manipulation responses cannot be sent")
+                    raise ApprovalError(
+                        503,
+                        self.error
+                        or "ROS unavailable: manipulation responses cannot be sent",
+                    )
                 request["status"] = "responding"
                 result = self._publish_locked(request, payload)
         self._notify()
@@ -597,7 +677,8 @@ class ManipulationApprovalService:
             request["error"] = str(exc)
             self._drop_media(request)
             raise ApprovalError(
-                503, f"Publication failed; request closed to prevent a duplicate approval: {exc}"
+                503,
+                f"Publication failed; request closed to prevent a duplicate approval: {exc}",
             ) from exc
         request["status"] = "published"
         request["response"] = payload
@@ -620,7 +701,8 @@ class ManipulationApprovalService:
             self._expire_locked()
             if self._live_open_locked():
                 raise ApprovalError(
-                    409, "A live manipulation request is pending; resolve it before opening a simulation"
+                    409,
+                    "A live manipulation request is pending; resolve it before opening a simulation",
                 )
         images, depth_images = [], []
         rows = np.linspace(6.0, 0.6, 400, dtype=np.float32)[:, None].repeat(640, axis=1)
@@ -629,11 +711,23 @@ class ManipulationApprovalService:
         for name, color in [("frontleft", "#34435b"), ("hand_color_image", "#493c35")]:
             image = Image.new("RGB", (640, 400), color)
             draw = ImageDraw.Draw(image)
-            draw.rectangle((180, 130, 420, 300), fill="#c29b52", outline="white", width=3)
+            draw.rectangle(
+                (180, 130, 420, 300), fill="#c29b52", outline="white", width=3
+            )
             draw.text((22, 22), "SIMULATION - no robot response", fill="white")
-            draw.text((22, 48), name + ": select a grasp point or use the suggested detection", fill="white")
+            draw.text(
+                (22, 48),
+                name + ": select a grasp point or use the suggested detection",
+                fill="white",
+            )
             images.append(
-                SimpleNamespace(width=640, height=400, encoding="rgb8", step=1920, data=image.tobytes())
+                SimpleNamespace(
+                    width=640,
+                    height=400,
+                    encoding="rgb8",
+                    step=1920,
+                    data=image.tobytes(),
+                )
             )
             buffer = io.BytesIO()
             Image.fromarray((rows * 1000).astype(np.uint16)).save(buffer, format="PNG")
@@ -672,14 +766,20 @@ def ros_response_publisher(ros):
 
     def publish(robot: str, payload: dict) -> dict:
         out = ros.publish_to_robot(robot, response_topic(robot), RESPONSE_TYPE, payload)
-        details = {k: out[k] for k in ("subscribers", "via", "delivered", "link") if k in out}
+        details = {
+            k: out[k] for k in ("subscribers", "via", "delivered", "link") if k in out
+        }
         if out.get("via") == "fleetlink":
             if out.get("error"):
-                raise ApprovalError(503, f"Response not relayed to {robot}: {out['error']}")
+                raise ApprovalError(
+                    503, f"Response not relayed to {robot}: {out['error']}"
+                )
             if not out.get("delivered"):
                 raise RuntimeError(f"{robot} did not acknowledge the response in time")
         elif not out.get("subscribers"):
-            raise ApprovalError(503, "No robot confirmation subscriber is currently discovered")
+            raise ApprovalError(
+                503, "No robot confirmation subscriber is currently discovered"
+            )
         return details
 
     return publish

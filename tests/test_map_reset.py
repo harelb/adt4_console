@@ -38,7 +38,11 @@ def _run(tmp_path):
 def test_status_says_what_a_reset_undoes(tmp_path):
     backend = _run(tmp_path)
     st = maps.reset_status(FakeTarget(str(backend / "dsg_with_mesh.json")))
-    assert st["run"] == str(tmp_path / "fused") and st["added_objects"] == 2 and st["map_edits"] == 1
+    assert (
+        st["run"] == str(tmp_path / "fused")
+        and st["added_objects"] == 2
+        and st["map_edits"] == 1
+    )
     assert st["nodes"] == 18535
 
 
@@ -51,7 +55,11 @@ def test_no_recorded_or_missing_source_is_a_409(tmp_path):
 
 def test_place_features_become_vector_properties(tmp_path):
     backend = _run(tmp_path)
-    np.savez(backend / "semantic_features.npz", symbols=np.array(["P(12)", "R(3)"]), features=np.ones((2, 4), np.float32))
+    np.savez(
+        backend / "semantic_features.npz",
+        symbols=np.array(["P(12)", "R(3)"]),
+        features=np.ones((2, 4), np.float32),
+    )
     t = FakeTarget(None)
     assert maps.load_semantic_features(t, tmp_path / "fused") == 2
     sets = [p for c, p in t.calls if "SET n.siglip2_emb" in c]
@@ -65,14 +73,23 @@ def test_routes_refuse_an_unknown_target(settings):
 
     client, _ = make_client(settings)
     with client:
-        assert client.get("/api/maps/reset", params={"target": "nope"}).status_code == 404
-        assert client.post("/api/maps/reset", json={"target": "nope"}).status_code == 404
+        assert (
+            client.get("/api/maps/reset", params={"target": "nope"}).status_code == 404
+        )
+        assert (
+            client.post("/api/maps/reset", json={"target": "nope"}).status_code == 404
+        )
 
 
 def test_sam3_reload_posts_to_the_server(monkeypatch):
     from adt4_console import sam3_client
 
     seen = {}
-    monkeypatch.setattr(sam3_client, "_post", lambda base, path, payload, t: seen.update(path=path, payload=payload) or {"before": 1, "after": 2})
+    monkeypatch.setattr(
+        sam3_client,
+        "_post",
+        lambda base, path, payload, t: seen.update(path=path, payload=payload)
+        or {"before": 1, "after": 2},
+    )
     assert sam3_client.reload("http://127.0.0.1:8077") == {"before": 1, "after": 2}
     assert seen == {"path": "/reload", "payload": {}}

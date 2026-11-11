@@ -1,11 +1,11 @@
 import msgpack
 import numpy as np
 import pytest
+from fleetlink import codec
 
 from adt4_console.plyio import _load_fast, load_ply
 from adt4_console.ros_bridge import goal_topic, load_plugins
 from adt4_console.routes.plan import omniplanner_points
-from fleetlink import codec
 
 from .conftest import make_client
 
@@ -102,11 +102,18 @@ def test_live_endpoints_and_controls(live):
     assert ("resync", "euclid") in rx.calls and ("auto", "euclid", False) in rx.calls
     # mesh level of detail: whole mesh, or just some tiles; unknown levels refused
     r = client.post("/api/live/euclid/mesh_lod", json={"level": "full"}).json()
-    assert r == {"ok": True, "request": "req-lod", "wanted": {"level": "full", "tiles": {}}}
+    assert r == {
+        "ok": True,
+        "request": "req-lod",
+        "wanted": {"level": "full", "tiles": {}},
+    }
     client.post("/api/live/euclid/mesh_lod", json={"level": "full", "tiles": ["0_0_0"]})
     assert ("mesh_lod", "euclid", "full", None) in rx.calls
     assert ("mesh_lod", "euclid", "full", ["0_0_0"]) in rx.calls
-    assert client.post("/api/live/euclid/mesh_lod", json={"level": "ultra"}).status_code == 422
+    assert (
+        client.post("/api/live/euclid/mesh_lod", json={"level": "ultra"}).status_code
+        == 422
+    )
 
 
 def test_live_graph_source_snapshot_tiles_and_events(live):
@@ -172,7 +179,13 @@ def test_plugins_and_topics_from_config():
 def test_plan_routes_without_ros(client):
     robots = client.get("/api/plan/robots").json()
     euclid = next(r for r in robots if r["robot"] == "euclid")
-    assert {p["kind"] for p in euclid["plugins"]} == {"goto", "language", "tsp", "pddl", "pddl_constrained"}
+    assert {p["kind"] for p in euclid["plugins"]} == {
+        "goto",
+        "language",
+        "tsp",
+        "pddl",
+        "pddl_constrained",
+    }
     r = client.post(
         "/api/robots/euclid/goal/language", json={"command": "go to the car"}
     )

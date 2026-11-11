@@ -71,7 +71,9 @@ def session_command(action: str, session: str) -> str:
 SHELLS = {"zsh", "bash", "sh", "fish", "dash"}
 
 
-def stop_session(ssh, user: str, ip: str, session: str, log, *, wait_s: float, poll_s: float = 1.0) -> bool:
+def stop_session(
+    ssh, user: str, ip: str, session: str, log, *, wait_s: float, poll_s: float = 1.0
+) -> bool:
     """Ctrl-C every pane of ``session``, wait up to ``wait_s`` for the panes to
     drop back to their shells, then kill the session.  ``ssh`` is
     ``helpers.ssh_cmd``, ``log(level, text)`` reports progress.  True once the
@@ -81,18 +83,29 @@ def stop_session(ssh, user: str, ip: str, session: str, log, *, wait_s: float, p
     if rc != 0:
         log("dim", f"{ip}: no {session} session to stop ({err or out or rc})")
         return True
-    log("info", f"Sent Ctrl-C to every pane of {session}; waiting up to {wait_s:.0f} s for them to exit ...")
+    log(
+        "info",
+        f"Sent Ctrl-C to every pane of {session}; waiting up to {wait_s:.0f} s for them to exit ...",
+    )
     busy: list[str] = []
     t0 = time.monotonic()
     while time.monotonic() - t0 < wait_s:
         time.sleep(poll_s)
-        rc, out, _ = ssh(user, ip, f"tmux list-panes -s -t {q} -F '#{{pane_current_command}}'")
+        rc, out, _ = ssh(
+            user, ip, f"tmux list-panes -s -t {q} -F '#{{pane_current_command}}'"
+        )
         busy = [c for c in out.split() if c not in SHELLS] if rc == 0 else []
         if not busy:
-            log("ok", f"{session}: every pane exited after {time.monotonic() - t0:.0f} s")
+            log(
+                "ok",
+                f"{session}: every pane exited after {time.monotonic() - t0:.0f} s",
+            )
             break
     else:
-        log("warn", f"{session}: still running after {wait_s:.0f} s ({', '.join(sorted(set(busy)))}); killing anyway")
+        log(
+            "warn",
+            f"{session}: still running after {wait_s:.0f} s ({', '.join(sorted(set(busy)))}); killing anyway",
+        )
     rc, out, err = ssh(user, ip, session_command("kill", session), timeout=10)
     if rc != 0 and "can't find session" not in (err or out):
         log("error", f"kill {session} failed: {err or out or rc}")

@@ -3,9 +3,9 @@
 import msgpack
 import numpy as np
 import pytest
+from fleetlink import codec
 
 from adt4_console.graph_service import FileSource
-from fleetlink import codec
 
 dsg = pytest.importorskip("spark_dsg")
 

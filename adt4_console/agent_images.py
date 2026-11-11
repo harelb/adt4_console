@@ -34,7 +34,9 @@ MAX_AGENT_IMAGES = 24
 # own); image-store frames are all "keyframe", the own one flagged ``own``
 KEYFRAME, SUBKEYFRAME = "keyframe", "subkeyframe"
 AGENT_FRAME_MAX_DT_NS = 50_000_000  # ImageStore.agent_frame's default
-IDENTITY_ATOL = 1e-3  # max |anchor_T_body - I| of a keyframe taken at its anchor's stamp
+IDENTITY_ATOL = (
+    1e-3  # max |anchor_T_body - I| of a keyframe taken at its anchor's stamp
+)
 
 
 def anchor_offset(frame) -> float:
@@ -59,13 +61,17 @@ def own_keyframes(frames, stamp=None) -> dict[int, object]:
     for a, fs in by_anchor.items():
         ts = stamp(a) if stamp is not None else None
         if ts is not None:
-            best = min(fs, key=lambda f: (abs(f.timestamp_ns - ts), f.timestamp_ns, f.frame_id))
+            best = min(
+                fs, key=lambda f: (abs(f.timestamp_ns - ts), f.timestamp_ns, f.frame_id)
+            )
             if abs(best.timestamp_ns - ts) <= AGENT_FRAME_MAX_DT_NS:
                 own[a] = best
             continue
         cands = [f for f in fs if anchor_offset(f) < IDENTITY_ATOL]
         if cands:
-            own[a] = min(cands, key=lambda f: (anchor_offset(f), f.timestamp_ns, f.frame_id))
+            own[a] = min(
+                cands, key=lambda f: (anchor_offset(f), f.timestamp_ns, f.frame_id)
+            )
     return own
 
 
@@ -129,7 +135,9 @@ class AgentFrameIndex:
 
     # -- builders -------------------------------------------------------------
     @classmethod
-    def from_store(cls, store, lookup=None, positions=None, stamp=None) -> "AgentFrameIndex":
+    def from_store(
+        cls, store, lookup=None, positions=None, stamp=None
+    ) -> "AgentFrameIndex":
         """Index an ``hydra_image_store.ImageStore``.
 
         ``lookup(node_id) -> 4x4 | None`` gives (optimized) agent poses, e.g. a
@@ -142,7 +150,9 @@ class AgentFrameIndex:
         from hydra_image_store import FrameKind
 
         frames = [
-            f for f in store.frames(kind=int(FrameKind.KEYFRAME)) if f.rgb_path is not None
+            f
+            for f in store.frames(kind=int(FrameKind.KEYFRAME))
+            if f.rgb_path is not None
         ]
         own_ids = {f.frame_id for f in own_keyframes(frames, stamp).values()}
         canon = {}
@@ -213,7 +223,9 @@ class AgentFrameIndex:
         return cls(rows, node_pose)
 
     # -- query ----------------------------------------------------------------
-    def nearest(self, xy, yaw=None, limit: int = 6, exists=os.path.isfile) -> list[AgentFrame]:
+    def nearest(
+        self, xy, yaw=None, limit: int = 6, exists=os.path.isfile
+    ) -> list[AgentFrame]:
         """The frames (keyframes and sub-keyframes) taken closest to map point ``xy``,
         ground distance first, heading as a tiebreak when ``yaw`` (rad) is given: a
         frame facing the way the robot faces there ranks first among near ones."""
@@ -273,7 +285,9 @@ class AgentFrameIndex:
             near = []
         own = [i for i in anchored if self.own[i]]
         by_score = lambda idx: sorted(idx, key=lambda i: (score[i], i))  # noqa: E731
-        ordered = by_score(own) + by_score(anchored) + by_score(set(near) | set(anchored))
+        ordered = (
+            by_score(own) + by_score(anchored) + by_score(set(near) | set(anchored))
+        )
         out, seen = [], set()
         for i in ordered:
             if i in seen:
@@ -288,7 +302,9 @@ class AgentFrameIndex:
                     own=i in own,
                     dist_m=None if d is None else round(float(d[i]), 3),
                     yaw_deg=(
-                        None if dy is None or math.isnan(dy[i]) else round(float(dy[i]), 1)
+                        None
+                        if dy is None or math.isnan(dy[i])
+                        else round(float(dy[i]), 1)
                     ),
                     frame_id=self.frame_ids[i],
                     anchor=self.anchors[i],
@@ -297,4 +313,6 @@ class AgentFrameIndex:
             if len(out) >= limit:
                 break
         # the hero is chosen; the strip after it is purely by distance
-        return out[:1] + sorted(out[1:], key=lambda f: (f.dist_m is None, f.dist_m or 0.0))
+        return out[:1] + sorted(
+            out[1:], key=lambda f: (f.dist_m is None, f.dist_m or 0.0)
+        )

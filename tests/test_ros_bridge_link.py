@@ -101,7 +101,9 @@ def test_plan_status_entries_get_increasing_seq():
     rb = RosBridge(types.SimpleNamespace(ros=False, planner_ns="willow"))
     refuse = '{"plugin": "goto", "robot": "hamilton", "ok": false, "error": "Requested symbol a(4) not in scene graph"}'
     rb._on_plan_status("hamilton", types.SimpleNamespace(data=refuse))
-    rb._on_plan_status("hamilton", types.SimpleNamespace(data=refuse.replace("hamilton", "spot2")))
+    rb._on_plan_status(
+        "hamilton", types.SimpleNamespace(data=refuse.replace("hamilton", "spot2"))
+    )
     rb._on_plan_status("hamilton", types.SimpleNamespace(data="not json"))
     rb._on_plan_status("hamilton", types.SimpleNamespace(data=refuse))
     seqs = [s["seq"] for s in rb.plan("hamilton")["status"]]

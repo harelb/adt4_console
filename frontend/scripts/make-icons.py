@@ -4,6 +4,7 @@
 The logo is the favicon's green triangle (index.html) on the theme background.
 Run from the frontend directory: python3 scripts/make-icons.py
 """
+
 import pathlib
 
 from PIL import Image, ImageDraw
@@ -32,6 +33,10 @@ def icon(size: int, logo_frac: float, radius_frac: float) -> Image.Image:
 OUT.mkdir(exist_ok=True)
 icon(192, 0.62, 0.19).save(OUT / "icon-192.png")
 icon(512, 0.62, 0.19).save(OUT / "icon-512.png")
-icon(512, 0.5, 0).save(OUT / "icon-maskable-512.png")  # full bleed, logo inside the 80% safe zone
-icon(180, 0.56, 0).convert("RGB").save(OUT / "apple-touch-icon.png")  # iOS rounds the corners itself
+icon(512, 0.5, 0).save(
+    OUT / "icon-maskable-512.png"
+)  # full bleed, logo inside the 80% safe zone
+icon(180, 0.56, 0).convert("RGB").save(
+    OUT / "apple-touch-icon.png"
+)  # iOS rounds the corners itself
 print("wrote", sorted(p.name for p in OUT.glob("*.png")))

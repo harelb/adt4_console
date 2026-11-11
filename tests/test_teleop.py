@@ -27,7 +27,13 @@ def recorder():
 
     def publish(topic, msg_type, fields):
         sent.append(
-            (topic, msg_type, fields["linear"]["x"], fields["linear"]["y"], fields["angular"]["z"])
+            (
+                topic,
+                msg_type,
+                fields["linear"]["x"],
+                fields["linear"]["y"],
+                fields["angular"]["z"],
+            )
         )
 
     return sent, publish
@@ -43,7 +49,9 @@ def test_command_clamped_and_published():
     svc = TeleopService(pub, clock=Clock())
     out = svc.command("hamilton", "a", 9, -9, 9)
     assert out["ok"] and out["sent"]
-    assert sent == [(TOPIC, "geometry_msgs/msg/Twist", CAPS["vx"], -CAPS["vy"], CAPS["wz"])]
+    assert sent == [
+        (TOPIC, "geometry_msgs/msg/Twist", CAPS["vx"], -CAPS["vy"], CAPS["wz"])
+    ]
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), "fast"])
@@ -210,9 +218,13 @@ def test_unknown_command_404(app):
 
 def test_post_cmd_vel_and_conflict(app):
     client, _, sent, _ = app
-    r = client.post("/api/robots/hamilton/teleop/cmd_vel", json={"vx": 0.2, "session": "s1"})
+    r = client.post(
+        "/api/robots/hamilton/teleop/cmd_vel", json={"vx": 0.2, "session": "s1"}
+    )
     assert r.json()["ok"] and vel(sent) == [(0.2, 0.0, 0.0)]
-    r = client.post("/api/robots/hamilton/teleop/cmd_vel", json={"vx": 0.2, "session": "s2"})
+    r = client.post(
+        "/api/robots/hamilton/teleop/cmd_vel", json={"vx": 0.2, "session": "s2"}
+    )
     assert r.status_code == 409
 
 
@@ -229,7 +241,11 @@ def test_ws_drive_ack_and_zero_on_close(app):
         ws.send_text(json.dumps({"type": "ping", "seq": 1, "t": 123.5}))
         pong = json.loads(ws.receive_text())
         assert pong["type"] == "pong" and pong["t"] == 123.5 and pong["seq"] == 1
-        ws.send_text(json.dumps({"type": "cmd", "vx": 0.4, "vy": 0.0, "wz": -2.0, "seq": 2, "t": 1.0}))
+        ws.send_text(
+            json.dumps(
+                {"type": "cmd", "vx": 0.4, "vy": 0.0, "wz": -2.0, "seq": 2, "t": 1.0}
+            )
+        )
         ack = json.loads(ws.receive_text())
         assert ack["type"] == "ack" and ack["sent"] and ack["seq"] == 2
         assert ack["cmd"] == {"vx": 0.4, "vy": 0.0, "wz": -CAPS["wz"]}

@@ -59,9 +59,15 @@ def tile(
     src: str,
     key: str,
     request: Request,
-    enc: int | None = Query(None, description="2: packed tile (codec.pack_tile), pre-gzipped"),
-    lod: int = Query(0, ge=0, description="level of detail (manifest `lods`; packed only)"),
-    h: str | None = Query(None, description="the manifest's etag of this tile: cache it for good"),
+    enc: int | None = Query(
+        None, description="2: packed tile (codec.pack_tile), pre-gzipped"
+    ),
+    lod: int = Query(
+        0, ge=0, description="level of detail (manifest `lods`; packed only)"
+    ),
+    h: str | None = Query(
+        None, description="the manifest's etag of this tile: cache it for good"
+    ),
 ):
     source = services(request).graph.get(src)
     if enc is None:
@@ -71,14 +77,33 @@ def tile(
     if enc != 2:
         raise HTTPException(422, f"unknown tile encoding {enc}")
     b = source.tile_blob(key, lod)
-    return blob_response(request, b.gz, b.raw_len, b.etag, MSGPACK, IMMUTABLE if h == b.etag else "no-cache")
+    return blob_response(
+        request,
+        b.gz,
+        b.raw_len,
+        b.etag,
+        MSGPACK,
+        IMMUTABLE if h == b.etag else "no-cache",
+    )
 
 
 @router.get("/{src}/mesh/bundle/{level}")
-def bundle(src: str, level: int, request: Request, h: str | None = Query(None, description="the manifest's bundle etag")):
+def bundle(
+    src: str,
+    level: int,
+    request: Request,
+    h: str | None = Query(None, description="the manifest's bundle etag"),
+):
     """Every tile of one level (the manifest's ``bundles``) as a msgpack array of packed tiles."""
     b = services(request).graph.get(src).bundle_blob(level)
-    return blob_response(request, b.gz, b.raw_len, b.etag, MSGPACK, IMMUTABLE if h == b.etag else "no-cache")
+    return blob_response(
+        request,
+        b.gz,
+        b.raw_len,
+        b.etag,
+        MSGPACK,
+        IMMUTABLE if h == b.etag else "no-cache",
+    )
 
 
 @router.get("/{src}/stats")
@@ -173,7 +198,9 @@ async def frames_near(
     request: Request,
     x: float,
     y: float,
-    yaw: float | None = Query(None, description="heading (rad) to prefer frames facing that way"),
+    yaw: float | None = Query(
+        None, description="heading (rad) to prefer frames facing that way"
+    ),
     n: int = Query(6, ge=1, le=24),
 ):
     """The keyframes / sub-keyframes taken closest to map point (x, y) (API.md §15.5):
@@ -221,6 +248,11 @@ async def frame_near_image(
 @router.get("/{src}/trajectory")
 def trajectory(src: str, request: Request):
     source = services(request).graph.get(src)
-    raw = json.dumps(trajectory_payload(source.trajectory(), source.trajectory_sources()), separators=(",", ":"),
-                     allow_nan=False).encode()
-    return blob_response(request, gzip_bytes(raw), len(raw), etag_of(raw), "application/json")
+    raw = json.dumps(
+        trajectory_payload(source.trajectory(), source.trajectory_sources()),
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode()
+    return blob_response(
+        request, gzip_bytes(raw), len(raw), etag_of(raw), "application/json"
+    )

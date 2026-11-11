@@ -4,9 +4,9 @@ import gzip
 
 import msgpack
 import numpy as np
+from fleetlink import codec
 
 from adt4_console import mesh_lod
-from fleetlink import codec
 
 
 def _mesh(n=40, step=0.1):
@@ -32,11 +32,17 @@ def test_products_levels_sizes_and_reuse():
         packed = msgpack.unpackb(gzip.decompress(b.gz), raw=False)
         assert len(gzip.decompress(b.gz)) == b.raw_len and packed["nf"] == b.nf
         assert b.etag.endswith(f"e{codec.PACKED_TILE_ENCODING}")
-    nf = [sum(b.nf for (_, lv), b in p.blobs.items() if lv == level) for level in (0, 1, 2)]
+    nf = [
+        sum(b.nf for (_, lv), b in p.blobs.items() if lv == level)
+        for level in (0, 1, 2)
+    ]
     assert nf[0] > nf[1] > nf[2] > 0
     assert p.total_bytes(0) > p.total_bytes(1) > p.total_bytes(2)
     rows = p.manifest_rows(tiles)
-    assert all(len(r["lod"]) == 3 and r["lod"][0][0] == len(p.blob(k, 0).gz) for k, r in rows.items())
+    assert all(
+        len(r["lod"]) == 3 and r["lod"][0][0] == len(p.blob(k, 0).gz)
+        for k, r in rows.items()
+    )
     # unchanged tiles: the same products; one tile changed: other blobs reused
     assert mesh_lod.TileProducts.build(tiles, (0, 1, 2), p) is p
     k0 = sorted(tiles)[0]

@@ -8,11 +8,15 @@ import time
 import pytest
 
 from .conftest import NEO4J_AUTH, NEO4J_URI, make_client, port_open
-from .test_omni_planner import grid_run  # noqa: F401 -- the grid with a named MESH_PLACES layer
+from .test_omni_planner import (
+    grid_run,  # noqa: F401 -- the grid with a named MESH_PLACES layer
+)
 
 IMAGED = pathlib.Path("~/adt4_output/imgstore_noarch_20261028")
 
-pytestmark = pytest.mark.skipif(not port_open("localhost", 7697), reason="neo4j test instance on :7697 not running")
+pytestmark = pytest.mark.skipif(
+    not port_open("localhost", 7697), reason="neo4j test instance on :7697 not running"
+)
 
 
 @pytest.fixture
@@ -72,11 +76,19 @@ def test_a_run_without_images_is_ready_for_planning(live, grid_run):  # noqa: F8
 def test_edits_in_the_live_map_are_confirmed_and_a_second_load_waits(live, grid_run):  # noqa: F811
     client, svc, _ = live
     run = grid_run
-    job = _run_job(client, svc, client.post("/api/maps/activate", json={"path": str(run), "force": True}).json()["job_id"])
+    job = _run_job(
+        client,
+        svc,
+        client.post(
+            "/api/maps/activate", json={"path": str(run), "force": True}
+        ).json()["job_id"],
+    )
     assert job["state"] == "succeeded"
     src = svc.graph.get("neo4j:test")
     src.query("CREATE (:GraphMutation {kind: 'test'})")
-    job_id = client.post("/api/maps/activate", json={"path": str(run), "force": True}).json()["job_id"]
+    job_id = client.post(
+        "/api/maps/activate", json={"path": str(run), "force": True}
+    ).json()["job_id"]
     deadline = time.time() + 30
     while not (job := client.get(f"/api/jobs/{job_id}").json())["confirm"]:
         assert time.time() < deadline
@@ -92,16 +104,27 @@ def test_edits_in_the_live_map_are_confirmed_and_a_second_load_waits(live, grid_
     assert client.get("/api/maps/active").json()["ready"]
 
 
-@pytest.mark.skipif(not (IMAGED / "image_store" / "store.sqlite").is_file(), reason="no imaged run")
+@pytest.mark.skipif(
+    not (IMAGED / "image_store" / "store.sqlite").is_file(), reason="no imaged run"
+)
 def test_a_run_with_images_plans_before_the_images_are_in(live):
     client, svc, snaps = live
     r = client.post("/api/maps/activate", json={"path": str(IMAGED), "force": True})
     job = _run_job(client, svc, r.json()["job_id"], timeout=1800)
     assert job["state"] == "succeeded", job["log"][-5:]
     st = client.get("/api/maps/active").json()
-    assert st["has_images"] and {s["id"]: s["state"] for s in st["stages"]}["images"] == "done"
+    assert (
+        st["has_images"]
+        and {s["id"]: s["state"] for s in st["stages"]}["images"] == "done"
+    )
     # ready for planning was announced while the images were still to come
-    early = [s for s in snaps if s["ready"] and {x["id"]: x["state"] for x in s["stages"]}["images"] in ("pending", "running")]
+    early = [
+        s
+        for s in snaps
+        if s["ready"]
+        and {x["id"]: x["state"] for x in s["stages"]}["images"]
+        in ("pending", "running")
+    ]
     assert early, "ready only at the end"
     src = svc.graph.get("neo4j:test")
     assert src.query("MATCH (o:Observation) RETURN count(o) AS c")[0]["c"] > 0

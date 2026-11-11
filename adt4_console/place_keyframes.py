@@ -39,10 +39,21 @@ MAX_RANGE_NO_DEPTH = 5.0  # m, points without valid depth
 DEPTH_TOL, DEPTH_TOL_REL = 0.5, 0.1  # occluded when depth < z - max(tol, rel * z)
 MIN_Z = 0.3
 N_RING, RING_FRAC = 8, 0.6  # boundary samples: count, fraction of the ray length
-CAND_PAD = 5.0  # places whose centre is within MAX_RANGE + this of the camera are tested
+CAND_PAD = (
+    5.0  # places whose centre is within MAX_RANGE + this of the camera are tested
+)
 WIN = 2  # depth window half size (5x5)
 DEPTH_CACHE = 48  # decoded depth images kept for single-place queries
-PARAMS = (MAX_RANGE, MAX_RANGE_NO_DEPTH, DEPTH_TOL, DEPTH_TOL_REL, MIN_Z, N_RING, RING_FRAC, WIN)
+PARAMS = (
+    MAX_RANGE,
+    MAX_RANGE_NO_DEPTH,
+    DEPTH_TOL,
+    DEPTH_TOL_REL,
+    MIN_Z,
+    N_RING,
+    RING_FRAC,
+    WIN,
+)
 SORTS = ("newest", "oldest", "visible")
 
 
@@ -51,7 +62,9 @@ def is_place_record(rec) -> bool:
     return rec is not None and (rec.layer, rec.part) == MESH_PLACES
 
 
-def place_samples(pos, radii=None, n_ring: int = N_RING, frac: float = RING_FRAC) -> np.ndarray:
+def place_samples(
+    pos, radii=None, n_ring: int = N_RING, frac: float = RING_FRAC
+) -> np.ndarray:
     """Place centre plus ``n_ring`` points at ``frac`` of the boundary ray lengths
     (just the centre without a boundary). Same sampling as place_features.py."""
     p = np.asarray(pos, float)
@@ -86,7 +99,14 @@ def project(pts_w: np.ndarray, T_ws: np.ndarray, cam: Camera):
     zs = np.maximum(z, 1e-6)
     u = cam.fx * pc[..., 0] / zs + cam.cx
     v = cam.fy * pc[..., 1] / zs + cam.cy
-    ok = (z > MIN_Z) & (rng < MAX_RANGE) & (u >= 0) & (u < cam.width) & (v >= 0) & (v < cam.height)
+    ok = (
+        (z > MIN_Z)
+        & (rng < MAX_RANGE)
+        & (u >= 0)
+        & (u < cam.width)
+        & (v >= 0)
+        & (v < cam.height)
+    )
     return z, rng, u, v, ok
 
 
@@ -153,7 +173,9 @@ class PlaceKeyframeIndex:
         self.label = label
         self.place_syms = list(places)
         self.place_of = {s: i for i, s in enumerate(self.place_syms)}
-        self.centres = np.array([places[s][0] for s in self.place_syms], float).reshape(-1, 3)
+        self.centres = np.array([places[s][0] for s in self.place_syms], float).reshape(
+            -1, 3
+        )
         self.samples = [place_samples(*places[s]) for s in self.place_syms]
         self.frames = frames
         self._by_fid = {int(f["frame_id"]): f for f in frames}
@@ -163,7 +185,9 @@ class PlaceKeyframeIndex:
         self.sessions = self._sessions(sources or {})
         self.key = self._content_key()
         self.cache_dir = pathlib.Path(cache_dir).expanduser() if cache_dir else None
-        self._table: dict[int, np.ndarray] | None = None  # place index -> rows (kf, visible, dist)
+        self._table: dict[int, np.ndarray] | None = (
+            None  # place index -> rows (kf, visible, dist)
+        )
         self._per_place: dict[int, np.ndarray] = {}
         self._depth: OrderedDict = OrderedDict()
         self._lock = threading.Lock()
@@ -249,7 +273,9 @@ class PlaceKeyframeIndex:
             np.savez(tmp, place=place, rows=rows)
             tmp.replace(path)
             # keep the newest few tables (a table per map version)
-            old = sorted(path.parent.glob("*.npz"), key=lambda p: p.stat().st_mtime, reverse=True)
+            old = sorted(
+                path.parent.glob("*.npz"), key=lambda p: p.stat().st_mtime, reverse=True
+            )
             for p in old[8:]:
                 p.unlink(missing_ok=True)
         except OSError as e:
@@ -296,14 +322,23 @@ class PlaceKeyframeIndex:
         out = []
         for j in np.flatnonzero(counts):
             i = cand[j]
-            out.append((i, counts[j] / n[j], float(np.linalg.norm(self.centres[i] - self.cam_pos[k]))))
+            out.append(
+                (
+                    i,
+                    counts[j] / n[j],
+                    float(np.linalg.norm(self.centres[i] - self.cam_pos[k])),
+                )
+            )
         return out
 
     def _compute_place(self, i: int) -> np.ndarray:
         """One place against every keyframe: frustum + range first, depth on the shortlist."""
         if not len(self.frames):
             return np.zeros((0, 3))
-        near = np.flatnonzero(np.linalg.norm(self.cam_pos - self.centres[i], axis=1) < MAX_RANGE + CAND_PAD)
+        near = np.flatnonzero(
+            np.linalg.norm(self.cam_pos - self.centres[i], axis=1)
+            < MAX_RANGE + CAND_PAD
+        )
         pts = self.samples[i]
         rows = []
         for k in near:
@@ -329,10 +364,16 @@ class PlaceKeyframeIndex:
             if not cand:
                 continue
             # frustum + range before decoding the depth image
-            cand = [i for i in cand if project(self.samples[i], self.T[k], f["cam"])[4].any()]
+            cand = [
+                i
+                for i in cand
+                if project(self.samples[i], self.T[k], f["cam"])[4].any()
+            ]
             if not cand:
                 continue
-            for i, vis, dist in self._frame_rows(k, cand, load_depth(f["depth"], f["cam"].depth_scale)):
+            for i, vis, dist in self._frame_rows(
+                k, cand, load_depth(f["depth"], f["cam"].depth_scale)
+            ):
                 place.append(i)
                 rows.append((k, vis, dist))
         place_a = np.array(place, np.int64)
@@ -351,7 +392,9 @@ class PlaceKeyframeIndex:
         with self._lock:
             if self._table is not None or self._thread is not None:
                 return
-            self._thread = threading.Thread(target=self._build_safe, name="place-keyframes", daemon=True)
+            self._thread = threading.Thread(
+                target=self._build_safe, name="place-keyframes", daemon=True
+            )
             self._thread.start()
 
     def _build_safe(self) -> None:
@@ -412,7 +455,11 @@ class PlaceKeyframeIndex:
 
 def _date(t_ns: int) -> str | None:
     try:
-        return datetime.datetime.fromtimestamp(t_ns / 1e9, datetime.timezone.utc).date().isoformat()
+        return (
+            datetime.datetime.fromtimestamp(t_ns / 1e9, datetime.timezone.utc)
+            .date()
+            .isoformat()
+        )
     except (OverflowError, OSError, ValueError):
         return None
 

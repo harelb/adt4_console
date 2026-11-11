@@ -457,11 +457,21 @@ def test_pose_in_global_uses_frame_align():
     assert pose_in_global({"x": 1.0, "y": 2.0, "frame": "map"}, None) == (1.0, 2.0)
     # robot map frame, aligned: global <- hamilton/map = translate (10, 0) + yaw 90 deg
     s = 2**-0.5
-    fa = {"ok": True, "parent": "map", "child": "hamilton/map", "T": [10.0, 0.0, 0.0, s, 0.0, 0.0, s]}
+    fa = {
+        "ok": True,
+        "parent": "map",
+        "child": "hamilton/map",
+        "T": [10.0, 0.0, 0.0, s, 0.0, 0.0, s],
+    }
     x, y = pose_in_global({"x": 1.0, "y": 0.0, "frame": "hamilton/map"}, fa)
     assert x == pytest.approx(10.0) and y == pytest.approx(1.0)
     # not relocalized / some other frame: unknown, never compared across frames
-    assert pose_in_global({"x": 1.0, "y": 0.0, "frame": "hamilton/map"}, {**fa, "ok": False}) is None
+    assert (
+        pose_in_global(
+            {"x": 1.0, "y": 0.0, "frame": "hamilton/map"}, {**fa, "ok": False}
+        )
+        is None
+    )
     assert pose_in_global({"x": 1.0, "y": 0.0, "frame": "hamilton/odom"}, fa) is None
     assert pose_in_global(None, fa) is None
 
@@ -470,16 +480,35 @@ def test_staged_edits_say_publish_to_replan():
     sr, hub, *_ = make()
     sr.on_staged("live", 2, "delete O20; add cone")
     st = sr.state()
-    assert st["staged"]["count"] == 2 and "publish them to replan" in st["events"][-1]["text"]
-    assert st["recommendations"] == []  # nothing replans on edits the map does not have yet
+    assert (
+        st["staged"]["count"] == 2
+        and "publish them to replan" in st["events"][-1]["text"]
+    )
+    assert (
+        st["recommendations"] == []
+    )  # nothing replans on edits the map does not have yet
     sr.on_staged("live", 0)
     assert sr.state()["staged"] is None
 
 
 def test_removed_object_edit_keeps_its_position():
     out = scene_changes_from_edit(
-        [{"kind": "delete", "symbol": "O20", "layer": "Object", "class": "cone", "pos": [7.4, 0.0, 0.0]},
-         {"kind": "retire", "symbol": "O5", "layer": "Object", "class": "chair", "pos": [2.0, 2.0, 0.0]}]
+        [
+            {
+                "kind": "delete",
+                "symbol": "O20",
+                "layer": "Object",
+                "class": "cone",
+                "pos": [7.4, 0.0, 0.0],
+            },
+            {
+                "kind": "retire",
+                "symbol": "O5",
+                "layer": "Object",
+                "class": "chair",
+                "pos": [2.0, 2.0, 0.0],
+            },
+        ]
     )
     assert [c["old"] for c in out] == [[7.4, 0.0, 0.0], [2.0, 2.0, 0.0]]
     assert to_msg_change(out[0])["old_position"] == {"x": 7.4, "y": 0.0, "z": 0.0}

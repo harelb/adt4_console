@@ -18,7 +18,9 @@ from adt4_console import place_keyframes as pk  # noqa: E402
 
 W, H, F = 64, 48, 32.0  # 90 deg horizontal field of view
 # camera 1 m above the body, looking along body x (z_cam = x_body, x_cam = -y_body)
-BODY_T_SENSOR = np.array([[0, 0, 1, 0], [-1, 0, 0, 0], [0, -1, 0, 1.0], [0, 0, 0, 1]], float)
+BODY_T_SENSOR = np.array(
+    [[0, 0, 1, 0], [-1, 0, 0, 0], [0, -1, 0, 1.0], [0, 0, 0, 1]], float
+)
 
 # places (t prefix, MESH_PLACES): position, 16 rays of 1 m
 PLACES = {
@@ -35,7 +37,10 @@ KEYFRAMES = {
     "A2": ("a", 2, (2.0, 0.0, 0.0), 0.0, 50, None),  # no depth, t0 within 5 m
     "B0": ("b", 0, (0.0, 0.0, 0.0), 180.0, 200, 30.0),
 }
-SESSIONS = {"sa": {"robot": "alpha", "bag": "/bags/run_one/recorded_data"}, "sb": {"robot": "beta", "bag": "/bags/run_two"}}
+SESSIONS = {
+    "sa": {"robot": "alpha", "bag": "/bags/run_one/recorded_data"},
+    "sb": {"robot": "beta", "bag": "/bags/run_two"},
+}
 
 
 def _quat(yaw_deg):
@@ -79,7 +84,9 @@ def build_place_run(root):
     src = run / "src"
     src.mkdir()
     w = ImageStore.open_writer(run / "image_store", robot_id=0)
-    sid = w.add_sensor("cam", W, H, F, F, W / 2, H / 2, 0.001, body_T_sensor=BODY_T_SENSOR)
+    sid = w.add_sensor(
+        "cam", W, H, F, F, W / 2, H / 2, 0.001, body_T_sensor=BODY_T_SENSOR
+    )
     fids = {}
     for name, (c, k, pos, yaw, t, depth) in KEYFRAMES.items():
         rgb = src / f"{name}.jpg"
@@ -120,7 +127,7 @@ def _ref_visible_fraction(pts_w, T_ws, K, w, h, depth):
             continue
         dh, dw = depth.shape
         ui, vi = int(u[i] * dw / w), int(v[i] * dh / h)
-        win = depth[max(vi - 2, 0):vi + 3, max(ui - 2, 0):ui + 3]
+        win = depth[max(vi - 2, 0) : vi + 3, max(ui - 2, 0) : ui + 3]
         win = win[win > 0]
         if win.size == 0:
             seen += rng[i] < 5.0
@@ -135,22 +142,30 @@ def test_visibility_matches_reference_on_random_scenes():
     K = np.array([[F, 0, W / 2], [0, F, H / 2], [0, 0, 1]])
     for trial in range(200):
         T = _T(rng.uniform(-3, 3, 3), rng.uniform(-180, 180)) @ BODY_T_SENSOR
-        pts = pk.place_samples(rng.uniform(-14, 14, 3) * [1, 1, 0.1], list(rng.uniform(0.2, 3, 16)))
+        pts = pk.place_samples(
+            rng.uniform(-14, 14, 3) * [1, 1, 0.1], list(rng.uniform(0.2, 3, 16))
+        )
         depth = None
         if trial % 4:
-            depth = rng.uniform(0.5, 15, (H // 2, W // 2)).astype(np.float32)  # half resolution
+            depth = rng.uniform(0.5, 15, (H // 2, W // 2)).astype(
+                np.float32
+            )  # half resolution
             depth[rng.random(depth.shape) < 0.3] = 0  # invalid pixels
             if trial % 4 == 3:
                 depth[:] = 0
         z, r, u, v, ok = pk.project(pts, T, cam)
         got = pk.seen_points(z, r, u, v, ok, cam, depth).mean()
-        assert got == pytest.approx(_ref_visible_fraction(pts, T, K, W, H, depth)), trial
+        assert got == pytest.approx(_ref_visible_fraction(pts, T, K, W, H, depth)), (
+            trial
+        )
 
 
 def test_place_samples_centre_and_ring():
     pts = pk.place_samples((1.0, 2.0, 0.5), [2.0] * 16)
     assert pts.shape == (9, 3) and np.allclose(pts[0], (1.0, 2.0, 0.5))
-    assert np.allclose(np.linalg.norm(pts[1:, :2] - (1.0, 2.0), axis=1), 1.2)  # 0.6 of the ray
+    assert np.allclose(
+        np.linalg.norm(pts[1:, :2] - (1.0, 2.0), axis=1), 1.2
+    )  # 0.6 of the ray
     assert pk.place_samples((0, 0, 0)).shape == (1, 3)  # no boundary: the centre only
 
 
@@ -181,10 +196,17 @@ def test_place_seen_by_frustum_range_and_depth(pclient):
     client, fids, _ = pclient
     d = _get(client, "t0")
     # A0 sees it; A1's wall hides it; A2 has no depth but is within 5 m; B0 looks away
-    assert [k["frame_id"] for k in d["keyframes"]] == [fids["A0"], fids["A2"]]  # newest first
+    assert [k["frame_id"] for k in d["keyframes"]] == [
+        fids["A0"],
+        fids["A2"],
+    ]  # newest first
     a0 = d["keyframes"][0]
-    assert a0["agent"] == "a(0)" and a0["robot_key"] == "a" and a0["t_ns"] == 100 * 10**9
-    assert a0["visible"] == 1.0 and a0["dist_m"] == pytest.approx(math.hypot(5, 1), abs=0.01)
+    assert (
+        a0["agent"] == "a(0)" and a0["robot_key"] == "a" and a0["t_ns"] == 100 * 10**9
+    )
+    assert a0["visible"] == 1.0 and a0["dist_m"] == pytest.approx(
+        math.hypot(5, 1), abs=0.01
+    )
     assert a0["image"] == f"/api/graph/file:pl/frame/{fids['A0']}"
     assert d["sym"] == "t(0)" and d["n"] == 2 and d["keyframes_total"] == 4
     assert [k["frame_id"] for k in _get(client, "t1")["keyframes"]] == [fids["B0"]]
@@ -195,21 +217,43 @@ def test_place_seen_by_frustum_range_and_depth(pclient):
 
 def test_sorts_and_sessions(pclient):
     client, fids, _ = pclient
-    assert [k["frame_id"] for k in _get(client, "t0", "oldest")["keyframes"]] == [fids["A2"], fids["A0"]]
+    assert [k["frame_id"] for k in _get(client, "t0", "oldest")["keyframes"]] == [
+        fids["A2"],
+        fids["A0"],
+    ]
     # equal visibility: the nearer keyframe first
-    assert [k["frame_id"] for k in _get(client, "t0", "visible")["keyframes"]] == [fids["A2"], fids["A0"]]
+    assert [k["frame_id"] for k in _get(client, "t0", "visible")["keyframes"]] == [
+        fids["A2"],
+        fids["A0"],
+    ]
     s = _get(client, "t0")["sessions"]
     assert len(s) == 1
-    assert s[0]["key"] == "a" and s[0]["session"] == "sa" and s[0]["robot"] == "alpha" and s[0]["n"] == 2
-    assert s[0]["bag_short"] == "run_one" and s[0]["first_ns"] == 50 * 10**9 and s[0]["date"] == "1970-01-01"
+    assert (
+        s[0]["key"] == "a"
+        and s[0]["session"] == "sa"
+        and s[0]["robot"] == "alpha"
+        and s[0]["n"] == 2
+    )
+    assert (
+        s[0]["bag_short"] == "run_one"
+        and s[0]["first_ns"] == 50 * 10**9
+        and s[0]["date"] == "1970-01-01"
+    )
     s = _get(client, "t1")["sessions"]
     assert s[0]["robot"] == "beta" and s[0]["bag_short"] == "run_two"
 
 
 def test_errors(pclient):
     client, _, _ = pclient
-    assert client.get("/api/graph/file:pl/place/t0/keyframes", params={"sort": "x"}).status_code == 422
-    assert client.get("/api/graph/file:pl/place/P0/keyframes").status_code == 404  # not a mesh place
+    assert (
+        client.get(
+            "/api/graph/file:pl/place/t0/keyframes", params={"sort": "x"}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get("/api/graph/file:pl/place/P0/keyframes").status_code == 404
+    )  # not a mesh place
     assert client.get("/api/graph/file:pl/place/t99/keyframes").status_code == 404
     assert client.get("/api/graph/file:pl/frame/123456").status_code == 404
 
@@ -252,11 +296,21 @@ def test_neo4j_poses_from_agent_rows(place_run):
 
     run, fids = place_run
     agents = [
-        {"s": f"{c}{k}", "c": list(pos), "w": _quat(yaw).w, "x": 0.0, "y": 0.0, "z": _quat(yaw).z}
+        {
+            "s": f"{c}{k}",
+            "c": list(pos),
+            "w": _quat(yaw).w,
+            "x": 0.0,
+            "y": 0.0,
+            "z": _quat(yaw).z,
+        }
         for c, k, pos, yaw, *_ in KEYFRAMES.values()
     ]
     store = open_image_store(run / "image_store")
-    records = {f"t({i})": codec.NodeRecord(f"t({i})", 3, 1, pos, radii=(1.0,) * 16) for i, pos in PLACES.items()}
+    records = {
+        f"t({i})": codec.NodeRecord(f"t({i})", 3, 1, pos, radii=(1.0,) * 16)
+        for i, pos in PLACES.items()
+    }
 
     class Fake(Neo4jSource):
         def query(self, cypher, **params):
@@ -295,4 +349,8 @@ def test_map_without_image_store(settings, tmp_path):
     client, _ = make_client(settings)
     with client:
         r = client.get("/api/graph/file:bare/place/t0/keyframes")
-        assert r.status_code == 200 and r.json()["keyframes"] == [] and r.json()["keyframes_total"] == 0
+        assert (
+            r.status_code == 200
+            and r.json()["keyframes"] == []
+            and r.json()["keyframes_total"] == 0
+        )

@@ -61,8 +61,11 @@ def test_interfaces_endpoint(client):
     svc.fleet.update_nodes(
         {
             "hamilton": [
-                {"nickname": "tx_rx_monitor", "status": 1, "notes": NEW.replace(
-                    "192.0.2.2", "203.0.113.106")},
+                {
+                    "nickname": "tx_rx_monitor",
+                    "status": 1,
+                    "notes": NEW.replace("192.0.2.2", "203.0.113.106"),
+                },
                 {"nickname": "hydra", "status": 1, "notes": ""},
             ],
             "gauss": [{"nickname": "hydra", "status": 1, "notes": ""}],

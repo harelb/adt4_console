@@ -126,8 +126,18 @@ def query(prompt: str, base_url: str, timeout_s: float = 180.0, dry_run=True) ->
 
 
 #: knobs the "Search images" tool may pass through to ``POST /query``
-QUERY_KNOBS = ("mode", "top_k", "max_frames", "patience", "min_ts", "source", "conf",
-               "max_views", "render", "association")
+QUERY_KNOBS = (
+    "mode",
+    "top_k",
+    "max_frames",
+    "patience",
+    "min_ts",
+    "source",
+    "conf",
+    "max_views",
+    "render",
+    "association",
+)
 
 
 def query_with(prompt: str, base_url: str, timeout_s: float = 180.0, **knobs) -> dict:
@@ -140,13 +150,22 @@ def query_with(prompt: str, base_url: str, timeout_s: float = 180.0, **knobs) ->
         "max_frames": QUERY_MAX_FRAMES,
         "patience": QUERY_PATIENCE,
     }
-    payload.update({k: v for k, v in knobs.items() if k in QUERY_KNOBS and v is not None})
+    payload.update(
+        {k: v for k, v in knobs.items() if k in QUERY_KNOBS and v is not None}
+    )
     payload["dry_run"] = True
     return _post(base_url, "/query", payload, timeout_s)
 
 
-def rank(prompt: str, base_url: str, top_k: int = 24, source: str | None = None,
-         min_ts: int | None = None, thumb_dim: int = 320, timeout_s: float = 60.0) -> dict:
+def rank(
+    prompt: str,
+    base_url: str,
+    top_k: int = 24,
+    source: str | None = None,
+    min_ts: int | None = None,
+    thumb_dim: int = 320,
+    timeout_s: float = 60.0,
+) -> dict:
     payload = {"prompt": prompt, "top_k": int(top_k), "thumb_dim": int(thumb_dim)}
     if source:
         payload["source"] = source
@@ -159,9 +178,15 @@ def health(base_url: str, timeout_s: float = 3.0) -> dict:
     return _post(base_url, "/health", None, timeout_s)
 
 
-def frame(key: str | None, base_url: str, max_dim: int = 1280, timeout_s: float = 30.0,
-          pending_id: str | None = None, index: int | None = None,
-          view: int | None = None) -> dict:
+def frame(
+    key: str | None,
+    base_url: str,
+    max_dim: int = 1280,
+    timeout_s: float = 30.0,
+    pending_id: str | None = None,
+    index: int | None = None,
+    view: int | None = None,
+) -> dict:
     """A keyframe as a JPEG data URI: ``key``'s raw frame, or (``pending_id`` +
     ``index`` [+ ``view``]) a dry-run candidate's view with its mask and box."""
     params: dict = {"max_dim": int(max_dim)}
@@ -249,7 +274,9 @@ def candidate_events(result: dict, src: str | None) -> list[dict]:
                 "num_frames": c.get("num_frames"),
                 # {"symbol", "distance_m"} when committing merges into a mapped object
                 "would_merge_into": _merge_target(c),
-                "expires_in_s": float(expires) if isinstance(expires, (int, float)) else None,
+                "expires_in_s": float(expires)
+                if isinstance(expires, (int, float))
+                else None,
                 "src": src,
             }
         )
@@ -260,7 +287,10 @@ def _merge_target(c: dict) -> dict | None:
     m = c.get("would_merge_into")
     if isinstance(m, dict) and m.get("symbol"):
         d = m.get("distance_m")
-        return {"symbol": str(m["symbol"]), "distance_m": round(float(d), 2) if isinstance(d, (int, float)) else None}
+        return {
+            "symbol": str(m["symbol"]),
+            "distance_m": round(float(d), 2) if isinstance(d, (int, float)) else None,
+        }
     return None
 
 

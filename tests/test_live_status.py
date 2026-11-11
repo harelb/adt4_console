@@ -34,7 +34,9 @@ def test_waiting_then_connected(settings):
     with client:
         h = client.get("/api/health").json()
         assert h["fleetlink"] is False and h["fleetlink_state"] == "waiting"
-        assert "waiting for a zenoh router at tcp/203.0.113.1:7450" in h["fleetlink_error"]
+        assert (
+            "waiting for a zenoh router at tcp/203.0.113.1:7450" in h["fleetlink_error"]
+        )
         tr = client.get("/api/live").json()["transport"]
         assert tr["state"] == "waiting" and tr["endpoints"] == rx.transport.endpoints
         rx.transport.opened.set()

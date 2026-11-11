@@ -1,4 +1,5 @@
 """Shared geo helpers: UTM <-> lon/lat and slippy-map (XYZ) tile math."""
+
 import math
 
 from pyproj import Transformer
@@ -18,7 +19,7 @@ def utm_to_lonlat(e, n, epsg=EPSG_UTM18N):
 
 def lonlat_to_tile(lon, lat, z):
     """Slippy-map tile (x, y) containing lon/lat at zoom z (y grows southward)."""
-    n = 2 ** z
+    n = 2**z
     lat = max(min(lat, 85.0511287798), -85.0511287798)
     x = int((lon + 180.0) / 360.0 * n)
     y = int((1.0 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2.0 * n)
@@ -27,7 +28,7 @@ def lonlat_to_tile(lon, lat, z):
 
 def tile_to_lonlat(x, y, z):
     """Lon/lat of the north-west corner of tile (x, y) at zoom z."""
-    n = 2 ** z
+    n = 2**z
     lon = x / n * 360.0 - 180.0
     lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))
     return lon, lat

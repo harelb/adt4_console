@@ -46,9 +46,14 @@ def ground_to_pixel(x, y, pose: dict, K) -> tuple[float, float]:
     return (cx - left / h * fx, cy - fwd / h * fy)
 
 
-def footprint(pose: dict, K, width: int = WIDTH, height: int = HEIGHT) -> list[list[float]]:
+def footprint(
+    pose: dict, K, width: int = WIDTH, height: int = HEIGHT
+) -> list[list[float]]:
     """Ground polygon (map frame) the image covers."""
-    return [list(pixel_to_ground(u, v, pose, K)) for u, v in ((0, 0), (width, 0), (width, height), (0, height))]
+    return [
+        list(pixel_to_ground(u, v, pose, K))
+        for u, v in ((0, 0), (width, 0), (width, height), (0, height))
+    ]
 
 
 class TileMosaic:
@@ -65,7 +70,11 @@ class TileMosaic:
         key = (x, y)
         if key not in self._cache:
             arr = None
-            data = self.tiles.get(self.layer, self.zoom, x, y) if self.tiles is not None else None
+            data = (
+                self.tiles.get(self.layer, self.zoom, x, y)
+                if self.tiles is not None
+                else None
+            )
             if data:
                 from PIL import Image
 
@@ -92,7 +101,9 @@ class TileMosaic:
         lon, lat = tr.transform(E.ravel(), N.ravel())
         n = 2.0**self.zoom  # lonlat_to_tile, vectorised
         tx = ((np.asarray(lon) + 180.0) / 360.0 * n).reshape(X.shape)
-        ty = ((1.0 - np.arcsinh(np.tan(np.radians(np.asarray(lat)))) / math.pi) / 2.0 * n).reshape(X.shape)
+        ty = (
+            (1.0 - np.arcsinh(np.tan(np.radians(np.asarray(lat)))) / math.pi) / 2.0 * n
+        ).reshape(X.shape)
         ix, iy = np.floor(tx).astype(int), np.floor(ty).astype(int)
         for key in set(zip(ix.ravel().tolist(), iy.ravel().tolist())):
             arr = self._tile(*key)
@@ -106,8 +117,14 @@ class TileMosaic:
         return out
 
 
-def render_nadir(pose: dict, mosaic: TileMosaic | None, planted=(), width: int = WIDTH,
-                 height: int = HEIGHT, step: int = 2) -> tuple[bytes, list[dict]]:
+def render_nadir(
+    pose: dict,
+    mosaic: TileMosaic | None,
+    planted=(),
+    width: int = WIDTH,
+    height: int = HEIGHT,
+    step: int = 2,
+) -> tuple[bytes, list[dict]]:
     """(jpeg, visible planted objects as ``{label, pos, bbox:[u0,v0,u1,v1]}``).
 
     Sampled on a ``step``-pixel grid and upscaled: a mock image, not a photo."""

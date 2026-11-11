@@ -101,7 +101,12 @@ def resolve_target(mission: Mission, world: World, t: Task):
         return None, False, tgt, "no scene graph to resolve symbols"
     pos = world.graph.symbol_pos(tgt)
     if pos is None:
-        return None, False, tgt, f"{tgt} is not in the scene graph"  # target_missing() matches this
+        return (
+            None,
+            False,
+            tgt,
+            f"{tgt} is not in the scene graph",
+        )  # target_missing() matches this
     from ..graph_service import canonical_symbol
 
     return [pos[0], pos[1]], False, canonical_symbol(tgt), None
@@ -148,7 +153,10 @@ def task_motion(mission: Mission, world: World, t: Task, pos) -> Motion:
     if t.type == "explore_area":
         if not t.area or len(t.area) < 3:
             return Motion(here, error="explore_area needs an area polygon")
-        spacing = float(t.params.get("spacing_m") or P.footprint_m(agent.altitude) * (1 - P.COVERAGE_OVERLAP))
+        spacing = float(
+            t.params.get("spacing_m")
+            or P.footprint_m(agent.altitude) * (1 - P.COVERAGE_OVERLAP)
+        )
         sweep = P.lawnmower(t.area, spacing, pos)
         if not sweep:
             return Motion(here, error="area too small to sweep")
@@ -160,7 +168,11 @@ def task_motion(mission: Mission, world: World, t: Task, pos) -> Motion:
         return Motion(here, tentative=tentative, symbol=sym, error=err)
     dwell, goal = 0.0, xy
     if t.type == "inspect":
-        dwell = DWELL_IMAGE_S if agent.kind == "quad" else float(t.params.get("dwell_s", DWELL_INSPECT_S))
+        dwell = (
+            DWELL_IMAGE_S
+            if agent.kind == "quad"
+            else float(t.params.get("dwell_s", DWELL_INSPECT_S))
+        )
         if agent.is_ground:
             goal = _standoff(pos, xy, float(t.params.get("standoff_m", 1.5)))
     elif t.type == "request_image":
@@ -194,7 +206,12 @@ def preview(mission: Mission, world: World) -> dict:
     try:
         order = mission.topo_order()
     except ValueError as e:
-        return {"tasks": {}, "agents": {}, "issues": [{"level": "error", "msg": str(e)}], "makespan": None}
+        return {
+            "tasks": {},
+            "agents": {},
+            "issues": [{"level": "error", "msg": str(e)}],
+            "makespan": None,
+        }
 
     pos = {}
     for a in mission.agents:
@@ -212,21 +229,47 @@ def preview(mission: Mission, world: World) -> dict:
                                       "graph): its first leg is a straight line"})  # fmt: skip
         pos[a.id] = s
         if a.kind == "quad" and not world.quad_available:
-            issues.append({"level": "warning", "agent": a.id, "msg": "no quad image source; searches cannot find anything"})
+            issues.append(
+                {
+                    "level": "warning",
+                    "agent": a.id,
+                    "msg": "no quad image source; searches cannot find anything",
+                }
+            )
     if not any(a.kind == "quad" for a in mission.agents):
         for t in mission.tasks:
             if t.type == "explore_area":
-                issues.append({"level": "error", "task": t.id, "msg": "explore_area needs a quad"})
+                issues.append(
+                    {"level": "error", "task": t.id, "msg": "explore_area needs a quad"}
+                )
 
     # path per task, in each agent's own order (positions chain per agent)
     for t in mission.tasks:
         agent = mission.agent(t.agent)
         if agent.is_ground and t.type in ("explore_area",):
-            issues.append({"level": "error", "task": t.id, "msg": f"{agent.kind} cannot explore_area (quads only)"})
+            issues.append(
+                {
+                    "level": "error",
+                    "task": t.id,
+                    "msg": f"{agent.kind} cannot explore_area (quads only)",
+                }
+            )
         if not agent.is_ground and t.type in ("pick", "place", "drag"):
-            issues.append({"level": "error", "task": t.id, "msg": f"a {agent.kind} cannot {t.type} (ground robots with an arm)"})
+            issues.append(
+                {
+                    "level": "error",
+                    "task": t.id,
+                    "msg": f"a {agent.kind} cannot {t.type} (ground robots with an arm)",
+                }
+            )
         if agent.kind == "husky" and t.type in ("pick", "place", "drag"):
-            issues.append({"level": "error", "task": t.id, "msg": f"{agent.id} is a husky (no arm): it cannot {t.type}"})
+            issues.append(
+                {
+                    "level": "error",
+                    "task": t.id,
+                    "msg": f"{agent.id} is a husky (no arm): it cannot {t.type}",
+                }
+            )
         try:
             m = task_motion(mission, world, t, pos[t.agent])
         except P.NoPath as e:
@@ -281,7 +324,13 @@ def preview(mission: Mission, world: World) -> dict:
                 ev = "found:" + (t.found_query() or "")
             p = producers.get(ev)
             if p is None:
-                issues.append({"level": "error", "task": tid, "msg": f"{tid}: nothing raises event '{ev}'"})
+                issues.append(
+                    {
+                        "level": "error",
+                        "task": tid,
+                        "msg": f"{tid}: nothing raises event '{ev}'",
+                    }
+                )
             elif p in end:
                 start = max(start, end[p])
             rec["waits_for"] = p
@@ -334,7 +383,9 @@ def end_pose(path, yaw=None):
         if math.dist(a, pts[-1]) > 0.05:
             yaw = math.atan2(pts[-1][1] - a[1], pts[-1][0] - a[0])
             break
-    return [round(float(pts[-1][0]), 2), round(float(pts[-1][1]), 2)], (None if yaw is None else round(yaw, 3))
+    return [round(float(pts[-1][0]), 2), round(float(pts[-1][1]), 2)], (
+        None if yaw is None else round(yaw, 3)
+    )
 
 
 def goal_points(mission: Mission, out_tasks: dict) -> dict:
@@ -346,7 +397,11 @@ def goal_points(mission: Mission, out_tasks: dict) -> dict:
     for t in mission.tasks:
         rec = out_tasks.get(t.id) or {}
         xy, yaw[t.agent] = end_pose(rec.get("path"), yaw.get(t.agent))
-        sym = t.target if isinstance(t.target, str) and not t.target.startswith(FOUND_PREFIX) else None
+        sym = (
+            t.target
+            if isinstance(t.target, str) and not t.target.startswith(FOUND_PREFIX)
+            else None
+        )
         if not sym or xy is None:
             continue
         lst = goals.setdefault(t.agent, [])
@@ -359,7 +414,10 @@ def search_queries(mission: Mission) -> list[str]:
     """What the mission's searches look for (``params.query`` / ``$found:<q>``)."""
     qs = []
     for t in mission.tasks:
-        for q in (str(t.params.get("query") or "").strip().lower(), t.found_query() or ""):
+        for q in (
+            str(t.params.get("query") or "").strip().lower(),
+            t.found_query() or "",
+        ):
             if q and q not in qs:
                 qs.append(q)
     return qs
@@ -377,7 +435,11 @@ def planted_unmatched(mission: Mission) -> list[dict]:
     out = []
     for label in sorted({p.label.strip().lower() for p in mission.planted}):
         if not any(_matches(q, label) for q in qs):
-            what = f"its searches look for {', '.join(repr(q) for q in qs)}" if qs else "it has no search"
+            what = (
+                f"its searches look for {', '.join(repr(q) for q in qs)}"
+                if qs
+                else "it has no search"
+            )
             out.append({"level": "warning", "code": "planted_unmatched", "label": label,
                         "msg": f"mock object '{label}' matches no search in this mission ({what})"})  # fmt: skip
     return out
@@ -412,7 +474,10 @@ def point_along(path, d: float):
         seg = math.dist(path[i][:2], path[i + 1][:2])
         if d <= seg and seg > 0:
             k = d / seg
-            return [path[i][0] + (path[i + 1][0] - path[i][0]) * k, path[i][1] + (path[i + 1][1] - path[i][1]) * k]
+            return [
+                path[i][0] + (path[i + 1][0] - path[i][0]) * k,
+                path[i][1] + (path[i + 1][1] - path[i][1]) * k,
+            ]
         d -= seg
     return list(path[-1][:2])
 
@@ -429,7 +494,10 @@ def deconflict(mission: Mission, tasks: dict) -> list[dict]:
     horizon = max([r["t_end"] for r in tasks.values()], default=0.0)
     starts = {}
     for a in ground:
-        first = next((tasks[x.id] for x in mission.agent_tasks(a.id) if tasks[x.id]["path"]), None)
+        first = next(
+            (tasks[x.id] for x in mission.agent_tasks(a.id) if tasks[x.id]["path"]),
+            None,
+        )
         if first:
             starts[a.id] = first["path"][0]
     out, seen = [], set()
@@ -464,6 +532,8 @@ def deconflict(mission: Mission, tasks: dict) -> list[dict]:
 def _parked(pair, where, starts, d: float, t: float) -> bool:
     """Both agents still at their own starts, and either early in the mission or
     no closer than they were parked (deconflict)."""
-    if not all(k in starts and math.dist(where[k], starts[k]) < DECONFLICT_M for k in pair):
+    if not all(
+        k in starts and math.dist(where[k], starts[k]) < DECONFLICT_M for k in pair
+    ):
         return False
     return t <= START_GRACE_S or d >= math.dist(starts[pair[0]], starts[pair[1]]) - 0.25

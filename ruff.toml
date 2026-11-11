@@ -1,0 +1,6 @@
+# Same rules as Awesome-DCIST-T4's .pre-commit-config.yaml: ruff's default
+# lint set plus import sorting, and ruff-format.
+target-version = "py312"
+
+[lint]
+extend-select = ["I"]

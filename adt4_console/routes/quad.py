@@ -16,14 +16,19 @@ router = APIRouter(prefix="/api/quad")
 def _quad(request: Request):
     q = services(request).quad
     if q is None or not q.configured:
-        raise HTTPException(503, "quad link not configured (--quad-cmd-uri / --quad-image-uri)")
+        raise HTTPException(
+            503, "quad link not configured (--quad-cmd-uri / --quad-image-uri)"
+        )
     return q
 
 
 @router.get("")
 def status(request: Request):
     q = services(request).quad
-    return {"configured": bool(q is not None and q.configured), **(q.info() if q is not None else {})}
+    return {
+        "configured": bool(q is not None and q.configured),
+        **(q.info() if q is not None else {}),
+    }
 
 
 class Waypoint(BaseModel):
@@ -47,4 +52,7 @@ def image(request: Request):
         header, jpeg = _quad(request).request_image()
     except QuadUnavailable as e:
         raise HTTPException(503, str(e)) from None
-    return {**header, "jpeg": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()}
+    return {
+        **header,
+        "jpeg": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode(),
+    }

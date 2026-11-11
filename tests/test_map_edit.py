@@ -49,7 +49,10 @@ def test_file_maps_are_read_only(settings, tmp_path):
 
     settings.maps = {"syn": str(build_run(tmp_path / "run"))}
     client, _ = make_client(settings)
-    r = client.post("/api/edit/file:syn/nodes", json={"layer": "Object", "pos": [0, 0], "class": "crate"})
+    r = client.post(
+        "/api/edit/file:syn/nodes",
+        json={"layer": "Object", "pos": [0, 0], "class": "crate"},
+    )
     assert r.status_code == 400 and "only Neo4j maps" in r.json()["detail"]
     assert client.get("/api/edit/neo4j:nope/state").status_code == 404
 
@@ -57,7 +60,14 @@ def test_file_maps_are_read_only(settings, tmp_path):
 def test_region_lookup_and_context():
     from adt4_console.mission import llm_planner
 
-    regions = [{"symbol": "R0", "name": "Courtyard", "polygon": [[0, 0], [4, 0], [4, 4]], "members": {"Object": 2}}]
+    regions = [
+        {
+            "symbol": "R0",
+            "name": "Courtyard",
+            "polygon": [[0, 0], [4, 0], [4, 4]],
+            "members": {"Object": 2},
+        }
+    ]
     text = llm_planner.context_text({}, None, regions)
     assert "Named areas" in text and '"symbol":"R0"' in text
     lk = llm_planner._region_lookup(regions)
@@ -91,8 +101,14 @@ def penn(settings, tmp_path):
     with client:
         yield client, svc, q
     # everything a test added: nodes far away (active or retired), audit, labelspaces
-    q("MATCH (n) WHERE n.pos_x >= $far AND n.pos_y >= $far DETACH DELETE n", far=FAR - 100)
-    q("MATCH (m:GraphMutation) WHERE NOT m.mutation_id IN $keep DETACH DELETE m", keep=before["mutations"])
+    q(
+        "MATCH (n) WHERE n.pos_x >= $far AND n.pos_y >= $far DETACH DELETE n",
+        far=FAR - 100,
+    )
+    q(
+        "MATCH (m:GraphMutation) WHERE NOT m.mutation_id IN $keep DETACH DELETE m",
+        keep=before["mutations"],
+    )
     for key in ("object", "room"):
         if key in before["ls"]:
             q("MATCH (l:_Labelspace {layer: $k}) SET l.ids = $i, l.names = $n",
@@ -121,14 +137,33 @@ def test_node_crud_history_undo(penn):
     sym = out["affected"][0]
     assert not out["staged"] and out["map_version"] == v0 + 1
     assert any(line.startswith(f"new object {sym}") for line in out["summary"])
-    assert q("MATCH (n:Object {nodeSymbol: $s}) RETURN n.class AS c", s=sym)[0]["c"] == "map edit test crate"
+    assert (
+        q("MATCH (n:Object {nodeSymbol: $s}) RETURN n.class AS c", s=sym)[0]["c"]
+        == "map edit test crate"
+    )
     # the viewer source sees it
     assert svc.graph.get(SRC).node_props(sym)["class"] == "map edit test crate"
 
-    r = client.patch(f"/api/edit/{SRC}/nodes/{sym}", json={"set": {"class": "tree", "name": "big tree"}})
-    assert r.status_code == 200 and f"{sym} class map edit test crate -> tree" in r.json()["summary"]
-    assert client.patch(f"/api/edit/{SRC}/nodes/{sym}", json={"set": {"nodeSymbol": "X1"}}).status_code == 400
-    assert client.patch(f"/api/edit/{SRC}/nodes/O9999999", json={"set": {"name": "x"}}).status_code == 404
+    r = client.patch(
+        f"/api/edit/{SRC}/nodes/{sym}",
+        json={"set": {"class": "tree", "name": "big tree"}},
+    )
+    assert (
+        r.status_code == 200
+        and f"{sym} class map edit test crate -> tree" in r.json()["summary"]
+    )
+    assert (
+        client.patch(
+            f"/api/edit/{SRC}/nodes/{sym}", json={"set": {"nodeSymbol": "X1"}}
+        ).status_code
+        == 400
+    )
+    assert (
+        client.patch(
+            f"/api/edit/{SRC}/nodes/O9999999", json={"set": {"name": "x"}}
+        ).status_code
+        == 404
+    )
 
     # retire (default delete) + undo
     r = client.delete(f"/api/edit/{SRC}/nodes/{sym}")
@@ -142,13 +177,24 @@ def test_node_crud_history_undo(penn):
     assert r.status_code == 200 and not q("MATCH (n {nodeSymbol: $s}) RETURN n", s=sym)
     hist = client.get(f"/api/edit/{SRC}/history?limit=10").json()["history"]
     assert hist[0]["summary"].startswith("delete") and hist[0]["undoable"]
-    assert hist[0]["provenance"]["source"] == "adt4_console" and hist[0]["provenance"]["src"] == SRC
-    r = client.post(f"/api/edit/{SRC}/undo", json={"mutation_id": hist[0]["mutation_id"]})
+    assert (
+        hist[0]["provenance"]["source"] == "adt4_console"
+        and hist[0]["provenance"]["src"] == SRC
+    )
+    r = client.post(
+        f"/api/edit/{SRC}/undo", json={"mutation_id": hist[0]["mutation_id"]}
+    )
     assert r.status_code == 200
-    assert q("MATCH (n:Object {nodeSymbol: $s}) RETURN n.class AS c", s=sym)[0]["c"] == "tree"
+    assert (
+        q("MATCH (n:Object {nodeSymbol: $s}) RETURN n.class AS c", s=sym)[0]["c"]
+        == "tree"
+    )
     # a stale expected_revision is a 409
     rev = client.get(f"/api/edit/{SRC}/state").json()["revision"]
-    r = client.patch(f"/api/edit/{SRC}/nodes/{sym}", json={"set": {"name": "x"}, "expected_revision": rev - 1})
+    r = client.patch(
+        f"/api/edit/{SRC}/nodes/{sym}",
+        json={"set": {"name": "x"}, "expected_revision": rev - 1},
+    )
     assert r.status_code == 409
 
 
@@ -162,16 +208,27 @@ def test_edges_group_regions_batch_preview(penn):
     assert r.status_code == 200 and r.json()["changes"][0]["type"] == "OBJECT_CONNECTED"
     r = client.request("DELETE", f"/api/edit/{SRC}/edges", json={"from": a, "to": b})
     assert r.status_code == 200 and r.json()["changes"][0]["kind"] == "edge-"
-    poly = [[FAR - 1, FAR - 1], [FAR + 5, FAR - 1], [FAR + 5, FAR + 5], [FAR - 1, FAR + 5]]
+    poly = [
+        [FAR - 1, FAR - 1],
+        [FAR + 5, FAR - 1],
+        [FAR + 5, FAR + 5],
+        [FAR - 1, FAR + 5],
+    ]
     pv = client.post(f"/api/edit/{SRC}/preview", json={"ops": [
         {"op": "group", "name": "edit test yard", "polygon": poly}]}).json()  # fmt: skip
     assert pv["dry_run"] and "containing 2 objects" in pv["summary"][-1]
     assert not q("MATCH (r:Room {name: 'edit test yard'}) RETURN r")
-    r = client.post(f"/api/edit/{SRC}/group", json={"name": "edit test yard", "polygon": poly})
+    r = client.post(
+        f"/api/edit/{SRC}/group", json={"name": "edit test yard", "polygon": poly}
+    )
     assert r.status_code == 200, r.text
     room = r.json()["changes"][-1]["symbol"]
-    regs = {x["symbol"]: x for x in client.get(f"/api/edit/{SRC}/regions").json()["regions"]}
-    assert regs[room]["name"] == "edit test yard" and regs[room]["members"] == {"Object": 2}
+    regs = {
+        x["symbol"]: x for x in client.get(f"/api/edit/{SRC}/regions").json()["regions"]
+    }
+    assert regs[room]["name"] == "edit test yard" and regs[room]["members"] == {
+        "Object": 2
+    }
     assert q("MATCH (r:Room {name: 'edit test yard'})-[:CONTAINS]->(o:Object {class: 'tree'}) "
              "RETURN count(o) AS c")[0]["c"] == 1  # fmt: skip
     # the console graph (db_to_spark_dsg) has the room with its name
@@ -190,7 +247,10 @@ def test_edges_group_regions_batch_preview(penn):
         {"op": "update_node", "symbol": a, "set": {"class": "chair"}},
         {"op": "retire_node", "symbol": "O9999999"}]})  # fmt: skip
     assert r.status_code == 404
-    assert q("MATCH (n:Object {nodeSymbol: $s}) RETURN n.class AS c", s=a)[0]["c"] == "crate"
+    assert (
+        q("MATCH (n:Object {nodeSymbol: $s}) RETURN n.class AS c", s=a)[0]["c"]
+        == "crate"
+    )
     client.post(f"/api/edit/{SRC}/undo", json={})  # the batch
     client.post(f"/api/edit/{SRC}/undo", json={})  # the region
     assert not q("MATCH (r:Room {name: 'edit test yard'}) RETURN r")
@@ -199,28 +259,56 @@ def test_edges_group_regions_batch_preview(penn):
 @pytest.mark.integration
 def test_staged_while_live_then_publish(penn):
     client, svc, q = penn
-    svc.launch_state.set({"experiment": "test", "robots": ["hamilton"], "started_at": time.time()})
+    svc.launch_state.set(
+        {"experiment": "test", "robots": ["hamilton"], "started_at": time.time()}
+    )
     try:
         st = client.get(f"/api/edit/{SRC}/state").json()
-        assert st["mode"] == "staged" and st["live"] and st["launch"]["robots"] == ["hamilton"]
+        assert (
+            st["mode"] == "staged"
+            and st["live"]
+            and st["launch"]["robots"] == ["hamilton"]
+        )
         v0 = st["map_version"]
         out = _obj(client, 0, 0, cls="staged test crate")
-        assert out["staged"] and out["count"] == 1 and "new object" in out["summary"][-1]
-        assert q("MATCH (n:Object) WHERE n.pos_x = $x RETURN count(n) AS c", x=FAR)[0]["c"] == 0
+        assert (
+            out["staged"] and out["count"] == 1 and "new object" in out["summary"][-1]
+        )
+        assert (
+            q("MATCH (n:Object) WHERE n.pos_x = $x RETURN count(n) AS c", x=FAR)[0]["c"]
+            == 0
+        )
         staged = client.get(f"/api/edit/{SRC}/staged").json()
         sym = staged["staged"][0]["op"]["symbol"]  # pinned by the dry run
         assert sym and staged["count"] == 1
         # a later staged op names the staged node
-        r = client.patch(f"/api/edit/{SRC}/nodes/{sym}", json={"set": {"name": "the crate"}})
+        r = client.patch(
+            f"/api/edit/{SRC}/nodes/{sym}", json={"set": {"name": "the crate"}}
+        )
         assert r.status_code == 200 and r.json()["staged"] and r.json()["count"] == 2
         # an invalid op is refused, not staged
-        assert client.patch(f"/api/edit/{SRC}/nodes/O9999999", json={"set": {"name": "x"}}).status_code == 404
-        assert client.get(f"/api/edit/{SRC}/state").json()["map_version"] == v0  # robots saw nothing
-        assert client.post(f"/api/edit/{SRC}/staged/publish", json={"confirm": "yes"}).status_code == 400
+        assert (
+            client.patch(
+                f"/api/edit/{SRC}/nodes/O9999999", json={"set": {"name": "x"}}
+            ).status_code
+            == 404
+        )
+        assert (
+            client.get(f"/api/edit/{SRC}/state").json()["map_version"] == v0
+        )  # robots saw nothing
+        assert (
+            client.post(
+                f"/api/edit/{SRC}/staged/publish", json={"confirm": "yes"}
+            ).status_code
+            == 400
+        )
         r = client.post(f"/api/edit/{SRC}/staged/publish", json={"confirm": "publish"})
         assert r.status_code == 200 and r.json()["published"] == 2
         assert r.json()["map_version"] == v0 + 1  # one unit of work, one version bump
-        assert q("MATCH (n:Object {nodeSymbol: $s}) RETURN n.name AS n", s=sym)[0]["n"] == "the crate"
+        assert (
+            q("MATCH (n:Object {nodeSymbol: $s}) RETURN n.name AS n", s=sym)[0]["n"]
+            == "the crate"
+        )
         assert client.get(f"/api/edit/{SRC}/staged").json()["count"] == 0
         # discard
         _obj(client, 1, 1)
@@ -242,21 +330,35 @@ def test_chat_propose_map_edit_card_and_approve(penn, monkeypatch, tmp_path):
         "the vehicle is a crate", None, SRC, None,
     )  # fmt: skip
     card = events[0]
-    assert card["type"] == "map_edit" and f"{sym} class vehicle -> crate" in card["diff"]
+    assert (
+        card["type"] == "map_edit" and f"{sym} class vehicle -> crate" in card["diff"]
+    )
     assert out["pending_approval"] and not card["staged"]
-    assert q("MATCH (n:Object {nodeSymbol: $s}) RETURN n.class AS c", s=sym)[0]["c"] == "vehicle"
+    assert (
+        q("MATCH (n:Object {nodeSymbol: $s}) RETURN n.class AS c", s=sym)[0]["c"]
+        == "vehicle"
+    )
     # bad ops come back to the model, no card
     ev, bad = svc.chat._run_tool("propose_map_edit", {"summary": "x", "ops": [
         {"op": "update_node", "symbol": "O9999999", "set": {"class": "crate"}}]}, "x", None, SRC, None)  # fmt: skip
     assert ev == [] and "invalid edit" in bad["error"]
     # reject, then approve a fresh proposal
-    assert client.post("/api/chat/map_edit", json={"id": card["id"], "approve": False}).json()["rejected"]
-    assert not client.post("/api/chat/map_edit", json={"id": card["id"], "approve": True}).json()["ok"]
+    assert client.post(
+        "/api/chat/map_edit", json={"id": card["id"], "approve": False}
+    ).json()["rejected"]
+    assert not client.post(
+        "/api/chat/map_edit", json={"id": card["id"], "approve": True}
+    ).json()["ok"]
     events, _ = svc.chat._run_tool("propose_map_edit", {"summary": "it is a crate", "ops": [
         {"op": "update_node", "symbol": sym, "set": {"class": "crate"}}]}, "x", None, SRC, None)  # fmt: skip
-    r = client.post("/api/chat/map_edit", json={"id": events[0]["id"], "approve": True}).json()
+    r = client.post(
+        "/api/chat/map_edit", json={"id": events[0]["id"], "approve": True}
+    ).json()
     assert r["ok"] and not r["staged"] and r["mutation_id"]
-    assert q("MATCH (n:Object {nodeSymbol: $s}) RETURN n.class AS c", s=sym)[0]["c"] == "crate"
+    assert (
+        q("MATCH (n:Object {nodeSymbol: $s}) RETURN n.class AS c", s=sym)[0]["c"]
+        == "crate"
+    )
     hist = client.get(f"/api/edit/{SRC}/history?limit=1").json()["history"][0]
     assert hist["provenance"]["via"] == "chat" and hist["summary"] == "it is a crate"
 
@@ -276,8 +378,13 @@ def test_chat_propose_map_edit_card_and_approve(penn, monkeypatch, tmp_path):
         return NS(model="gpt-4.1-mini", usage=NS(prompt_tokens=10, completion_tokens=5),
                   choices=[NS(message=script.pop(0))])  # fmt: skip
 
-    svc.chat._client, svc.chat._client_provider = NS(chat=NS(completions=NS(create=create))), "openai"
-    lines = client.post("/api/chat", json={"message": "call it the blue crate", "src": SRC}).text.splitlines()
+    svc.chat._client, svc.chat._client_provider = (
+        NS(chat=NS(completions=NS(create=create))),
+        "openai",
+    )
+    lines = client.post(
+        "/api/chat", json={"message": "call it the blue crate", "src": SRC}
+    ).text.splitlines()
     out = [json.loads(x) for x in lines]
     assert [o["type"] for o in out][:2] == ["map_edit", "text"]
     assert out[0]["diff"] == [f"{sym} name vehicle -> blue crate"]
@@ -289,18 +396,30 @@ def test_chat_propose_map_edit_card_and_approve(penn, monkeypatch, tmp_path):
 @pytest.mark.integration
 def test_mission_records_map_revision_and_goes_stale(penn):
     client, svc, q = penn
-    poly = [[FAR - 1, FAR - 1], [FAR + 5, FAR - 1], [FAR + 5, FAR + 5], [FAR - 1, FAR + 5]]
+    poly = [
+        [FAR - 1, FAR - 1],
+        [FAR + 5, FAR - 1],
+        [FAR + 5, FAR + 5],
+        [FAR - 1, FAR + 5],
+    ]
     _obj(client, 1, 1, cls="tree")
-    room = client.post(f"/api/edit/{SRC}/group", json={"name": "mission test yard", "polygon": poly}).json()
+    room = client.post(
+        f"/api/edit/{SRC}/group", json={"name": "mission test yard", "polygon": poly}
+    ).json()
     rsym = room["changes"][-1]["symbol"]
     # the mission planner's chat context lists the region; an area by name becomes its polygon
-    svc.chat._ctx.value = {"roster": [{"id": "quad1", "kind": "quad", "start": [FAR, FAR]}], "areas": []}
+    svc.chat._ctx.value = {
+        "roster": [{"id": "quad1", "kind": "quad", "start": [FAR, FAR]}],
+        "areas": [],
+    }
     assert "mission test yard" in svc.chat._mission_prompt(SRC)
     args = {"name": "search the yard", "agents": [{"id": "quad1", "kind": "quad"}],
             "tasks": [{"id": "s", "agent": "quad1", "type": "explore_area", "area": "mission test yard",
                        "params": {"query": "crate"}},
                       {"id": "g", "agent": "quad1", "type": "goto", "target": rsym}]}  # fmt: skip
-    events, out = svc.chat._run_tool("propose_mission", args, "search the yard", None, SRC, None)
+    events, out = svc.chat._run_tool(
+        "propose_mission", args, "search the yard", None, SRC, None
+    )
     assert "mission_id" in out, out
     m = svc.missions.get(out["mission_id"])
     assert m.tasks[0].area == [[x, y] for x, y in poly]
@@ -311,9 +430,15 @@ def test_mission_records_map_revision_and_goes_stale(penn):
     _obj(client, 2, 2)
     pv = client.get(f"/api/missions/{m.id}/preview").json()
     assert pv["map"]["stale"] and pv["map"]["edits_since"] == 1
-    assert any(i.get("code") == "map_stale" and "map changed since planning (1 edit)" in i["msg"] for i in pv["issues"])
+    assert any(
+        i.get("code") == "map_stale"
+        and "map changed since planning (1 edit)" in i["msg"]
+        for i in pv["issues"]
+    )
     pv = client.post(f"/api/missions/{m.id}/rebase").json()["preview"]
-    assert not pv["map"]["stale"] and not any(i.get("code") == "map_stale" for i in pv["issues"])
+    assert not pv["map"]["stale"] and not any(
+        i.get("code") == "map_stale" for i in pv["issues"]
+    )
     snap = client.post(f"/api/missions/{m.id}/map_snapshot", json={}).json()
     assert snap["mission"] == m.id and svc.missions.get(m.id).map_snapshot == snap["id"]
     assert snap["counts"]["Room"] >= 1
@@ -353,7 +478,11 @@ def _wait(client, jid, state=None, timeout=60):
     t0 = time.time()
     while time.time() - t0 < timeout:
         j = client.get(f"/api/jobs/{jid}").json()
-        if (state and j["state"] == state) or j["state"] in ("succeeded", "failed", "cancelled"):
+        if (state and j["state"] == state) or j["state"] in (
+            "succeeded",
+            "failed",
+            "cancelled",
+        ):
             return j
         time.sleep(0.1)
     raise AssertionError(f"job {jid} stuck: {j}")
@@ -392,7 +521,9 @@ def test_snapshot_restore_job_on_scratch(scratch):
     assert snap["counts"] == counts
     # edit after the snapshot
     client.delete(f"/api/edit/{S}/nodes/O0")
-    client.post(f"/api/edit/{S}/nodes", json={"layer": "Object", "pos": [2, 2], "class": "tree"})
+    client.post(
+        f"/api/edit/{S}/nodes", json={"layer": "Object", "pos": [2, 2], "class": "tree"}
+    )
     assert ge.map_counts(db) != counts
     # a wrong typed confirm leaves the DB alone
     jid = client.post(f"/api/edit/{S}/snapshots/{snap['id']}/restore").json()["job_id"]

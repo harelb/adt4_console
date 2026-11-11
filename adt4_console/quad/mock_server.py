@@ -66,7 +66,12 @@ class MockQuad:
         header = {
             "stamp_ns": time.time_ns(),
             "frame": "quad",
-            "pose": {"x": qx, "y": qy, "z": self.altitude, "yaw": self.frame.yaw_map_to_quad(self.yaw)},
+            "pose": {
+                "x": qx,
+                "y": qy,
+                "z": self.altitude,
+                "yaw": self.frame.yaw_map_to_quad(self.yaw),
+            },
             "K": camera.intrinsics(),
             "width": camera.WIDTH,
             "height": camera.HEIGHT,
@@ -106,7 +111,9 @@ def serve(quad: MockQuad, cmd_uri: str, image_uri: str, stop: threading.Event) -
 
                     req = json.loads(frames[0].decode())
                     if req.get("op") != "get_image":
-                        rep.send_multipart(protocol.error_reply(f"unknown op {req.get('op')!r}"))
+                        rep.send_multipart(
+                            protocol.error_reply(f"unknown op {req.get('op')!r}")
+                        )
                     else:
                         rep.send_multipart(quad.image())
                 except Exception as e:  # noqa: BLE001
@@ -123,19 +130,34 @@ def _plant(spec: str) -> dict:
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--anchor", help="geo_anchor.json of the map (no anchor: map frame = quad frame)")
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--anchor",
+        help="geo_anchor.json of the map (no anchor: map frame = quad frame)",
+    )
     p.add_argument("--tiles-dir", default="~/.adt4_console/tiles")
     p.add_argument("--layer", default="esri_world_imagery")
     p.add_argument("--zoom", type=int, default=19)
-    p.add_argument("--cmd", default="tcp://127.0.0.1:6555", help="the console's PUSH (bound) URI")
-    p.add_argument("--image", default="tcp://127.0.0.1:6556", help="image server URI to bind")
+    p.add_argument(
+        "--cmd", default="tcp://127.0.0.1:6555", help="the console's PUSH (bound) URI"
+    )
+    p.add_argument(
+        "--image", default="tcp://127.0.0.1:6556", help="image server URI to bind"
+    )
     p.add_argument("--utm-origin", type=float, nargs=2, default=(0.0, 0.0))
     p.add_argument("--map-offset", type=float, nargs=2, default=(0.0, 0.0))
     p.add_argument("--start", type=float, nargs=2, default=(0.0, 0.0), help="map x y")
     p.add_argument("--speed", type=float, default=4.0)
     p.add_argument("--altitude", type=float, default=20.0)
-    p.add_argument("--plant", action="append", default=[], metavar="LABEL:X,Y", help="mock object (map frame)")
+    p.add_argument(
+        "--plant",
+        action="append",
+        default=[],
+        metavar="LABEL:X,Y",
+        help="mock object (map frame)",
+    )
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
 
@@ -143,8 +165,19 @@ def main(argv=None):
 
     anchor = GeoAnchor.load(args.anchor) if args.anchor else None
     frame = protocol.QuadFrame(anchor, args.utm_origin, args.map_offset)
-    mosaic = camera.TileMosaic(TileCache(args.tiles_dir), args.layer, anchor, args.zoom) if anchor else None
-    quad = MockQuad(frame, mosaic, [_plant(s) for s in args.plant], args.start, args.speed, args.altitude)
+    mosaic = (
+        camera.TileMosaic(TileCache(args.tiles_dir), args.layer, anchor, args.zoom)
+        if anchor
+        else None
+    )
+    quad = MockQuad(
+        frame,
+        mosaic,
+        [_plant(s) for s in args.plant],
+        args.start,
+        args.speed,
+        args.altitude,
+    )
     stop = threading.Event()
     log.info("mock quad: commands from %s, images on %s", args.cmd, args.image)
     try:

@@ -37,7 +37,12 @@ def parse_tx_rx_notes(notes: str) -> dict:
     rates, _, totals = (notes or "").partition(TOTAL_SEPARATOR)
     out: dict[str, dict] = {}
     for m in _ROW.finditer(rates):
-        iface, tx, rx, dt = m.group(1), _num(m.group(2)), _num(m.group(3)), _num(m.group(4))
+        iface, tx, rx, dt = (
+            m.group(1),
+            _num(m.group(2)),
+            _num(m.group(3)),
+            _num(m.group(4)),
+        )
         ok = None not in (tx, rx, dt)
         out[iface] = {
             "tx_rate_Bps": tx * 1024.0 / dt if ok and dt > 0 else None,
@@ -89,7 +94,11 @@ def default_radio(
         for name, row in sorted(ifaces.items()):
             if want and row.get("addr") == want:
                 net = next(
-                    (n for n, v in networks.items() if _in_subnet(want, v.get("subnet"))),
+                    (
+                        n
+                        for n, v in networks.items()
+                        if _in_subnet(want, v.get("subnet"))
+                    ),
                     network,
                 )
                 return name, net

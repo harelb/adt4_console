@@ -40,7 +40,10 @@ def main(inp, out):
 
     for i in range(n):
         visit(i)
-    pos = {r["name"]: (r["initial_configuration"]["x"], r["initial_configuration"]["y"]) for r in robots}
+    pos = {
+        r["name"]: (r["initial_configuration"]["x"], r["initial_configuration"]["y"])
+        for r in robots
+    }
     vid = {r["name"]: r["initial_configuration"]["id"] for r in robots}
     free = {r["name"]: 0.0 for r in robots}
     names = [r["name"] for r in robots]

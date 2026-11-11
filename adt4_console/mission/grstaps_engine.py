@@ -54,7 +54,11 @@ INSPECT_REQUIREMENT = {"ground": 1, "sensor": 1}
 # console agent kind -> GRSTAPS-X robot type. A husky plans as a ground robot
 # without an arm (visits, inspections, exploration); ADT4_GRSTAPS_ALLOW_HUSKY=0
 # leaves huskies out again (an executor that does not wait on ordering/partners).
-ALLOW_HUSKY = os.environ.get("ADT4_GRSTAPS_ALLOW_HUSKY", "1").strip().lower() not in ("0", "false", "no")
+ALLOW_HUSKY = os.environ.get("ADT4_GRSTAPS_ALLOW_HUSKY", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
 KIND_TYPE = {"spot": "spot", "husky": "husky", "quad": "uav"}
 SOLVER_TIMEOUT_S = float(os.environ.get("ADT4_GRSTAPS_TIMEOUT_S", "60"))
 LOG_TAIL = 40
@@ -88,7 +92,9 @@ def _license_fields(path: Path) -> dict:
     return out
 
 
-def license_problem(today: _dt.date | None = None, host: str | None = None) -> str | None:
+def license_problem(
+    today: _dt.date | None = None, host: str | None = None
+) -> str | None:
     """None when the license looks usable here, else what is wrong with it."""
     path = license_file()
     if not path.is_file():
@@ -98,9 +104,14 @@ def license_problem(today: _dt.date | None = None, host: str | None = None) -> s
         f = _license_fields(path)
     except OSError as e:
         return f"cannot read the Gurobi license {path}: {e}"
-    if "WLSACCESSID" in f:  # a web license server key: not tied to a host, checked online
+    if (
+        "WLSACCESSID" in f
+    ):  # a web license server key: not tied to a host, checked online
         return None
-    if f.get("HOSTNAME") and f["HOSTNAME"].lower() != (host or socket.gethostname()).lower():
+    if (
+        f.get("HOSTNAME")
+        and f["HOSTNAME"].lower() != (host or socket.gethostname()).lower()
+    ):
         return (f"the Gurobi license {path} is for host {f['HOSTNAME']}, this is "
                 f"{host or socket.gethostname()}: academic licenses only work on the machine they were made for")  # fmt: skip
     exp = f.get("EXPIRATION")
@@ -125,7 +136,10 @@ def _modules():
         from dsg_pddl.pddl_utils import pddl_symbol_to_node_symbol
         from omniplanner.omniplanner import PlanRequest, full_planning_pipeline
     except ImportError as e:
-        return None, f"GRSTAPS-X is not importable (omniplanner without grstaps_planner?): {e}"
+        return (
+            None,
+            f"GRSTAPS-X is not importable (omniplanner without grstaps_planner?): {e}",
+        )
     return {"gp": gp, "ConstraintFact": ConstraintFact, "to_node": pddl_symbol_to_node_symbol,
             "PlanRequest": PlanRequest, "pipeline": full_planning_pipeline}, None  # fmt: skip
 
@@ -144,7 +158,9 @@ def available() -> str | None:
 def work_dir() -> str:
     base = os.environ.get("ADT4_GRSTAPS_WORK_DIR")
     if not base:
-        out = os.environ.get("ADT4_OUTPUT_DIR") or os.path.expanduser("~/.cache/omniplanner")
+        out = os.environ.get("ADT4_OUTPUT_DIR") or os.path.expanduser(
+            "~/.cache/omniplanner"
+        )
         base = os.path.join(out, "grstaps")
     os.makedirs(base, exist_ok=True)
     return base
@@ -165,7 +181,9 @@ def _failure(e: Exception, wdir: str, robot: str) -> GrstapsFailed:
     msg = str(e).strip() or type(e).__name__
     first = msg.splitlines()[0][:600]
     scen = None
-    for d in sorted(Path(wdir).glob(f"*_{robot}"), key=lambda p: p.stat().st_mtime, reverse=True):
+    for d in sorted(
+        Path(wdir).glob(f"*_{robot}"), key=lambda p: p.stat().st_mtime, reverse=True
+    ):
         scen = d
         break
     problem = None
@@ -194,8 +212,15 @@ def _leg(transition) -> list[list[float]]:
     return pts
 
 
-def solve(goal: str, starts: dict, G, facts: list, z_of, robot_types: dict | None = None,
-          region_polygons: dict | None = None) -> dict:
+def solve(
+    goal: str,
+    starts: dict,
+    G,
+    facts: list,
+    z_of,
+    robot_types: dict | None = None,
+    region_polygons: dict | None = None,
+) -> dict:
     """Plan ``goal`` for robots at ``starts`` ({pddl robot name: [x, y]}).
 
     ``facts``: ConstraintFact-like (forbidden-poi, forbidden-edge, before).
@@ -207,12 +232,17 @@ def solve(goal: str, starts: dict, G, facts: list, z_of, robot_types: dict | Non
     """
     om, err = _modules()
     if err:
-        raise GrstapsFailed(err, {"planner": LABEL, "digest": err, "log": [], "problem_file": None})
+        raise GrstapsFailed(
+            err, {"planner": LABEL, "digest": err, "log": [], "problem_file": None}
+        )
     gp = om["gp"]
     try:
         found = gp.parse_goal_targets(goal)
     except ValueError as e:
-        raise GrstapsFailed(f"ValueError: {e}", {"planner": LABEL, "digest": str(e), "log": [], "problem_file": None}) from None
+        raise GrstapsFailed(
+            f"ValueError: {e}",
+            {"planner": LABEL, "digest": str(e), "log": [], "problem_file": None},
+        ) from None
     robots = {r: np.asarray(p, dtype=float)[:2] for r, p in starts.items()}
     first = next(iter(robots))
     wdir = work_dir()
@@ -231,22 +261,38 @@ def solve(goal: str, starts: dict, G, facts: list, z_of, robot_types: dict | Non
         region_bound=found["region_bound"], region_polygons=dict(region_polygons or {}),
         constraints=list(facts), robot_types={r: KIND_TYPE.get((robot_types or {}).get(r, "spot"), "spot") for r in robots},
     )  # fmt: skip
-    left_out = sorted(r for r in robots if (robot_types or {}).get(r) == "husky") if not ALLOW_HUSKY else []
+    left_out = (
+        sorted(r for r in robots if (robot_types or {}).get(r) == "husky")
+        if not ALLOW_HUSKY
+        else []
+    )
     if left_out and len(left_out) == len(robots):
         raise GrstapsFailed("GRSTAPS-X does not plan huskies (their executor does not wait on ordering or partners)",
                             {"planner": LABEL, "digest": "only huskies", "log": [], "problem_file": None})  # fmt: skip
     t0 = time.perf_counter()
     try:
-        out = om["pipeline"](om["PlanRequest"](domain=domain, goal=g, robot_states=robots), G)
+        out = om["pipeline"](
+            om["PlanRequest"](domain=domain, goal=g, robot_states=robots), G
+        )
     except Exception as e:  # noqa: BLE001 — grounding / solver failures, in words
         f = _failure(e, wdir, first)
-        log.warning("GRSTAPS-X could not plan %s: %s%s", goal, f, "".join(f"\n  | {x}" for x in f.planner_log["log"][-15:]))
+        log.warning(
+            "GRSTAPS-X could not plan %s: %s%s",
+            goal,
+            f,
+            "".join(f"\n  | {x}" for x in f.planner_log["log"][-15:]),
+        )
         raise f from None
     t1 = time.perf_counter()
     plan = _unwrap(out, gp.GrstapsPlan)
     if not isinstance(plan, gp.GrstapsPlan):
-        raise GrstapsFailed("GRSTAPS-X returned no plan", {"planner": LABEL, "digest": "no plan", "log": [], "problem_file": None})
-    out = _convert(plan, found, robots, z_of, om["to_node"], G, t1 - t0, gp.task_location)
+        raise GrstapsFailed(
+            "GRSTAPS-X returned no plan",
+            {"planner": LABEL, "digest": "no plan", "log": [], "problem_file": None},
+        )
+    out = _convert(
+        plan, found, robots, z_of, om["to_node"], G, t1 - t0, gp.task_location
+    )
     if left_out:
         out["left_out"] = left_out
     return out
@@ -277,13 +323,18 @@ def _convert(plan, found, robots, z_of, to_node, G, solve_s, task_location) -> d
                 if not route or p[:2] != route[-1][:2]:
                     route.append(p)
             driven[robot] = driven.get(robot, 0.0) + sum(
-                float(np.hypot(b[0] - a[0], b[1] - a[1])) for a, b in zip(pts, pts[1:]))
+                float(np.hypot(b[0] - a[0], b[1] - a[1])) for a, b in zip(pts, pts[1:])
+            )
             return pts3
 
         for i, tid in enumerate(agent.get("individual_plan") or []):
             task = by_id.get(tid) or {}
             name = task.get("name", "")
-            kind = (plan.task_geometry.get(tid) or {}).get("action") or name.split()[0] if name else "visit"
+            kind = (
+                (plan.task_geometry.get(tid) or {}).get("action") or name.split()[0]
+                if name
+                else "visit"
+            )
             kind = {"visit-location": "visit", "inspect-object": "inspect", "relocate-object": "relocate",
                     "pick-object": "pick", "place-object": "place", "drag-object": "drag_relocate",
                     "drag": "drag_relocate", "start-drag": "drag", "release-drag": "release"}.get(kind, kind)  # fmt: skip
@@ -311,13 +362,27 @@ def _convert(plan, found, robots, z_of, to_node, G, solve_s, task_location) -> d
             if kind == "visit":
                 step("goto", target, name, pts3)
                 if region:
-                    steps[-1]["params"] = {"region": region["region"], "region_kind": region["kind"]}
+                    steps[-1]["params"] = {
+                        "region": region["region"],
+                        "region_kind": region["kind"],
+                    }
             elif kind == "inspect":
                 step("goto", target, name, pts3)
-                step("inspect", target, f"{name} with {', '.join(team)}" if len(team) > 1 else name)
+                step(
+                    "inspect",
+                    target,
+                    f"{name} with {', '.join(team)}" if len(team) > 1 else name,
+                )
                 # look together: every member's inspect waits for every member's arrival
                 steps[-1]["rendezvous"] = [f"{tid}@{m}#0" for m in team if m != robot]
-            elif kind in ("relocate", "pick", "place", "drag_relocate", "drag", "release"):
+            elif kind in (
+                "relocate",
+                "pick",
+                "place",
+                "drag_relocate",
+                "drag",
+                "release",
+            ):
                 dest = found["destinations"].get(target)
                 dragged = kind in ("drag_relocate", "drag", "release")
                 if kind in ("relocate", "pick", "drag_relocate", "drag"):
@@ -325,10 +390,22 @@ def _convert(plan, found, robots, z_of, to_node, G, solve_s, task_location) -> d
                 if kind in ("relocate", "place", "drag_relocate", "release"):
                     g = plan.task_geometry.get(tid) or {}
                     carry = g.get("carry_path")
-                    carry3 = walk([[float(x), float(y)] for x, y in carry]) if carry is not None and len(carry) else []
+                    carry3 = (
+                        walk([[float(x), float(y)] for x, y in carry])
+                        if carry is not None and len(carry)
+                        else []
+                    )
                     single = kind in ("place", "release")
-                    step("place", dest or target, f"{name} -> {dest}" if dest else name, carry3 or (pts3 if single else []))
-                    steps[-1]["params"] = {"object": node(target), **({"dragged": True} if dragged else {})}
+                    step(
+                        "place",
+                        dest or target,
+                        f"{name} -> {dest}" if dest else name,
+                        carry3 or (pts3 if single else []),
+                    )
+                    steps[-1]["params"] = {
+                        "object": node(target),
+                        **({"dragged": True} if dragged else {}),
+                    }
             else:
                 step("goto", target, name, pts3)
             first_step[(tid, robot)] = keys[0]
@@ -350,7 +427,11 @@ def _convert(plan, found, robots, z_of, to_node, G, solve_s, task_location) -> d
     rows = []
     for t in sorted(plan.tasks or [], key=lambda t: t.get("start_timepoint", 0.0)):
         team = members.get(t.get("id")) or []
-        who = team or [a.get("name", "") for a in plan.agents or [] if t.get("id") in (a.get("individual_plan") or [])]
+        who = team or [
+            a.get("name", "")
+            for a in plan.agents or []
+            if t.get("id") in (a.get("individual_plan") or [])
+        ]
         name = t.get("name", "")
         region = (plan.task_geometry.get(t.get("id")) or {}).get("region")
         for r in who:
@@ -373,7 +454,9 @@ def _convert(plan, found, robots, z_of, to_node, G, solve_s, task_location) -> d
         r = regions.setdefault(info["region"], {"kind": info["kind"], "places": [], "points": [],
                                                 "total": info.get("total"), "spacing_m": info.get("spacing_m")})  # fmt: skip
         r["places"].append(node(g.get("target")))
-        r["points"].append([round(float(v), 2) for v in np.asarray(g["object_point"], dtype=float)[:2]])
+        r["points"].append(
+            [round(float(v), 2) for v in np.asarray(g["object_point"], dtype=float)[:2]]
+        )
     digest = f"makespan {plan.makespan:.1f} s, {len(plan.tasks or [])} task(s)"
     for sym, r in regions.items():
         digest += (f"; explore {sym}: {len(r['places'])} of {r['total']} waypoint(s) {r['spacing_m']:g} m apart"

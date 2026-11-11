@@ -25,7 +25,6 @@ import random
 
 import msgpack
 import numpy as np
-
 from fleetlink import codec
 from fleetlink.codec import GraphDelta, GraphState, NodeRecord
 
@@ -470,6 +469,7 @@ def packed_tile_fixtures():
             },
         )
     )  # fmt: skip
+
 
 if __name__ == "__main__":
     FIX.mkdir(parents=True, exist_ok=True)

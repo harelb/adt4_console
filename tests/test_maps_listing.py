@@ -9,7 +9,6 @@ import time
 import types
 
 import pytest
-
 from dcist_launch_system import fleet_helpers
 from dcist_launch_system.fleet import maps as fleet_maps
 from dcist_launch_system.fleet import run_scan
@@ -29,7 +28,9 @@ INSERT INTO sensors VALUES (1, 0, 'cam');
 """
 
 
-def make_store(run: pathlib.Path, keyframes=3, objs=2, missing_file=False, unanchored=0):
+def make_store(
+    run: pathlib.Path, keyframes=3, objs=2, missing_file=False, unanchored=0
+):
     store = run / "image_store"
     (store / "rgb").mkdir(parents=True)
     conn = sqlite3.connect(store / "store.sqlite")
@@ -130,7 +131,9 @@ def test_remote_command_roundtrip(out_root):
     assert runs["imgstore_full_20261018"]["image_store"]["frames"]["keyframe"] == 3
     only = fleet_maps.remote_scan_command(str(out_root), {}, None, ["broken_store"])
     out = subprocess.run(["sh", "-c", only], capture_output=True, text=True, timeout=60)
-    assert [r["name"] for r in fleet_maps.parse_scan_output(out.stdout)] == ["broken_store"]
+    assert [r["name"] for r in fleet_maps.parse_scan_output(out.stdout)] == [
+        "broken_store"
+    ]
 
 
 def test_remote_scan_missing_root():
@@ -156,7 +159,9 @@ def test_name_date_and_human_size():
 def _fake_helpers(calls):
     def ssh_cmd(user, ip, cmd, timeout=5):
         calls.append(ip)
-        r = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=timeout + 10)
+        r = subprocess.run(
+            ["sh", "-c", cmd], capture_output=True, text=True, timeout=timeout + 10
+        )
         return r.returncode, r.stdout.strip(), r.stderr.strip()
 
     return types.SimpleNamespace(
@@ -186,7 +191,10 @@ def test_list_maps_endpoint(settings, out_root):
     assert remotes and len(calls) == len(remotes)
     for m in remotes:
         rr = {x["name"]: x for x in machines[m]}
-        assert rr["imgstore_full_20261018"]["path"] == f"{settings.output_root}/imgstore_full_20261018"
+        assert (
+            rr["imgstore_full_20261018"]["path"]
+            == f"{settings.output_root}/imgstore_full_20261018"
+        )
         assert rr["imgstore_full_20261018"]["image_store"]["frames"]["object"] == 2
     assert body["pending"] == []
     # sizes were cached on this host, keyed per machine
@@ -217,7 +225,9 @@ def test_list_maps_unreachable_machine(settings, out_root):
     def ssh_cmd(user, ip, cmd, timeout=5):
         return 255, "", "ssh: connect to host: No route to host"
 
-    helpers = types.SimpleNamespace(ssh_cmd=ssh_cmd, run_parallel=fleet_helpers.run_parallel)
+    helpers = types.SimpleNamespace(
+        ssh_cmd=ssh_cmd, run_parallel=fleet_helpers.run_parallel
+    )
     c, svc = make_client(settings, helpers=helpers)
     with c:
         body = c.get("/api/maps").json()

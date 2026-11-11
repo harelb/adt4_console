@@ -39,23 +39,48 @@ def relocalized(state: dict | None) -> dict:
         return {"ok": False, "reason": "no live state from the robot (fleetlink)"}
     fa = state.get("frame_align")
     if not fa:
-        return {"ok": False, "reason": "the robot reports no frame alignment (older agent)"}
+        return {
+            "ok": False,
+            "reason": "the robot reports no frame alignment (older agent)",
+        }
     if not fa.get("ok") or fa.get("parent") == fa.get("child"):
-        return {"ok": False, "reason": f"not relocalized: no {fa.get('parent') or 'map'} -> odom transform yet"}
+        return {
+            "ok": False,
+            "reason": f"not relocalized: no {fa.get('parent') or 'map'} -> odom transform yet",
+        }
     reloc = state.get("reloc")
     if reloc is not None:
         if not reloc.get("prior_lcs"):
-            return {"ok": False, "reason": "no prior-map match yet (ROMAN): the alignment is the starting guess"}
-        jumps = reloc.get("recent_jumps") or ([reloc["last_jump"]] if reloc.get("last_jump") else [])
-        big = [j for j in jumps if j and (j.get("dxy", 0) > BIG_JUMP_M or abs(j.get("dyaw", 0)) > BIG_JUMP_DEG)]
+            return {
+                "ok": False,
+                "reason": "no prior-map match yet (ROMAN): the alignment is the starting guess",
+            }
+        jumps = reloc.get("recent_jumps") or (
+            [reloc["last_jump"]] if reloc.get("last_jump") else []
+        )
+        big = [
+            j
+            for j in jumps
+            if j
+            and (j.get("dxy", 0) > BIG_JUMP_M or abs(j.get("dyaw", 0)) > BIG_JUMP_DEG)
+        ]
         if len(big) >= 2:
-            return {"ok": False, "reason": f"suspect: the placement jumped {len(big)}x (loop closures disagree)"}
-        return {"ok": True, "reason": f"relocalized ({reloc['prior_lcs']} prior-map matches)"}
+            return {
+                "ok": False,
+                "reason": f"suspect: the placement jumped {len(big)}x (loop closures disagree)",
+            }
+        return {
+            "ok": True,
+            "reason": f"relocalized ({reloc['prior_lcs']} prior-map matches)",
+        }
     return {"ok": True, "reason": "aligned to the global frame"}
 
 
 def _status(svc, robot: str) -> dict:
-    return {**svc.ros.change_detection(robot), "relocalized": relocalized(svc.live.state(robot))}
+    return {
+        **svc.ros.change_detection(robot),
+        "relocalized": relocalized(svc.live.state(robot)),
+    }
 
 
 @router.get("/robots/{robot}/change_detection")

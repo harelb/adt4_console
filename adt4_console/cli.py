@@ -99,15 +99,25 @@ def parse_args(argv=None):
                    help="satellite tile cache (scripts/geo/fetch_tiles.py)")  # fmt: skip
     g.add_argument("--tiles-live", action="store_true",
                    help="fetch missing satellite tiles from the internet (cached for offline use)")  # fmt: skip
-    g.add_argument("--quad-cmd-uri", help="PUSH (bound) URI for Penn quad waypoints, e.g. tcp://*:6555")
-    g.add_argument("--quad-image-uri", help="Penn quad stamped-image server, e.g. tcp://203.0.113.30:6556")
+    g.add_argument(
+        "--quad-cmd-uri",
+        help="PUSH (bound) URI for Penn quad waypoints, e.g. tcp://*:6555",
+    )
+    g.add_argument(
+        "--quad-image-uri",
+        help="Penn quad stamped-image server, e.g. tcp://203.0.113.30:6556",
+    )
     g.add_argument("--quad-utm-origin", type=float, nargs=2, default=(0.0, 0.0), metavar=("E", "N"),
                    help="UtmToMapInfo.local_utm_origin of the quad frame")  # fmt: skip
     g.add_argument("--quad-map-offset", type=float, nargs=2, default=(0.0, 0.0), metavar=("X", "Y"),
                    help="UtmToMapInfo.map_offset of the quad frame")  # fmt: skip
-    g.add_argument("--map-edits", choices=("auto", "staged", "immediate"), default="auto",
-                   help="map edits: staged + published with a confirm while a launch is active "
-                   "(auto, default), always staged, or always applied immediately")
+    g.add_argument(
+        "--map-edits",
+        choices=("auto", "staged", "immediate"),
+        default="auto",
+        help="map edits: staged + published with a confirm while a launch is active "
+        "(auto, default), always staged, or always applied immediately",
+    )
     p.add_argument("--log-level", default="info")
     return p.parse_args(argv)
 

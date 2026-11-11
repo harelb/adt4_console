@@ -20,7 +20,9 @@ def _mission(body: dict) -> Mission:
     try:
         return Mission.model_validate(body)
     except ValidationError as e:
-        raise HTTPException(422, e.errors(include_url=False, include_context=False)) from None
+        raise HTTPException(
+            422, e.errors(include_url=False, include_context=False)
+        ) from None
 
 
 def _get(fn, *a, **kw):
@@ -125,13 +127,19 @@ class Annotation(BaseModel):
 def annotate(mid: str, body: Annotation, request: Request):
     if len(body.bbox) != 4:
         raise HTTPException(400, "bbox is [u0, v0, u1, v1]")
-    return _get(_svc(request).annotate, mid, body.image, body.bbox, body.label, body.query)
+    return _get(
+        _svc(request).annotate, mid, body.image, body.bbox, body.label, body.query
+    )
 
 
 @router.get("/{mid}/image/{img}")
 def image(mid: str, img: str, request: Request):
     data = _get(_svc(request).image, mid, img)
-    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+    return Response(
+        data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 @router.post("/{mid}/execute")
@@ -202,7 +210,12 @@ def plan_omniplanner(body: OmniBody, request: Request):
     if not body.text.strip():
         raise HTTPException(400, "give a command (text) or a pddl_goal")
     # the chat's model looks the symbols up and writes the goal (plan_ground_mission only)
-    ctx = {"roster": body.agents, "areas": body.areas or [], "planner": "omniplanner", "engine": engine}
+    ctx = {
+        "roster": body.agents,
+        "areas": body.areas or [],
+        "planner": "omniplanner",
+        "engine": engine,
+    }
     said, errors, card, fd, plog = [], [], None, None, None
     for ev in services(request).chat.stream(body.text, None, src, None, None, ctx):
         if ev.get("type") == "mission":
@@ -211,7 +224,9 @@ def plan_omniplanner(body: OmniBody, request: Request):
             said.append(str(ev.get("text") or ""))
         elif ev.get("type") == "error":
             errors.append(str(ev.get("text") or ""))
-        elif ev.get("type") == "tool" and ev.get("name") == llm_planner.PLAN_TOOL["name"]:
+        elif (
+            ev.get("type") == "tool" and ev.get("name") == llm_planner.PLAN_TOOL["name"]
+        ):
             res = ev.get("result") or {}
             if isinstance(res, dict) and res.get("error"):
                 errors.append(res["error"])
@@ -219,8 +234,19 @@ def plan_omniplanner(body: OmniBody, request: Request):
                 plog = res.get("planner_log") or plog
     if card is None:
         msg = " ".join(errors or said).strip() or "omniplanner produced no mission"
-        return JSONResponse(status_code=400, content={"detail": msg, "fast_downward": fd, "planner_log": plog or (
-            {"planner": omni_planner.ENGINES["fast_downward"], **fd} if fd else None)})
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": msg,
+                "fast_downward": fd,
+                "planner_log": plog
+                or (
+                    {"planner": omni_planner.ENGINES["fast_downward"], **fd}
+                    if fd
+                    else None
+                ),
+            },
+        )
     m = svc.get(card["id"])
     return {"mission": m.model_dump(), "preview": svc.preview(m), "planned": card.get("planned"),
             "assumptions": card.get("assumptions") or []}  # fmt: skip
@@ -282,7 +308,15 @@ def replan(mid: str, body: ReplanBody, request: Request):
                                               areas=m.goal.get("areas"))  # fmt: skip
     except ValueError as e:
         return _planning_failed(e)
-    new = new.model_copy(update={"id": m.id, "parent": m.id, "saved": m.saved, "chat": m.chat, "planted": m.planted})
+    new = new.model_copy(
+        update={
+            "id": m.id,
+            "parent": m.id,
+            "saved": m.saved,
+            "chat": m.chat,
+            "planted": m.planted,
+        }
+    )
     out = svc.put(new)
     out["planned"] = planned
     return out

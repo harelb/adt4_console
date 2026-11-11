@@ -27,9 +27,13 @@ ROUTE_WEIGHT = None
 OFFGRAPH_OK_M = 4.0  # a target this far from the graph is still "on" it
 CELL_M = 0.2  # corridor raster resolution
 SAMPLE_M = 0.15  # segment check sample spacing
-SEAM_CELLS = 2  # seams up to ~2× this many cells wide between places' polygons are closed
+SEAM_CELLS = (
+    2  # seams up to ~2× this many cells wide between places' polygons are closed
+)
 BAND_M = 5.0  # corridor = places within this graph distance of the planned path
-CLEARANCE_M = 0.5  # smoothed legs keep this far from untraversable ground where they can
+CLEARANCE_M = (
+    0.5  # smoothed legs keep this far from untraversable ground where they can
+)
 Z_TOL_M = 0.6  # a smoothed leg stays on ground within this of its interpolated height
 DETOUR_MAX = 2.0  # a shortcut may skip at most this × its length (+2 m) of the raw path
 CORNER_CUT_M = 1.5  # most a rounded corner moves off its vertex
@@ -70,7 +74,9 @@ def segment_hits_polygon(a, b, poly) -> bool:
 
 
 def path_length(pts) -> float:
-    return float(sum(math.dist(pts[i][:2], pts[i + 1][:2]) for i in range(len(pts) - 1)))
+    return float(
+        sum(math.dist(pts[i][:2], pts[i + 1][:2]) for i in range(len(pts) - 1))
+    )
 
 
 def straight(a, b) -> list[list[float]]:
@@ -111,7 +117,11 @@ def lawnmower(poly, spacing: float, start=None) -> list[list[float]]:
                 pt = [0.0, 0.0]
                 pt[a], pt[b] = float(c), float(v)
                 out.append(pt)
-    if start is not None and out and math.dist(start[:2], out[-1]) < math.dist(start[:2], out[0]):
+    if (
+        start is not None
+        and out
+        and math.dist(start[:2], out[-1]) < math.dist(start[:2], out[0])
+    ):
         out.reverse()
     return out
 
@@ -148,19 +158,29 @@ class PlaceGraph:
         layer = self._places_layer()
         if layer is not None:
             for n in layer.nodes:
-                self.pos[n.id.value] = np.asarray(n.attributes.position[:3], dtype=float)
+                self.pos[n.id.value] = np.asarray(
+                    n.attributes.position[:3], dtype=float
+                )
                 b = np.asarray(getattr(n.attributes, "boundary", []), dtype=float)
                 if b.ndim == 2 and len(b) >= 3:
                     self.bounds[n.id.value] = b[:, :2]
                 self.nx.add_node(n.id.value)
             for e in layer.edges:
                 if e.source in self.pos and e.target in self.pos:
-                    w = float(np.linalg.norm(self.pos[e.source][:2] - self.pos[e.target][:2]))
+                    w = float(
+                        np.linalg.norm(self.pos[e.source][:2] - self.pos[e.target][:2])
+                    )
                     self.nx.add_edge(e.source, e.target, weight=max(w, 1e-3))
         self.ids = list(self.pos)
-        self.P = np.array([self.pos[i][:2] for i in self.ids]) if self.ids else np.zeros((0, 2))
+        self.P = (
+            np.array([self.pos[i][:2] for i in self.ids])
+            if self.ids
+            else np.zeros((0, 2))
+        )
         self._symbols_from_records(loaded)
-        self.Z = np.array([self.pos[i][2] for i in self.ids]) if self.ids else np.zeros(0)
+        self.Z = (
+            np.array([self.pos[i][2] for i in self.ids]) if self.ids else np.zeros(0)
+        )
         self._index = {v: k for k, v in enumerate(self.ids)}
         self._cells = None
         self._component = {}
@@ -268,7 +288,11 @@ class PlaceGraph:
             for v in self.ids:
                 if point_in_polygon(self.pos[v], poly):
                     banned.add(v)
-        g = self.nx.subgraph([v for v in self.ids if v not in banned]) if banned else self.nx
+        g = (
+            self.nx.subgraph([v for v in self.ids if v not in banned])
+            if banned
+            else self.nx
+        )
         allowed = set(g.nodes)
         # snap the start into the component the robot is in, the goal to the
         # nearest place of that same component
@@ -287,7 +311,9 @@ class PlaceGraph:
         keep = _simplify_idx(pts)
         pts, z = [pts[k] for k in keep], [z[k] for k in keep]
         if len(pts) > 2:
-            band = nx.multi_source_dijkstra_path_length(g, set(node_path), cutoff=BAND_M, weight="weight")
+            band = nx.multi_source_dijkstra_path_length(
+                g, set(node_path), cutoff=BAND_M, weight="weight"
+            )
             try:
                 c = Corridor(self, g.subgraph(band))
             except ImportError:  # no scipy: leave the path as planned
@@ -316,9 +342,14 @@ class PlaceGraph:
         r = 0.5 * (float(np.median(lens)) if lens else 1.0)
         ang = np.linspace(0, 2 * math.pi, 16, endpoint=False)
         disk = r * np.column_stack([np.cos(ang), np.sin(ang)])
-        polys = [self.bounds[v] if v in self.bounds else self.pos[v][:2] + disk for v in self.ids]
+        polys = [
+            self.bounds[v] if v in self.bounds else self.pos[v][:2] + disk
+            for v in self.ids
+        ]
         K = max(len(q) for q in polys)
-        V = np.stack([np.vstack([q, np.repeat(q[-1:], K - len(q), 0)]) for q in polys])  # pad: zero-length edges
+        V = np.stack(
+            [np.vstack([q, np.repeat(q[-1:], K - len(q), 0)]) for q in polys]
+        )  # pad: zero-length edges
         lo = np.floor(V.min(1) / CELL_M).astype(int)
         size = np.ceil(V.max(1) / CELL_M).astype(int) - lo + 1
         n = size.prod(1)
@@ -332,7 +363,9 @@ class PlaceGraph:
             with np.errstate(divide="ignore", invalid="ignore"):
                 xi = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
             inside ^= ((y1 > y) != (y2 > y)) & (x < xi)
-        start = np.concatenate([[0], np.cumsum(np.bincount(pid[inside], minlength=len(V)))])
+        start = np.concatenate(
+            [[0], np.cumsum(np.bincount(pid[inside], minlength=len(V)))]
+        )
         return C[inside], start
 
 
@@ -365,10 +398,17 @@ class Corridor:
         C, zs = pg.place_cells(list(band.nodes))
         E = np.array([(pg.pos[u], pg.pos[v]) for u, v in band.edges]).reshape(-1, 2, 3)
         if len(E):
-            n = np.ceil(np.linalg.norm(E[:, 1, :2] - E[:, 0, :2], axis=1) / (CELL_M / 2)).astype(int) + 1
+            n = (
+                np.ceil(
+                    np.linalg.norm(E[:, 1, :2] - E[:, 0, :2], axis=1) / (CELL_M / 2)
+                ).astype(int)
+                + 1
+            )
             t = np.arange(n.sum()) - np.repeat(np.cumsum(n) - n, n)
             t = t / np.repeat(np.maximum(n - 1, 1), n)
-            S = np.repeat(E[:, 0], n, 0) + t[:, None] * np.repeat(E[:, 1] - E[:, 0], n, 0)
+            S = np.repeat(E[:, 0], n, 0) + t[:, None] * np.repeat(
+                E[:, 1] - E[:, 0], n, 0
+            )
             C = np.concatenate([C, np.floor(S[:, :2] / CELL_M).astype(int)])
             zs = np.concatenate([zs, S[:, 2]])
         pad = SEAM_CELLS + 2
@@ -389,7 +429,11 @@ class Corridor:
 
     def _ij(self, S):
         ij = np.floor(S / CELL_M).astype(int) - self.o
-        ok = (ij >= 0).all(1) & (ij[:, 0] < self.clear.shape[0]) & (ij[:, 1] < self.clear.shape[1])
+        ok = (
+            (ij >= 0).all(1)
+            & (ij[:, 0] < self.clear.shape[0])
+            & (ij[:, 1] < self.clear.shape[1])
+        )
         return ij, ok
 
     def clearance(self, S) -> np.ndarray:
@@ -410,7 +454,9 @@ class Corridor:
         t = (np.arange(n.sum()) - start[seg]) / np.maximum(n[seg] - 1, 1)
         S = A[seg] + t[:, None] * (B - A)[seg]
         ca, cb = self.clearance(A), self.clearance(B)
-        need = np.minimum(CLEARANCE_M, np.minimum(ca[seg] + t * L[seg], cb[seg] + (1 - t) * L[seg]))
+        need = np.minimum(
+            CLEARANCE_M, np.minimum(ca[seg] + t * L[seg], cb[seg] + (1 - t) * L[seg])
+        )
         ij, inside = self._ij(S)
         clr = np.zeros(len(S))
         clr[inside] = self.clear[ij[inside, 0], ij[inside, 1]]
@@ -457,7 +503,13 @@ def _farthest(P, Z, i, c, fences, chunk: int = 16) -> int:
         J = J[arc[J] - arc[i] <= DETOUR_MAX * np.linalg.norm(P[J] - P[i], axis=1) + 2.0]
         if not len(J):
             continue
-        ok = c.ok(np.repeat(P[i : i + 1], len(J), 0), P[J], np.repeat(Z[i], len(J)), Z[J], fences)
+        ok = c.ok(
+            np.repeat(P[i : i + 1], len(J), 0),
+            P[J],
+            np.repeat(Z[i], len(J)),
+            Z[J],
+            fences,
+        )
         if not ok.any():
             break
         for j in J[ok][::-1]:

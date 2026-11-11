@@ -229,7 +229,9 @@ def _describe(c: dict) -> str:
     return f"{what} {c['kind']}"
 
 
-def pose_in_global(pose: dict | None, frame_align: dict | None, global_frame: str = "map"):
+def pose_in_global(
+    pose: dict | None, frame_align: dict | None, global_frame: str = "map"
+):
     """(x, y) of a fleetlink live pose in the planner's global frame, or None.
 
     The agent sends the pose in the robot's scene-graph frame (``<robot>/map`` or
@@ -243,7 +245,9 @@ def pose_in_global(pose: dict | None, frame_align: dict | None, global_frame: st
     frame = pose.get("frame") or ""
     fa = frame_align or {}
     parent = fa.get("parent") or global_frame
-    if frame in (parent, global_frame) or (not frame and fa.get("child") == fa.get("parent")):
+    if frame in (parent, global_frame) or (
+        not frame and fa.get("child") == fa.get("parent")
+    ):
         return (x, y)
     T = fa.get("T")
     if not fa.get("ok") or frame != fa.get("child") or not T or len(T) != 7:
@@ -254,8 +258,16 @@ def pose_in_global(pose: dict | None, frame_align: dict | None, global_frame: st
         return None
     qw, qx, qy, qz = qw / n, qx / n, qy / n, qz / n
     # rotate (x, y, z) by q, then translate
-    gx = (1 - 2 * (qy * qy + qz * qz)) * x + 2 * (qx * qy - qz * qw) * y + 2 * (qx * qz + qy * qw) * z
-    gy = 2 * (qx * qy + qz * qw) * x + (1 - 2 * (qx * qx + qz * qz)) * y + 2 * (qy * qz - qx * qw) * z
+    gx = (
+        (1 - 2 * (qy * qy + qz * qz)) * x
+        + 2 * (qx * qy - qz * qw) * y
+        + 2 * (qx * qz + qy * qw) * z
+    )
+    gy = (
+        2 * (qx * qy + qz * qw) * x
+        + (1 - 2 * (qx * qx + qz * qz)) * y
+        + 2 * (qy * qz - qx * qw) * z
+    )
     return (gx + tx, gy + ty)
 
 
@@ -603,7 +615,9 @@ class SceneRepair:
                 goal, rec["rewrites"] if variant == "proposed" else []
             )
         self._publish()
-        versions = [rec.get("map_version")] + [c.get("map_version") for c in rec.get("changes") or []]
+        versions = [rec.get("map_version")] + [
+            c.get("map_version") for c in rec.get("changes") or []
+        ]
         versions = [int(v) for v in versions if v is not None]
         waited, fresh = self._wait_for_planner(max(versions) if versions else None)
         try:

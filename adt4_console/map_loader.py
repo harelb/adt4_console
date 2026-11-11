@@ -94,14 +94,18 @@ class MapLoader:
         """The live map: {target, run, name, dsg, nodes, has_images, has_features,
         ready (for planning), stages: [{id, label, state, pct, detail}], job_id}."""
         with self._lock:
-            if self._status is not None and (target_name is None or self._status["target"] == target_name):
+            if self._status is not None and (
+                target_name is None or self._status["target"] == target_name
+            ):
                 return _copy(self._status)
         t = self.target(target_name)
         out = {"target": t.name, "uri": t.uri, "run": None, "name": None, "dsg": None, "nodes": None,
                "has_images": False, "has_features": False, "ready": False, "job_id": None,
                "stages": [_stage(i, lbl, "pending") for i, lbl in STAGES]}  # fmt: skip
         try:
-            rec = t.query("MATCH (m:_GraphMetadata {key: 'source'}) RETURN m.file_path AS p")
+            rec = t.query(
+                "MATCH (m:_GraphMetadata {key: 'source'}) RETURN m.file_path AS p"
+            )
             out["nodes"] = t.count_nodes()
             if rec and rec[0]["p"]:
                 dsg = pathlib.Path(rec[0]["p"])
@@ -117,7 +121,9 @@ class MapLoader:
                         s["state"] = "skipped"
                     if s["id"] == "features" and not out["has_features"]:
                         s["state"] = "skipped"
-                    if s["id"] == "sam3" and not (out["has_images"] and self._sam3_reads(t)):
+                    if s["id"] == "sam3" and not (
+                        out["has_images"] and self._sam3_reads(t)
+                    ):
                         s["state"] = "skipped"
                     s["pct"] = 100 if s["state"] in ("done", "skipped") else 0
         except Exception as e:  # noqa: BLE001 — Neo4j down: say so
@@ -127,7 +133,10 @@ class MapLoader:
     def _sam3_reads(self, t) -> bool:
         """Whether the configured SAM3 server reads its keyframes from target ``t``
         (``--sam3-neo4j``): only then does a load re-point it."""
-        return bool(getattr(self.settings, "sam3_url", None)) and getattr(self.settings, "sam3_neo4j", None) == t.name
+        return (
+            bool(getattr(self.settings, "sam3_url", None))
+            and getattr(self.settings, "sam3_neo4j", None) == t.name
+        )
 
     def _set(self, **kw) -> None:
         with self._lock:
@@ -137,7 +146,14 @@ class MapLoader:
             snap = _copy(self._status)
         self._publish(snap)
 
-    def _stage(self, job, sid: str, state: str, pct: float | None = None, detail: str | None = None) -> None:
+    def _stage(
+        self,
+        job,
+        sid: str,
+        state: str,
+        pct: float | None = None,
+        detail: str | None = None,
+    ) -> None:
         with self._lock:
             if self._status is None:
                 return
@@ -162,7 +178,11 @@ class MapLoader:
         """Objects added (chat, live images, operator) and map edits in the live map."""
         q = lambda c: int(t.query(c)[0]["c"])  # noqa: E731
         try:
-            return {"added_objects": q(ADDED_OBJECTS), "map_edits": q(MAP_EDITS), "nodes": t.count_nodes()}
+            return {
+                "added_objects": q(ADDED_OBJECTS),
+                "map_edits": q(MAP_EDITS),
+                "nodes": t.count_nodes(),
+            }
         except Exception:  # noqa: BLE001 — an empty / fresh DB
             return {"added_objects": 0, "map_edits": 0, "nodes": 0}
 
@@ -194,11 +214,22 @@ class MapLoader:
                              for i, lbl in STAGES]}  # fmt: skip
 
         def run_job(job):
-            return self._load(job, t, dsg, run, image_store, feats if feats.is_file() else None, sam3, confirm_always)
+            return self._load(
+                job,
+                t,
+                dsg,
+                run,
+                image_store,
+                feats if feats.is_file() else None,
+                sam3,
+                confirm_always,
+            )
 
         with self._lock:
             self._status = status
-            job = self.jobs.start("map", f"Load {run.name} into neo4j:{t.name}", run_job)
+            job = self.jobs.start(
+                "map", f"Load {run.name} into neo4j:{t.name}", run_job
+            )
             self._job_id = job.id
             self._status["job_id"] = job.id
             snap = _copy(self._status)
@@ -266,9 +297,17 @@ class MapLoader:
         # heracles.graph_interface.spark_dsg_to_db without an image store, step by step
         steps = [
             ("agents", lambda: gi.add_agents_from_dsg(G, db, None)),
-            ("objects", lambda: gi.add_objects_from_dsg(G, db, None, object_labelspace=object_ls)),
+            (
+                "objects",
+                lambda: gi.add_objects_from_dsg(
+                    G, db, None, object_labelspace=object_ls
+                ),
+            ),
             ("places", lambda: gi.add_places_from_dsg(G, db)),
-            ("mesh places", lambda: gi.add_mesh_places_from_dsg(G, db, object_labelspace=object_ls)),
+            (
+                "mesh places",
+                lambda: gi.add_mesh_places_from_dsg(G, db, object_labelspace=object_ls),
+            ),
             ("rooms", lambda: gi.add_rooms_from_dsg(G, db, room_labelspace=room_ls)),
             ("buildings", lambda: gi.add_buildings_from_dsg(G, db)),
             ("edges", lambda: gi.add_edges_from_dsg(G, db)),
@@ -281,7 +320,9 @@ class MapLoader:
             if ls:
                 db.execute(f"MERGE (m:_Labelspace {{layer: '{layer}'}}) SET m.ids = $ids, m.names = $names",
                            ids=[int(k) for k in ls], names=list(ls.values()))  # fmt: skip
-        db.execute("MERGE (m:_GraphMetadata {key: 'source'}) SET m.file_path = $p", p=str(dsg))
+        db.execute(
+            "MERGE (m:_GraphMetadata {key: 'source'}) SET m.file_path = $p", p=str(dsg)
+        )
         mesh = dsg.parent / "mesh.ply"
         if mesh.is_file():
             gi.store_mesh_path(db, str(mesh))
@@ -302,7 +343,12 @@ class MapLoader:
         object_ls, _ = extract_labelspaces_from_dsg(G)
         steps = [
             ("keyframe images", lambda: gi.add_agents_from_dsg(G, db, store)),
-            ("object observations", lambda: gi.add_objects_from_dsg(G, db, store, object_labelspace=object_ls)),
+            (
+                "object observations",
+                lambda: gi.add_objects_from_dsg(
+                    G, db, store, object_labelspace=object_ls
+                ),
+            ),
             ("sub-keyframes", lambda: gi.add_subkeyframes_from_dsg(G, db, store)),
             ("camera calibrations", lambda: gi.attach_camera_calibs(db, store)),
             ("observation frames", lambda: gi.link_observations_to_frames(db)),
@@ -345,7 +391,10 @@ class MapLoader:
             res = sam3_client.reload(self.settings.sam3_url)
             self._stage(job, "sam3", "done", 100, str(res)[:200])
         except Exception as e:  # noqa: BLE001 — the map is loaded either way
-            job.log("warn", f"SAM3 server not reloaded ({e}); restart it to pick up the new keyframes")
+            job.log(
+                "warn",
+                f"SAM3 server not reloaded ({e}); restart it to pick up the new keyframes",
+            )
             self._stage(job, "sam3", "failed", 100, str(e)[:300])
 
     def _refresh(self, t, reason: str) -> None:
@@ -361,7 +410,13 @@ class MapLoader:
 
 
 def _stage(sid: str, label: str, state: str) -> dict:
-    return {"id": sid, "label": label, "state": state, "pct": 100 if state == "skipped" else 0, "detail": None}
+    return {
+        "id": sid,
+        "label": label,
+        "state": state,
+        "pct": 100 if state == "skipped" else 0,
+        "detail": None,
+    }
 
 
 def _copy(st: dict) -> dict:

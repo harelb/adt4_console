@@ -45,7 +45,10 @@ def test_session_names_are_validated():
 
 
 def test_session_commands_run_in_a_shell():
-    assert term.session_command("kill", "adt4_system") == "tmux kill-session -t adt4_system"
+    assert (
+        term.session_command("kill", "adt4_system")
+        == "tmux kill-session -t adt4_system"
+    )
     stop = term.session_command("stop", "adt4_system")
     # Ctrl-C goes to every pane of every window; a real shell must accept it
     assert subprocess.run(["bash", "-n", "-c", stop]).returncode == 0
@@ -56,8 +59,16 @@ def test_terminal_argv():
     remote = {"user": "swarm", "ip": "203.0.113.2"}
     argv = term.terminal_argv(remote)
     assert argv[:2] == ["ssh", "-tt"] and argv[-1] == "swarm@203.0.113.2"
-    assert term.terminal_argv(remote, "adt4_system")[-1] == "tmux attach-session -t adt4_system"
-    assert term.terminal_argv({"local": True}, "s1") == ["tmux", "attach-session", "-t", "s1"]
+    assert (
+        term.terminal_argv(remote, "adt4_system")[-1]
+        == "tmux attach-session -t adt4_system"
+    )
+    assert term.terminal_argv({"local": True}, "s1") == [
+        "tmux",
+        "attach-session",
+        "-t",
+        "s1",
+    ]
     assert term.terminal_argv({"local": True})[-1] == "-l"
     with pytest.raises(ValueError):
         term.terminal_argv(remote, "a;b")
@@ -68,7 +79,9 @@ def test_tmux_routes(app):
     m = _machine(svc)
     r = client.post(f"/api/fleet/{m['name']}/tmux/adt4_system/kill")
     assert r.status_code == 200, r.text
-    assert svc.helpers.calls == [(m["user"], m["ip"], "tmux kill-session -t adt4_system")]
+    assert svc.helpers.calls == [
+        (m["user"], m["ip"], "tmux kill-session -t adt4_system")
+    ]
     # stop: a job that sends Ctrl-C, waits for the panes to exit, then kills
     svc.helpers.calls.clear()
     r = client.post(f"/api/fleet/{m['name']}/tmux/adt4_system/stop")
@@ -76,10 +89,17 @@ def test_tmux_routes(app):
     job = svc.jobs.wait(r.json()["job_id"], timeout=10).to_dict()
     assert job["state"] == "succeeded", job["log"]
     cmds = [c[2] for c in svc.helpers.calls]
-    assert "C-c" in cmds[0] and "list-panes" in cmds[1] and cmds[-1] == "tmux kill-session -t adt4_system"
+    assert (
+        "C-c" in cmds[0]
+        and "list-panes" in cmds[1]
+        and cmds[-1] == "tmux kill-session -t adt4_system"
+    )
     assert "adt4_system killed" in " | ".join(line["text"] for line in job["log"])
 
-    assert client.post(f"/api/fleet/{m['name']}/tmux/adt4_system/reboot").status_code == 404
+    assert (
+        client.post(f"/api/fleet/{m['name']}/tmux/adt4_system/reboot").status_code
+        == 404
+    )
     assert client.post(f"/api/fleet/{m['name']}/tmux/a%3Bb/kill").status_code == 400
     assert client.post("/api/fleet/nope/tmux/adt4_system/kill").status_code == 404
     svc.helpers.rc = 1
@@ -113,7 +133,9 @@ def test_terminal_round_trip(settings, monkeypatch):
     # a local shell instead of ssh; the PTY, resize and EOF handling are real
     monkeypatch.setattr(term, "terminal_argv", lambda machine, session=None: ["sh"])
     with client:
-        with client.websocket_connect(f"/api/fleet/{m['name']}/terminal?cols=100&rows=30") as ws:
+        with client.websocket_connect(
+            f"/api/fleet/{m['name']}/terminal?cols=100&rows=30"
+        ) as ws:
             ws.send_bytes(b"stty size; echo hi-$((40+2))\n")
             out = _read_until(ws, b"hi-42")
             assert b"30 100" in out
@@ -128,7 +150,9 @@ def test_terminal_round_trip(settings, monkeypatch):
 
     with client:
         with pytest.raises(WebSocketDisconnect) as e:
-            with client.websocket_connect(f"/api/fleet/{m['name']}/terminal?session=a;b") as ws:
+            with client.websocket_connect(
+                f"/api/fleet/{m['name']}/terminal?session=a;b"
+            ) as ws:
                 ws.receive_bytes()
         assert e.value.code == 4404
 
@@ -152,7 +176,15 @@ class PaneHelpers:
 
 def _stop(h, wait_s=1.0):
     log = []
-    ok = term.stop_session(h.ssh_cmd, "u", "1.2.3.4", "adt4_system", lambda lvl, t: log.append((lvl, t)), wait_s=wait_s, poll_s=0.01)
+    ok = term.stop_session(
+        h.ssh_cmd,
+        "u",
+        "1.2.3.4",
+        "adt4_system",
+        lambda lvl, t: log.append((lvl, t)),
+        wait_s=wait_s,
+        poll_s=0.01,
+    )
     return ok, log
 
 
@@ -161,7 +193,9 @@ def test_stop_session_ctrl_c_waits_for_shells_then_kills():
     ok, log = _stop(h)
     assert ok
     assert "C-c" in h.cmds[0] and h.cmds[-1] == "tmux kill-session -t adt4_system"
-    assert sum("list-panes" in c and "C-c" not in c for c in h.cmds) == 3  # 2 busy polls, then shells
+    assert (
+        sum("list-panes" in c and "C-c" not in c for c in h.cmds) == 3
+    )  # 2 busy polls, then shells
     assert any("every pane exited" in t for _, t in log)
 
 
@@ -171,7 +205,10 @@ def test_stop_session_kills_anyway_after_the_timeout():
     ok, log = _stop(h, wait_s=0.1)
     assert ok and time.monotonic() - t0 < 2
     assert h.cmds[-1] == "tmux kill-session -t adt4_system"
-    assert any(lvl == "warn" and "killing anyway" in t and "hydra_ros_node" in t for lvl, t in log)
+    assert any(
+        lvl == "warn" and "killing anyway" in t and "hydra_ros_node" in t
+        for lvl, t in log
+    )
 
 
 def test_stop_session_without_a_session_is_a_noop():

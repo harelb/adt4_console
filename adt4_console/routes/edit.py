@@ -20,7 +20,9 @@ def _svc(request: Request):
     return svc
 
 
-def _author(request: Request, mission: str | None = None, via: str | None = None) -> dict:
+def _author(
+    request: Request, mission: str | None = None, via: str | None = None
+) -> dict:
     return {
         "operator": request.headers.get("x-operator") or "operator",
         "client": request.client.host if request.client else None,
@@ -133,10 +135,16 @@ def delete_node(src: str, sym: str, request: Request, hard: bool = False, confir
     """Retire (default; undoable) or, with ``hard=true&confirm=delete``, DETACH DELETE."""
     if hard:
         if confirm != DELETE_CONFIRM:
-            raise HTTPException(400, f'a permanent delete needs confirm="{DELETE_CONFIRM}"')
+            raise HTTPException(
+                400, f'a permanent delete needs confirm="{DELETE_CONFIRM}"'
+            )
         op = {"op": "delete_node", "symbol": sym}
     else:
-        op = {"op": "retire_node", "symbol": sym, "reason": reason or "removed by the operator"}
+        op = {
+            "op": "retire_node",
+            "symbol": sym,
+            "reason": reason or "removed by the operator",
+        }
     return _apply(request, src, [op], EditOpts(mission=mission))
 
 
@@ -190,7 +198,13 @@ class UndoBody(BaseModel):
 
 @router.post("/{src}/undo")
 def undo(src: str, body: UndoBody, request: Request):
-    return _call(_svc(request).undo, src, body.mutation_id, author=_author(request), force=body.force)
+    return _call(
+        _svc(request).undo,
+        src,
+        body.mutation_id,
+        author=_author(request),
+        force=body.force,
+    )
 
 
 @router.get("/{src}/regions")

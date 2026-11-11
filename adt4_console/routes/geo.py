@@ -43,4 +43,6 @@ def tile(layer: str, z: int, x: int, y: int, request: Request):
     if data is None:
         raise HTTPException(404, "tile not cached (and live fetching is off)")
     media = "image/png" if data[:4] == b"\x89PNG" else "image/jpeg"
-    return Response(data, media_type=media, headers={"Cache-Control": "public, max-age=86400"})
+    return Response(
+        data, media_type=media, headers={"Cache-Control": "public, max-age=86400"}
+    )

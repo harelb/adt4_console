@@ -10,6 +10,7 @@ Downward (a sourced ADT4 workspace); skips otherwise.
 """
 
 import pytest
+
 from .conftest import make_client
 from .test_mission import LABELS, build_grid_run
 
@@ -49,9 +50,12 @@ def mission_settings(settings, grid_run, tmp_path):
     settings.missions_dir = str(tmp_path / "missions")
     return settings
 
+
 omni = pytest.importorskip("adt4_console.mission.omni_planner")
 if omni.available():
-    pytest.skip(f"omniplanner cannot plan here: {omni.available()}", allow_module_level=True)
+    pytest.skip(
+        f"omniplanner cannot plan here: {omni.available()}", allow_module_level=True
+    )
 
 SPOT1 = {"id": "spot1", "kind": "spot", "start": [0.0, 0.0]}
 SPOT2 = {"id": "spot2", "kind": "spot", "start": [20.0, 10.0]}
@@ -85,7 +89,12 @@ def test_closer_robot_gets_the_visit_and_ends_where_told(svc):
     _, service = svc
     G = _G(service)
     corner = _place(G, 0, 10)
-    m, planned = omni.plan_pddl(f"(and (visited-object o0) (at-place spot1 {corner}))", [SPOT1, SPOT2], None, service)
+    m, planned = omni.plan_pddl(
+        f"(and (visited-object o0) (at-place spot1 {corner}))",
+        [SPOT1, SPOT2],
+        None,
+        service,
+    )
     by_agent = {a: [t for t in m.tasks if t.agent == a] for a in ("spot1", "spot2")}
     # spot2 (20, 10) is ~10 m from O(0); spot1 would go round the wall (~28 m)
     assert [t.target for t in by_agent["spot2"]] == ["O(0)"]
@@ -102,7 +111,9 @@ def test_named_robot_does_the_task(svc):
 def test_inspect_becomes_one_inspect_task(svc):
     _, service = svc
     m, _ = omni.plan_pddl("(inspected-by spot2 o0)", [SPOT1, SPOT2], None, service)
-    assert [(t.agent, t.type, t.target) for t in m.tasks] == [("spot2", "inspect", "O(0)")]
+    assert [(t.agent, t.type, t.target) for t in m.tasks] == [
+        ("spot2", "inspect", "O(0)")
+    ]
 
 
 def test_no_go_zone_on_the_only_gap_cuts_the_object_off(svc):
@@ -121,7 +132,11 @@ def test_pick_and_place_become_tasks(svc):
     assert "pick" in types and "place" in types
     pick = next(t for t in m.tasks if t.type == "pick")
     place = next(t for t in m.tasks if t.type == "place")
-    assert pick.target == "O(0)" and place.params["object"] == "O(0)" and not place.params.get("dragged")
+    assert (
+        pick.target == "O(0)"
+        and place.params["object"] == "O(0)"
+        and not place.params.get("dragged")
+    )
     assert types.index("pick") < types.index("place")
 
 
@@ -129,8 +144,12 @@ def test_a_husky_never_picks(svc):
     _, service = svc
     G = _G(service)
     husky = {"id": "gauss", "kind": "husky", "start": [17.0, 2.0]}  # right next to O(0)
-    m, _ = omni.plan_pddl(f"(object-in-place o0 {_place(G, 0, 0)})", [SPOT1, husky], None, service)
-    assert all(t.agent == "spot1" for t in m.tasks if t.type in ("pick", "place", "drag"))
+    m, _ = omni.plan_pddl(
+        f"(object-in-place o0 {_place(G, 0, 0)})", [SPOT1, husky], None, service
+    )
+    assert all(
+        t.agent == "spot1" for t in m.tasks if t.type in ("pick", "place", "drag")
+    )
 
 
 def test_bad_symbol_is_reported(svc):
@@ -141,7 +160,10 @@ def test_bad_symbol_is_reported(svc):
 
 def test_route_plans_a_pddl_goal(svc):
     client, _ = svc
-    r = client.post("/api/missions/plan/omniplanner", json={"pddl_goal": "(visited-object o0)", "agents": [SPOT1, SPOT2]})
+    r = client.post(
+        "/api/missions/plan/omniplanner",
+        json={"pddl_goal": "(visited-object o0)", "agents": [SPOT1, SPOT2]},
+    )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["mission"]["planner"] == "omniplanner"
@@ -150,25 +172,49 @@ def test_route_plans_a_pddl_goal(svc):
 
 def test_replan_keeps_the_goal_and_reassigns_from_new_starts(svc):
     client, _ = svc
-    r = client.post("/api/missions/plan/omniplanner", json={"pddl_goal": "(visited-object o0)", "agents": [SPOT1, SPOT2]})
+    r = client.post(
+        "/api/missions/plan/omniplanner",
+        json={"pddl_goal": "(visited-object o0)", "agents": [SPOT1, SPOT2]},
+    )
     m = r.json()["mission"]
-    assert m["goal"] == {"pddl": "(visited-object o0)", "constraints": [], "engine": "fast_downward"}
+    assert m["goal"] == {
+        "pddl": "(visited-object o0)",
+        "constraints": [],
+        "engine": "fast_downward",
+    }
     assert [t["agent"] for t in m["tasks"]] == ["spot2"]  # spot2 starts next to O(0)
     # spot2 moves behind the wall's far end, spot1 next to O(0): spot1 takes it now
-    r = client.post(f"/api/missions/{m['id']}/replan", json={"starts": {"spot1": [17.0, 2.0], "spot2": [0.0, 0.0]}})
+    r = client.post(
+        f"/api/missions/{m['id']}/replan",
+        json={"starts": {"spot1": [17.0, 2.0], "spot2": [0.0, 0.0]}},
+    )
     assert r.status_code == 200, r.text
     new = r.json()["mission"]
-    assert new["id"] == m["id"] and new["revision"] == m["revision"] + 1 and new["goal"] == m["goal"]
+    assert (
+        new["id"] == m["id"]
+        and new["revision"] == m["revision"] + 1
+        and new["goal"] == m["goal"]
+    )
     assert [t["agent"] for t in new["tasks"]] == ["spot1"]
-    assert {a["id"]: a["start"] for a in new["agents"]} == {"spot1": [17.0, 2.0], "spot2": [0.0, 0.0]}
+    assert {a["id"]: a["start"] for a in new["agents"]} == {
+        "spot1": [17.0, 2.0],
+        "spot2": [0.0, 0.0],
+    }
     assert r.json()["planned"]["driven_m"]
     # no body: the mission's own (now moved) starts
-    assert client.post(f"/api/missions/{m['id']}/replan", json={}).json()["mission"]["revision"] == new["revision"] + 1
+    assert (
+        client.post(f"/api/missions/{m['id']}/replan", json={}).json()["mission"][
+            "revision"
+        ]
+        == new["revision"] + 1
+    )
 
 
 def test_replan_needs_a_kept_goal(svc):
     client, _ = svc
-    m = client.post("/api/missions", json={"agents": [SPOT1], "tasks": []}).json()["mission"]
+    m = client.post("/api/missions", json={"agents": [SPOT1], "tasks": []}).json()[
+        "mission"
+    ]
     r = client.post(f"/api/missions/{m['id']}/replan", json={})
     assert r.status_code == 400 and "kept its goal" in r.json()["detail"]
 
@@ -187,7 +233,10 @@ def test_route_text_goes_through_the_chat_in_omniplanner_mode(svc, monkeypatch):
         yield from events
 
     monkeypatch.setattr(_chat(client), "stream", fake_stream)
-    r = client.post("/api/missions/plan/omniplanner", json={"text": "someone visit the car", "agents": [SPOT1, SPOT2]})
+    r = client.post(
+        "/api/missions/plan/omniplanner",
+        json={"text": "someone visit the car", "agents": [SPOT1, SPOT2]},
+    )
     assert r.status_code == 200, r.text
     assert seen["ctx"]["planner"] == "omniplanner"
     assert r.json()["mission"]["tasks"][0]["target"] == "O(0)"
@@ -195,8 +244,15 @@ def test_route_text_goes_through_the_chat_in_omniplanner_mode(svc, monkeypatch):
 
 def test_route_reports_why_the_chat_did_not_plan(svc, monkeypatch):
     client, _ = svc
-    monkeypatch.setattr(_chat(client), "stream", lambda *a: iter([{"type": "text", "text": "Which car?"}]))
-    r = client.post("/api/missions/plan/omniplanner", json={"text": "visit the car", "agents": [SPOT1]})
+    monkeypatch.setattr(
+        _chat(client),
+        "stream",
+        lambda *a: iter([{"type": "text", "text": "Which car?"}]),
+    )
+    r = client.post(
+        "/api/missions/plan/omniplanner",
+        json={"text": "visit the car", "agents": [SPOT1]},
+    )
     assert r.status_code == 400 and "Which car?" in r.json()["detail"]
 
 
@@ -222,7 +278,10 @@ def test_preview_draws_routes(svc):
 
 def test_preview_without_poses_is_explained(svc):
     client, _ = svc
-    r = client.post("/api/missions/plan/preview_pddl", json={"pddl_goal": "(visited-object o0)", "robots": [{"name": "ghost"}]})
+    r = client.post(
+        "/api/missions/plan/preview_pddl",
+        json={"pddl_goal": "(visited-object o0)", "robots": [{"name": "ghost"}]},
+    )
     assert r.status_code == 400 and "no robot has a pose" in r.json()["detail"]
 
 
@@ -245,9 +304,16 @@ def test_chat_tool_card_reports_the_plan(svc):
     from adt4_console.mission import llm_planner
 
     events, for_model = llm_planner.run_plan_tool(
-        {"pddl_goal": "(visited-object o0)", "assumptions": ["any robot"]}, {"roster": [SPOT1, SPOT2]}, service, None, "visit o0"
+        {"pddl_goal": "(visited-object o0)", "assumptions": ["any robot"]},
+        {"roster": [SPOT1, SPOT2]},
+        service,
+        None,
+        "visit o0",
     )
-    assert events[0]["type"] == "mission" and events[0]["planned"]["pddl_goal"] == "(visited-object o0)"
+    assert (
+        events[0]["type"] == "mission"
+        and events[0]["planned"]["pddl_goal"] == "(visited-object o0)"
+    )
     assert for_model["omniplanner"]["driven_m"] and not for_model["errors"]
     _, bad = llm_planner.run_plan_tool({"pddl_goal": "(visited-object o99)", "assumptions": []}, {"roster": [SPOT1]},
                                        service, None, "")  # fmt: skip
@@ -257,12 +323,19 @@ def test_chat_tool_card_reports_the_plan(svc):
 def test_failure_carries_fast_downward_account(svc):
     """O(1) is on an island: the route says why, with Fast Downward's digest and log."""
     client, service = svc
-    r = client.post("/api/missions/plan/omniplanner", json={"pddl_goal": "(visited-object o1)", "agents": [SPOT1]})
+    r = client.post(
+        "/api/missions/plan/omniplanner",
+        json={"pddl_goal": "(visited-object o1)", "agents": [SPOT1]},
+    )
     assert r.status_code == 400
     body = r.json()
     assert "o1 cannot be reached" in body["detail"]
     fd = body["fast_downward"]
-    assert "unreachable" in fd["digest"] and fd["log"] and fd["problem_file"].endswith(".pddl")
+    assert (
+        "unreachable" in fd["digest"]
+        and fd["log"]
+        and fd["problem_file"].endswith(".pddl")
+    )
     # the chat: a tool card for the operator, the digest for the model
     from adt4_console.mission import llm_planner
 

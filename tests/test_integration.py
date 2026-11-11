@@ -12,9 +12,9 @@ import time
 
 import msgpack
 import pytest
+from fleetlink import codec
 
 from adt4_console.settings import Settings
-from fleetlink import codec
 
 from .conftest import NEO4J_AUTH, NEO4J_URI, PENN, TOPOLOGY, make_client, port_open
 

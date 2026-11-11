@@ -105,6 +105,9 @@ def test_spa_fallback(settings, tmp_path):
         assert c.get("/some/client/route").text == "<html>spa</html>"
         assert c.get("/assets/app.js").text == "js"
         # home-screen install metadata: browsers ignore a manifest without its media type
-        assert c.get("/manifest.webmanifest").headers["content-type"] == "application/manifest+json"
+        assert (
+            c.get("/manifest.webmanifest").headers["content-type"]
+            == "application/manifest+json"
+        )
         assert c.get("/api/does-not-exist").status_code == 404
         assert c.get("/../../etc/passwd").text == "<html>spa</html>"

@@ -25,8 +25,13 @@ DRY_RUN = {
             "bbox_max": [1.1, 2.1, 0.9],
             "num_points": 420,
             "views": [
-                {"frame_id": 7, "timestamp_ns": 1, "bbox_2d": [1, 2, 3, 4],
-                 "mask_rle": {"counts": [1]}, "image_uri": IMG},
+                {
+                    "frame_id": 7,
+                    "timestamp_ns": 1,
+                    "bbox_2d": [1, 2, 3, 4],
+                    "mask_rle": {"counts": [1]},
+                    "image_uri": IMG,
+                },
             ],
         },
         {
@@ -64,7 +69,10 @@ class FakeSam3:
                     if body.get("pending_id") != "p-1":
                         code, out = 404, {"error": "unknown or expired pending_id"}
                     else:
-                        code, out = 200, {"symbol": "O(123)", "created": True, "state_version": 42}
+                        code, out = (
+                            200,
+                            {"symbol": "O(123)", "created": True, "state_version": 42},
+                        )
                 elif self.path == "/discard":
                     code, out = 200, {"ok": True}
                 else:
@@ -133,8 +141,22 @@ def test_openai_searches_images_when_map_has_nothing(svc_client, sam3, monkeypat
         chat=NS(
             completions=FakeCompletions(
                 [
-                    NS(content=None, tool_calls=[_call("1", "find_objects", {"query": "fire extinguisher"})]),
-                    NS(content=None, tool_calls=[_call("2", "search_robot_images", {"query": "fire extinguisher"})]),
+                    NS(
+                        content=None,
+                        tool_calls=[
+                            _call("1", "find_objects", {"query": "fire extinguisher"})
+                        ],
+                    ),
+                    NS(
+                        content=None,
+                        tool_calls=[
+                            _call(
+                                "2",
+                                "search_robot_images",
+                                {"query": "fire extinguisher"},
+                            )
+                        ],
+                    ),
                     NS(content="I found 2 candidates. Add one?", tool_calls=None),
                 ]
             )
@@ -143,7 +165,15 @@ def test_openai_searches_images_when_map_has_nothing(svc_client, sam3, monkeypat
     svc.chat._client, svc.chat._client_provider = fake, "openai"
     out = _chat(client, "where is the fire extinguisher", src="file:syn")
     kinds = [o["type"] for o in out]
-    assert kinds == ["tool", "tool", "object_candidate", "object_candidate", "text", "transcript", "done"]
+    assert kinds == [
+        "tool",
+        "tool",
+        "object_candidate",
+        "object_candidate",
+        "text",
+        "transcript",
+        "done",
+    ]
     assert out[0]["result"] == []
     c0 = out[2]
     assert c0["pending_id"] == "p-1" and c0["index"] == 0
@@ -152,11 +182,17 @@ def test_openai_searches_images_when_map_has_nothing(svc_client, sam3, monkeypat
     assert out[3]["image_uri"] is None
     # dry run requested with the serving budgets
     path, body = sam3.calls[0]
-    assert path == "/query" and body["dry_run"] is True and body["prompt"] == "fire extinguisher"
+    assert (
+        path == "/query"
+        and body["dry_run"] is True
+        and body["prompt"] == "fire extinguisher"
+    )
     assert body["max_frames"] == 30 and body["patience"] == 3
     assert body["render"] == "best" and body["max_views"] == 3
     # the model saw a compact summary, no images
-    tool_msgs = [m for m in fake.chat.completions.calls[-1]["messages"] if m["role"] == "tool"]
+    tool_msgs = [
+        m for m in fake.chat.completions.calls[-1]["messages"] if m["role"] == "tool"
+    ]
     seen = json.loads(tool_msgs[1]["content"])
     assert seen["num_candidates"] == 2 and "data:image" not in tool_msgs[1]["content"]
     assert "Ask the operator" in seen["note"]
@@ -189,8 +225,12 @@ def test_offline_found_objects_skip_sam3(svc_client, sam3):
 def test_commit_and_discard_forward_and_refresh(svc_client, sam3):
     client, svc = svc_client
     notified = []
-    svc.graph.notify_version = lambda sid, reason, delta=None: notified.append((sid, reason))
-    r = client.post("/api/sam3/commit", json={"pending_id": "p-1", "index": 0, "src": "file:syn"})
+    svc.graph.notify_version = lambda sid, reason, delta=None: notified.append(
+        (sid, reason)
+    )
+    r = client.post(
+        "/api/sam3/commit", json={"pending_id": "p-1", "index": 0, "src": "file:syn"}
+    )
     assert r.status_code == 200, r.text
     assert r.json()["symbol"] == "O(123)" and r.json()["created"] is True
     assert sam3.calls[-1] == ("/commit", {"pending_id": "p-1", "index": 0})
@@ -209,18 +249,28 @@ def test_commit_refreshes_neo4j_source(svc_client, sam3):
     svc.graph.sources[src.id] = src
     svc.graph.sources[other.id] = other
     applied, notified = [], []
-    svc.graph.apply_change = lambda sid, reason, sv, aff: applied.append((sid, reason, sv, aff))
-    svc.graph.notify_version = lambda sid, reason, delta=None: notified.append((sid, reason))
+    svc.graph.apply_change = lambda sid, reason, sv, aff: applied.append(
+        (sid, reason, sv, aff)
+    )
+    svc.graph.notify_version = lambda sid, reason, delta=None: notified.append(
+        (sid, reason)
+    )
     # the written source folds the new object in (state_version + symbol from the server)
-    r = client.post("/api/sam3/commit", json={"pending_id": "p-1", "index": 1, "src": src.id})
+    r = client.post(
+        "/api/sam3/commit", json={"pending_id": "p-1", "index": 1, "src": src.id}
+    )
     assert r.status_code == 200 and r.json()["refreshed"] == [src.id]
     assert applied == [(src.id, "sam3", 42, ["O(123)"])] and notified == []
     # no src: the --sam3-neo4j target is applied, every other Neo4j source reloads
     applied.clear()
     svc.settings.sam3_neo4j = "other"
     r = client.post("/api/sam3/commit", json={"pending_id": "p-1", "index": 1})
-    assert r.status_code == 200 and sorted(r.json()["refreshed"]) == sorted([src.id, other.id])
-    assert applied == [(other.id, "sam3", 42, ["O(123)"])] and notified == [(src.id, "sam3")]
+    assert r.status_code == 200 and sorted(r.json()["refreshed"]) == sorted(
+        [src.id, other.id]
+    )
+    assert applied == [(other.id, "sam3", 42, ["O(123)"])] and notified == [
+        (src.id, "sam3")
+    ]
 
 
 def test_commit_errors_carry_real_reason(svc_client, sam3):
@@ -229,7 +279,10 @@ def test_commit_errors_carry_real_reason(svc_client, sam3):
     assert r.status_code == 404 and "expired" in r.json()["detail"]
     svc.settings.sam3_url = "http://127.0.0.1:9"
     r = client.post("/api/sam3/discard", json={"pending_id": "p-1"})
-    assert r.status_code == 503 and "SAM3 query server not running on" in r.json()["detail"]
+    assert (
+        r.status_code == 503
+        and "SAM3 query server not running on" in r.json()["detail"]
+    )
     assert "unreachable at http://127.0.0.1:9" in r.json()["detail"]
 
 
@@ -256,20 +309,47 @@ def test_anthropic_path_uses_run_tool(svc_client, sam3):
     svc.settings.llm = True
     msgs = FakeMessages(
         [
-            ([NS(type="tool_use", id="a", name="search_robot_images", input={"query": "fire extinguisher"})], "tool_use"),
             (
-                [NS(type="tool_use", id="b", name="propose_goal",
-                    input={"kind": "pddl", "pddl_goal": "(visited-object o3)"})],
+                [
+                    NS(
+                        type="tool_use",
+                        id="a",
+                        name="search_robot_images",
+                        input={"query": "fire extinguisher"},
+                    )
+                ],
+                "tool_use",
+            ),
+            (
+                [
+                    NS(
+                        type="tool_use",
+                        id="b",
+                        name="propose_goal",
+                        input={"kind": "pddl", "pddl_goal": "(visited-object o3)"},
+                    )
+                ],
                 "tool_use",
             ),
             ([NS(type="text", text="Done.")], "end_turn"),
         ]
     )
-    svc.chat._client, svc.chat._client_provider = NS(beta=NS(messages=msgs)), "anthropic"
+    svc.chat._client, svc.chat._client_provider = (
+        NS(beta=NS(messages=msgs)),
+        "anthropic",
+    )
     svc.chat.provider = lambda: "anthropic"
     out = _chat(client, "look for a fire extinguisher", robot="euclid", src="file:syn")
     kinds = [o["type"] for o in out]
-    assert kinds == ["tool", "object_candidate", "object_candidate", "goal", "text", "transcript", "done"]
+    assert kinds == [
+        "tool",
+        "object_candidate",
+        "object_candidate",
+        "goal",
+        "text",
+        "transcript",
+        "done",
+    ]
     # pddl mapping comes from the shared _run_tool
     assert out[3]["body"] == {"goal": "(visited-object o3)"}
     results = msgs.calls[-1]["messages"][-1]["content"]
@@ -318,7 +398,9 @@ def test_bump_prefers_heracles_notify(monkeypatch):
     from adt4_console.routes import maps
 
     seen = []
-    monkeypatch.setattr(maps, "_notify_fn", lambda: lambda db, dl, ai: seen.append((dl, ai)) or 7)
+    monkeypatch.setattr(
+        maps, "_notify_fn", lambda: lambda db, dl, ai: seen.append((dl, ai)) or 7
+    )
     assert maps.bump_map_counters(object(), ["objects"], ["O(9)"]) == 7
     assert seen == [(["objects"], ["O(9)"])]
     # the real heracles helper returns (state_version, map_version)
@@ -331,7 +413,9 @@ def test_store_command_local_and_remote(settings):
     from adt4_console.routes import maps
 
     svc = NS(helpers=NS(get_local_ips=lambda: ["127.0.0.1"]))
-    argv, env = maps.store_command(svc, {"ip": "127.0.0.1"}, maps.pack_args("~/x/run", "keyframes", "fast"))
+    argv, env = maps.store_command(
+        svc, {"ip": "127.0.0.1"}, maps.pack_args("~/x/run", "keyframes", "fast")
+    )
     assert argv[1:4] == ["-m", "fleetlink.image_pack", "pack"] and env is not None
     assert not argv[4].startswith("~") and argv[5] == "-"
     argv, env = maps.store_command(
@@ -349,7 +433,13 @@ def test_pack_args_match_image_pack_cli():
 
     p = cli.build_parser()
     a = p.parse_args(maps.pack_args("/r", "keyframes", "lossless"))
-    assert (a.run_dir, a.out, a.frames, a.compression, a.zstd_level) == ("/r", "-", "keyframes", "lossless", 3)
+    assert (a.run_dir, a.out, a.frames, a.compression, a.zstd_level) == (
+        "/r",
+        "-",
+        "keyframes",
+        "lossless",
+        3,
+    )
     a = p.parse_args(maps.unpack_args("/d"))
     assert (a.archive, a.dest, a.overwrite) == ("-", "/d", True)
 
@@ -361,7 +451,14 @@ def test_pipe_store_streams_and_reports(tmp_path, monkeypatch):
     cmds = iter(
         [
             (["sh", "-c", "head -c 300000 /dev/zero"], None),
-            (["sh", "-c", f"cat > {out}; echo '{{\"frames\": 3, \"check\": {{\"ok\": true}}}}'"], None),
+            (
+                [
+                    "sh",
+                    "-c",
+                    f'cat > {out}; echo \'{{"frames": 3, "check": {{"ok": true}}}}\'',
+                ],
+                None,
+            ),
         ]
     )
     monkeypatch.setattr(maps, "store_command", lambda svc, m, args: next(cmds))
@@ -376,7 +473,12 @@ def test_pipe_store_streams_and_reports(tmp_path, monkeypatch):
 def test_pipe_store_reports_pack_failure(monkeypatch):
     from adt4_console.routes import maps
 
-    cmds = iter([(["sh", "-c", "echo boom >&2; exit 3"], None), (["sh", "-c", "cat >/dev/null"], None)])
+    cmds = iter(
+        [
+            (["sh", "-c", "echo boom >&2; exit 3"], None),
+            (["sh", "-c", "cat >/dev/null"], None),
+        ]
+    )
     monkeypatch.setattr(maps, "store_command", lambda svc, m, args: next(cmds))
     job = NS(log=lambda *a: None, check_cancelled=lambda: None)
     ok, msg = maps.pipe_store(job, None, {}, {}, "a", "b", "all", "lossless")
@@ -386,7 +488,13 @@ def test_pipe_store_reports_pack_failure(monkeypatch):
 def test_transfer_rejects_compression_without_images(client):
     r = client.post(
         "/api/maps/transfer",
-        json={"src": "local", "dst": "euclid", "experiment": "x", "images": "none", "compression": "fast"},
+        json={
+            "src": "local",
+            "dst": "euclid",
+            "experiment": "x",
+            "images": "none",
+            "compression": "fast",
+        },
     )
     assert r.status_code in (400, 404)
 
@@ -400,12 +508,26 @@ def test_openai_last_round_answers_without_tools(svc_client, monkeypatch):
     monkeypatch.setenv("ADT4_OPENAI_API_KEY", "sk-test")
     svc.settings.llm = True
     n = chat_mod.MAX_TOOL_ROUNDS
-    looping = [NS(content=None, tool_calls=[_call(str(i), "find_objects", {"query": "hydrant"})]) for i in range(n - 1)]
-    fake = NS(chat=NS(completions=FakeCompletions(looping + [NS(content="No hydrant in the map.", tool_calls=None)])))
+    looping = [
+        NS(
+            content=None,
+            tool_calls=[_call(str(i), "find_objects", {"query": "hydrant"})],
+        )
+        for i in range(n - 1)
+    ]
+    fake = NS(
+        chat=NS(
+            completions=FakeCompletions(
+                looping + [NS(content="No hydrant in the map.", tool_calls=None)]
+            )
+        )
+    )
     svc.chat._client, svc.chat._client_provider = fake, "openai"
     out = _chat(client, "find a fire hydrant", src="file:syn")
     calls = fake.chat.completions.calls
     assert len(calls) == n
     assert [c["tool_choice"] for c in calls] == ["auto"] * (n - 1) + ["none"]
-    assert "Tool budget for this message is used up" in calls[-1]["messages"][0]["content"]
+    assert (
+        "Tool budget for this message is used up" in calls[-1]["messages"][0]["content"]
+    )
     assert out[-3] == {"type": "text", "text": "No hydrant in the map."}

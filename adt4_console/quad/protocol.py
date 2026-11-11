@@ -28,7 +28,12 @@ PROTOCOL_VERSION = 1
 def quad_command(x: float, y: float, timestamp: int = 0, query: str = "") -> dict:
     """The PennQuadCommand dict (``timestamp`` is 0 in heracles_agents: "no
     documentation for expected timestamp format")."""
-    return {"x": float(x), "y": float(y), "timestamp": int(timestamp), "query": str(query)}
+    return {
+        "x": float(x),
+        "y": float(y),
+        "timestamp": int(timestamp),
+        "query": str(query),
+    }
 
 
 class QuadFrame:
@@ -42,7 +47,10 @@ class QuadFrame:
 
     def map_to_quad(self, x: float, y: float) -> tuple[float, float]:
         e, n = self.anchor.map_to_utm(x, y) if self.anchor is not None else (x, y)
-        return (e - self.origin[0] + self.offset[0], n - self.origin[1] + self.offset[1])
+        return (
+            e - self.origin[0] + self.offset[0],
+            n - self.origin[1] + self.offset[1],
+        )
 
     def quad_to_map(self, qx: float, qy: float) -> tuple[float, float]:
         e = qx + self.origin[0] - self.offset[0]
@@ -58,15 +66,24 @@ class QuadFrame:
 
 
 def image_request(stamp_ns: int | None = None) -> list[bytes]:
-    return [json.dumps({"op": "get_image", "version": PROTOCOL_VERSION, "stamp_ns": stamp_ns}).encode()]
+    return [
+        json.dumps(
+            {"op": "get_image", "version": PROTOCOL_VERSION, "stamp_ns": stamp_ns}
+        ).encode()
+    ]
 
 
 def image_reply(header: dict, jpeg: bytes) -> list[bytes]:
-    return [json.dumps({"version": PROTOCOL_VERSION, "ok": True, **header}).encode(), jpeg]
+    return [
+        json.dumps({"version": PROTOCOL_VERSION, "ok": True, **header}).encode(),
+        jpeg,
+    ]
 
 
 def error_reply(msg: str) -> list[bytes]:
-    return [json.dumps({"version": PROTOCOL_VERSION, "ok": False, "error": msg}).encode()]
+    return [
+        json.dumps({"version": PROTOCOL_VERSION, "ok": False, "error": msg}).encode()
+    ]
 
 
 def parse_image_reply(frames: list[bytes]) -> tuple[dict, bytes | None]:
