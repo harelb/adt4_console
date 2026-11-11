@@ -5,6 +5,7 @@ import {GRASP_CAM, GRASP_TIMEOUT_MS, GRASP_TUNE, isGraspResult, loadGraspEnabled
 import {useRobots} from "../src/stores/robots";
 import {useViewer} from "../src/stores/viewer";
 import {useFleet} from "../src/stores/fleet";
+import {useManipulation} from "../src/stores/manipulation";
 import type {ActionResult, RobotPlan} from "../src/types";
 
 vi.mock("../src/viewer/VideoView", async importOriginal => ({
@@ -25,6 +26,7 @@ const approve = (robot = "spot1", requestId = "r1", cams: string[] | null = SPOT
 
 function reset() {
   useGraspCamera.setState({enabled: true, session: null, last: null});
+  useManipulation.setState({pending: [], openId: null, badges: 0});
   useRobots.setState({state: {}, link: {}, plan: {}, teleop: {}});
   useViewer.getState().setFocus("all");
 }
@@ -217,11 +219,20 @@ describe("approval dialog -> grasp camera", () => {
     await act(async () => {
       await new Promise(r => setTimeout(r, 0));
     });
+    // the request waits behind a button; the operator opens it
+    expect(container.querySelector("img")).toBeNull();
+    act(() => container.querySelector<HTMLButtonElement>('[data-testid="grasp-approval-open"]')!.click());
     const img = container.querySelector("img")!;
     act(() => img.dispatchEvent(new Event("load", {bubbles: true})));
     expect(container.textContent).toContain("Auto hand camera during grasp");
     const btn = [...container.querySelectorAll("button")].find(b => b.textContent?.includes(label))!;
     await act(async () => btn.click());
+    if (label.startsWith("Walk to")) {
+      // Walk To asks for a confirmation first
+      act(() => container.querySelector<HTMLInputElement>('[data-testid="walk-confirm"] input[type="checkbox"]')!.click());
+      const send = [...container.querySelectorAll("button")].find(b => b.textContent?.includes("Send walk-to"))!;
+      await act(async () => send.click());
+    }
     await act(async () => {
       await new Promise(r => setTimeout(r, 0));
     });

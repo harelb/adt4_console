@@ -19,6 +19,7 @@ import {ObjectImages, SearchThumb, useImaged, type ImageInfo} from "./objectImag
 import {PlaceKeyframes, usePlaceReturn} from "./PlaceKeyframes";
 import {useViewStyle} from "../stores/viewStyle";
 import {BackgroundControl, HeightsControl, PathControls, RegionControls, RobotLookControl, ThemeControl} from "./StylePanels";
+import {ClearPathsRow} from "./ClearPaths";
 
 const KIND_LABEL: Record<string, string> = {neo4j: "Neo4j", file: "file", live: "live"};
 
@@ -246,6 +247,7 @@ export function DisplayPanel() {
       )}
       <Toggle checked={showBBoxes} onChange={v => set({showBBoxes: v})} label="Object bounding boxes" />
       <Toggle checked={showText} onChange={v => set({showText: v})} label="Text labels" />
+      <ClearPathsRow />
       <label className="slider-row">
         <span>Other robots</span>
         <select

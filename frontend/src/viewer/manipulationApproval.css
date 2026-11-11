@@ -52,3 +52,16 @@
   .manipulation-foot {justify-content: flex-end; gap: 10px;}
   .manipulation-foot > .row {width: 100%; justify-content: flex-end;}
 }
+/* a robot waits for a grasp decision: a gentle pulse until the panel is opened */
+@keyframes manipulation-pulse {
+  0%, 100% {box-shadow: 0 0 0 0 #ffb02099, 0 2px 12px #0006;}
+  50% {box-shadow: 0 0 0 6px #ffb02000, 0 2px 12px #0006;}
+}
+.is-pulsing {animation: manipulation-pulse 1.6s ease-in-out infinite;}
+@media (prefers-reduced-motion: reduce) {.is-pulsing {animation: none; outline: 2px solid #ffb020;}}
+.grasp-approval-badge {white-space: nowrap;}
+.robot-chip .grasp-chip {margin-left: 4px; padding: 0 6px; font-size: 11px; line-height: 18px;}
+.manipulation-walk-confirm {display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 18px 16px; padding: 10px 12px;
+  border: 1px solid #ffb020; border-radius: 8px; background: #ffb02014;}
+.manipulation-walk-confirm label {font-weight: 600;}
+.manipulation-walk-confirm .row {margin-left: auto;}

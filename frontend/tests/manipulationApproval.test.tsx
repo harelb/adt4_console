@@ -44,6 +44,14 @@ function button(text: string) {
   return result;
 }
 
+/** Walk To: open the confirmation, tick it, send. */
+async function walkTo() {
+  act(() => button("Walk to selected point").click());
+  const ack = container.querySelector<HTMLInputElement>('[data-testid="walk-confirm"] input[type="checkbox"]')!;
+  act(() => ack.click());
+  await act(async () => button("Send walk-to").click());
+}
+
 function imageLoaded() {
   const image = container.querySelector("img")!;
   act(() => image.dispatchEvent(new Event("load", {bubbles: true})));
@@ -124,8 +132,39 @@ describe("manipulation approval dialog", () => {
     imageLoaded();
     expect(container.textContent).not.toContain("Choose stand point");
     expect(container.querySelectorAll('.manipulation-body input[type="checkbox"]').length).toBe(1);
+    // the walk-to button only opens a confirmation: nothing is sent yet
     await act(async () => button("Walk to selected point").click());
+    expect(onRespond).not.toHaveBeenCalled();
+    const confirm = container.querySelector('[data-testid="walk-confirm"]')!;
+    expect(confirm.textContent).toContain("I want euclid to walk to this point (not grasp)");
+    expect(button("Send walk-to").disabled).toBe(true);
+    await act(async () => button("Send walk-to").click());
+    expect(onRespond).not.toHaveBeenCalled();
+    act(() => confirm.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    expect(button("Send walk-to").disabled).toBe(false);
+    await act(async () => button("Send walk-to").click());
     expect(onRespond).toHaveBeenCalledExactlyOnceWith({approve: false, image_index: 0, image_x: 100, image_y: 80, walk_to: true});
+  });
+
+  it("walk-to confirmation can be cancelled, and a changed point needs a new confirmation", async () => {
+    const {onRespond} = render();
+    const image = imageLoaded();
+    bounds(image, 640, 480);
+    act(() => button("Walk to selected point").click());
+    act(() => container.querySelector<HTMLInputElement>('[data-testid="walk-confirm"] input[type="checkbox"]')!.click());
+    act(() => button("Cancel").click());
+    expect(container.querySelector('[data-testid="walk-confirm"]')).toBeNull();
+    act(() => button("Walk to selected point").click());
+    expect(container.querySelector<HTMLInputElement>('[data-testid="walk-confirm"] input[type="checkbox"]')!.checked).toBe(false);
+    act(() => container.querySelector<HTMLInputElement>('[data-testid="walk-confirm"] input[type="checkbox"]')!.click());
+    // override the point: the confirmation closes
+    act(() => container.querySelectorAll<HTMLInputElement>('.manipulation-body input[type="checkbox"]')[0].click());
+    act(() => image.dispatchEvent(new MouseEvent("click", {clientX: 10, clientY: 20, bubbles: true})));
+    expect(container.querySelector('[data-testid="walk-confirm"]')).toBeNull();
+    expect(onRespond).not.toHaveBeenCalled();
+    // approve is unchanged: one click
+    await act(async () => button("Approve selected").click());
+    expect(onRespond).toHaveBeenCalledExactlyOnceWith({approve: true, image_index: 0, image_x: 10, image_y: 20});
   });
 
   it("with heading selection enabled, a stand point on the same image rides along with walk-to only", async () => {
@@ -142,7 +181,7 @@ describe("manipulation approval dialog", () => {
     expect(container.querySelector('[data-testid="stand-marker"]')).not.toBeNull();
     await act(async () => button("Approve selected").click());
     expect(onRespond).toHaveBeenLastCalledWith({approve: true, image_index: 0, image_x: 100, image_y: 80});
-    await act(async () => button("Walk to selected point").click());
+    await walkTo();
     expect(onRespond).toHaveBeenLastCalledWith({approve: false, image_index: 0, image_x: 100, image_y: 80,
       walk_to: true, stand_x: 200, stand_y: 400});
   });
@@ -157,7 +196,7 @@ describe("manipulation approval dialog", () => {
     expect(container.querySelector('[data-testid="stand-selection"]')!.textContent).toContain("ignored");
     act(() => button("Previous").click());
     imageLoaded();
-    await act(async () => button("Walk to selected point").click());
+    await walkTo();
     expect(onRespond).toHaveBeenCalledExactlyOnceWith({approve: false, image_index: 0, image_x: 100, image_y: 80, walk_to: true});
   });
 

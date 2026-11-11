@@ -726,3 +726,17 @@ body.pane-dragging-row * {
     animation: none;
   }
 }
+
+/* drive layout, Chat tab open: the pinned camera folds to one line */
+.drive-cam-folded {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 0 6px;
+  border-bottom: 1px solid var(--line, #536071);
+}
+.drive-cam-head .grow {
+  flex: 1;
+}

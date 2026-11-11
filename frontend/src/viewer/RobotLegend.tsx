@@ -14,6 +14,28 @@ import {useFocusedRobot} from "./useRobotFocus";
 import {PlanExecStatus} from "./PlanExecStatus";
 import {PhoenixChips} from "./PhoenixStatus";
 import type {FrameAlign, Pose} from "../types";
+import {useManipulation} from "../stores/manipulation";
+
+/** A robot waiting for a grasp decision: a badge on its chip that opens the approval panel. */
+export function GraspChip({robot}: {robot: string}) {
+  const n = useManipulation(s => s.pending.filter(p => p.robot === robot).length);
+  if (!n) return null;
+  return (
+    <button
+      type="button"
+      className="btn btn-xs btn-primary grasp-chip is-pulsing"
+      data-testid={`grasp-chip-${robot}`}
+      title={`${robot} is waiting for a grasp decision: open the approval panel`}
+      onClick={e => {
+        e.stopPropagation();
+        useManipulation.getState().open({robot});
+      }}
+      onKeyDown={e => e.stopPropagation()}
+    >
+      Grasp approval{n > 1 ? ` (${n})` : ""}
+    </button>
+  );
+}
 
 /** Metres from the robot (global frame) to the nearest place of a shown prior
  *  map (every enabled non-live source); null when none is shown or no pose. */
@@ -106,6 +128,7 @@ export function RobotLegend() {
           <PhoenixChips robot={r} />
           <AlignStatus robot={r} />
           <PlanExecStatus robot={r} />
+          <GraspChip robot={r} />
         </span>
       ))}
     </div>

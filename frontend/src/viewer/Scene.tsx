@@ -30,6 +30,7 @@ import {agentColors, MapHover, MissionOverlay} from "./MissionOverlay";
 import {pickRadius, TapTracker} from "../lib/tap";
 import {useMission} from "../stores/mission";
 import {usePlanPreview} from "../stores/planPreview";
+import {planCleared, useClearedPaths} from "../stores/clearedPaths";
 import {EditOverlay} from "./EditOverlay";
 import {fitTopView} from "../lib/fitView";
 
@@ -318,11 +319,13 @@ const PLAN_ORDER = 20;
 const PREVIEW_ORDER = 45;
 function PlanOverlay() {
   const plans = useRobots(s => s.plan);
+  const cleared = useClearedPaths(s => s.plans);
   const robotColor = useRobotColor3D();
   return (
     <>
       {Object.entries(plans).map(([r, plan]) => {
-        if (!plan?.plan) return null;
+        // the operator cleared this plan's drawing (until a new plan_id)
+        if (!plan?.plan || planCleared({plans: cleared}, r, plan)) return null;
         const cur = currentActionIndex(plan);
         const color = robotColor(r);
         const paths = plan.plan.actions.map(a =>
