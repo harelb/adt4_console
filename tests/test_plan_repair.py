@@ -129,7 +129,7 @@ def test_repair_alerts_land_on_the_last_goal_robot(monkeypatch):
     assert rb.plan("euclid")["repair_alerts"] == []
 
 
-def test_constrained_plugin_is_listed_but_not_a_pddl_plugin():
+def test_constrained_plugin_is_listed_but_not_a_pddl_plugin(planner_plugins):
     rb = RosBridge(types.SimpleNamespace(ros=False, planner_ns="willow"))
     kinds = {p["name"]: p["kind"] for p in rb.plugins}
     assert kinds.get("multi_robot_pddl_constrained") == "pddl_constrained"
