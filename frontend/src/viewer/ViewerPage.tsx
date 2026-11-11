@@ -48,6 +48,7 @@ import {AreaPopover} from "./AreaTools";
 import {ToolBanner} from "./ToolBanner";
 import {LoadBar} from "./LoadBar";
 import {autoDetail} from "../lib/meshPlan";
+import {useGraspCamera} from "../stores/graspCamera";
 
 type Tab = PaneTab;
 const TAB_TITLE: Record<Tab, string> = {inspect: "Inspect", mission: "Mission", map: "Map", plan: "Plan", teleop: "Teleop", chat: "Chat", images: "Images", live: "Live link", camera: "Camera"};
@@ -453,6 +454,29 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   // the docked side panel shows the selected tab, or the first strip tab that is not floating
   const dockTab: Tab | null = strip.includes(tab) && !floats(tab) ? tab : (strip.find(t => !floats(t)) ?? null);
   const mounted = (t: Tab) => floats(t) || (rightOpen && t === dockTab) || (t === "camera" && (camPinned || camPip));
+  // a grasp in progress (stores/graspCamera.ts) shows the hand camera: bring the
+  // Camera tab forward if no camera view is showing, and put the old tab back after
+  const graspRobot = useGraspCamera(s => s.session?.robot ?? null);
+  const cameraShown = mounted("camera") || (v.driveFull && !!focused);
+  const graspTab = useRef<{tab: Tab; open: boolean} | null>(null);
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+  const rightOpenRef = useRef(rightOpen);
+  rightOpenRef.current = rightOpen;
+  useEffect(() => {
+    if (graspRobot && !cameraShown && !graspTab.current) {
+      graspTab.current = {tab: tabRef.current, open: rightOpenRef.current};
+      showTabRef.current("camera");
+    } else if (!graspRobot && graspTab.current) {
+      const prev = graspTab.current;
+      graspTab.current = null;
+      // only if the operator stayed on the Camera tab
+      if (tabRef.current === "camera" && !floatsRef.current("camera")) {
+        setTabRaw(prev.tab);
+        if (!prev.open) setRightOpen(false);
+      }
+    }
+  }, [graspRobot]); // eslint-disable-line react-hooks/exhaustive-deps
   const pop = useCallback(
     (t: Tab, at?: {x: number; y: number}) => {
       const r = viewerRef.current?.getBoundingClientRect();

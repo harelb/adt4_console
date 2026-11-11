@@ -1,6 +1,8 @@
 import {useEffect, useRef, useState, type MouseEvent} from "react";
 import {ApiError, getJSON, postJSON} from "../lib/api";
 import {withToken} from "../lib/auth";
+import {bindGraspCamera, useGraspCamera} from "../stores/graspCamera";
+import {GraspCamToggle} from "./GraspCamBadge";
 import "./manipulationApproval.css";
 
 export interface ManipulationImage {
@@ -165,12 +167,20 @@ export function ManipulationApprovalHost() {
     return () => { controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
   }, []);
 
+  // auto hand camera during a grasp: fed by robot plans + a timeout tick
+  useEffect(() => bindGraspCamera(), []);
+
   const requests = pending.requests.filter(request => !answered.has(request.id));
   const active = requests.find(request => !dismissed.has(request.id));
+  // a new request from a grasping robot ends its hand-camera view (the dialog takes over)
+  useEffect(() => {
+    for (const request of requests) useGraspCamera.getState().requestSeen(request.robot, request.id);
+  }, [requests.map(request => request.id).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
   const respond = async (request: ManipulationRequest, body: ResponseBody) => {
     const result = await postJSON<ResponseResult>(
       `api/manipulation/requests/${encodeURIComponent(request.id)}/respond`, body);
     setAnswered(old => new Set([...old, request.id]));
+    if (result.status !== "simulated") void graspCamera(request, body);
     const kind = body.approve ? "approval" : body.walk_to ? "walk-to" : "rejection";
     setNotice(result.status === "simulated"
       ? "Simulation response recorded. No robot message was sent."
@@ -215,6 +225,21 @@ export function ManipulationApprovalHost() {
       onRespond={body => respond(active, body)}
       headingSelection={WALK_TO_HEADING_SELECTION} />}
   </>;
+}
+
+/** Tell the grasp camera about an answer; approvals need the robot's camera list (hand?). */
+async function graspCamera(request: ManipulationRequest, body: ResponseBody) {
+  const kind = body.approve ? "approve" : body.walk_to ? "walk" : "reject";
+  let cams: string[] | null = null;
+  if (kind === "approve" && useGraspCamera.getState().enabled) {
+    try {
+      const d = await getJSON<{cameras: string[]} | string[]>(`api/robots/${encodeURIComponent(request.robot)}/cameras`);
+      cams = Array.isArray(d) ? d : (d.cameras ?? []);
+    } catch {
+      cams = null; // unknown: leave the camera alone
+    }
+  }
+  useGraspCamera.getState().answered({robot: request.robot, requestId: request.id, kind, cams});
 }
 
 export function ManipulationApprovalDialog({request, available = true, serviceError,
@@ -439,7 +464,10 @@ export function ManipulationApprovalDialog({request, available = true, serviceEr
         {error && <p className="manipulation-error" role="alert">{error}</p>}
       </div>
       <footer className="manipulation-foot">
-        <button type="button" className="btn" disabled={busy} onClick={onDismiss}>Close without response</button>
+        <div className="row gap">
+          <button type="button" className="btn" disabled={busy} onClick={onDismiss}>Close without response</button>
+          <GraspCamToggle />
+        </div>
         <div className="row gap">
           <button type="button" className="btn btn-danger" disabled={busy || !available || expired}
             onClick={() => void answer("reject")}>Reject grasp</button>

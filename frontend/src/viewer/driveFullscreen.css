@@ -329,3 +329,13 @@ html.drive-full-map .vcanvas {
 html.drive-full-map .vcanvas > :not(.scene-canvas) {
   display: none !important;
 }
+.dfs-grasp {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 56px);
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 32px);
+  pointer-events: auto;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+}

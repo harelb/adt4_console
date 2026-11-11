@@ -4911,3 +4911,36 @@ input[type="checkbox"] {
   border-radius: var(--radius);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
 }
+
+/* grasp in progress: the camera view shows the hand camera (stores/graspCamera.ts) */
+.grasp-cam-badge {
+  align-items: center;
+  padding: 4px 8px;
+  border: 1px solid var(--info);
+  border-radius: 6px;
+  background: var(--info-bg);
+  color: var(--text);
+}
+.grasp-cam-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--info);
+  animation: grasp-cam-pulse 1.2s ease-in-out infinite;
+}
+@keyframes grasp-cam-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .grasp-cam-dot {
+    animation: none;
+  }
+}
+.grasp-cam-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}

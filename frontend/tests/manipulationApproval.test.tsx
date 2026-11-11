@@ -123,7 +123,7 @@ describe("manipulation approval dialog", () => {
     expect(button("Walk to selected point").disabled).toBe(true);
     imageLoaded();
     expect(container.textContent).not.toContain("Choose stand point");
-    expect(container.querySelectorAll('input[type="checkbox"]').length).toBe(1);
+    expect(container.querySelectorAll('.manipulation-body input[type="checkbox"]').length).toBe(1);
     await act(async () => button("Walk to selected point").click());
     expect(onRespond).toHaveBeenCalledExactlyOnceWith({approve: false, image_index: 0, image_x: 100, image_y: 80, walk_to: true});
   });
@@ -132,7 +132,7 @@ describe("manipulation approval dialog", () => {
     const {onRespond} = render(fixture(), vi.fn().mockResolvedValue(undefined), vi.fn(), {headingSelection: true});
     const image = imageLoaded();
     bounds(image, 640, 480);
-    const checkboxes = container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+    const checkboxes = container.querySelectorAll<HTMLInputElement>('.manipulation-body input[type="checkbox"]');
     expect(checkboxes.length).toBe(2);
     act(() => checkboxes[1].click());
     expect(container.textContent).toContain("Click the ground pixel the robot should stand on");
