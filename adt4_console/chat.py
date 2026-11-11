@@ -612,7 +612,10 @@ class ChatService:
         "'(and (visited-object-by hamilton o12) (inspected-by euclid o7))' (unnamed tasks go to "
         "whichever robot is closer); (at-place r t40) ends robot r there; (object-in-place o4 t598) "
         "moves o4 to place t598 (a Spot with an arm picks it up, or drags it when it is heavy: bags, "
-        "sandbags, boxes, trash cans; a husky has no arm and never picks or drags); optional constraints "
+        "sandbags, boxes, trash cans; a husky has no arm and never picks or drags -- check the fleet "
+        "roster for each robot's platform); (holding euclid o1) just picks o1 up with euclid (no "
+        "destination: ask for a place only when the operator wants the object moved or put "
+        "down); optional constraints "
         "keep the planner away from places or edges: "
         "{predicate: 'forbidden-poi', symbols: ['o14']} or {predicate: 'forbidden-edge', "
         "symbols: ['p1', 'p2']}. engine='grstaps' (GRSTAPS-X, when the robots run it) also takes "
@@ -621,7 +624,9 @@ class ChatService:
         "visit in r3's core, (explored-region r3) covers r3 at waypoints about 8 m apart, with -by "
         "forms -- and returns a timed schedule; it does not take or / at-* / holding, nor a drawn "
         "mission area (area1: those are planned in the mission planner). kind='goto' / 'tsp' visit node symbols (points) in order / in "
-        "the best order. kind='language' passes a command to the robot's language planner.",
+        "the best order. kind='language' passes a command to the robot's language planner: use it "
+        "only for what PDDL cannot express (visit, inspect, pick up / holding, place and drag are "
+        "PDDL).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -781,6 +786,7 @@ class ChatService:
                 "a robot to go somewhere, call propose_goal (the operator approves goals in the "
                 "UI; never claim the robot is moving). "
                 f"Selected graph source: {src or 'none'}. Selected robot: {robot or 'none'}.{where}"
+                + self._roster_text(robot)
                 + (
                     "\n\n" + self._mission_prompt(src)
                     if self._mission_ctx() is not None
@@ -793,11 +799,38 @@ class ChatService:
                 cypher_tools.SCENE_GRAPH,
                 cypher_tools.INTERFACE,
                 self._schema.text(csrc),
-                f"Database: {csrc.id}. Selected robot: {robot or 'none'}.{where}",
+                f"Database: {csrc.id}. Selected robot: {robot or 'none'}.{where}"
+                + self._roster_text(robot),
             ]
             + [self._edit_note()]
             + ([self._mission_prompt(src)] if self._mission_ctx() is not None else [])
         )
+
+    def _roster_text(self, selected: str | None = None) -> str:
+        """" Fleet roster: ..." for the system prompt ("" without robots)."""
+        rows = fleet_roster(self.ros, self.live)
+        if not rows:
+            return ""
+        lines = []
+        for r in rows:
+            line = f"- {r['robot']}: {r['label']} — {r['can']}"
+            if r["online"] is not None:
+                line += "; online" if r["online"] else "; offline"
+            if r["robot"] == selected:
+                line += " (selected)"
+            lines.append(line)
+        text = (
+            "\nFleet roster (platform from the fleet topology; robot names are these, "
+            "not platform names):\n" + "\n".join(lines)
+        )
+        goals = getattr(self.ros, "goals", None)
+        recent = goals.summary_lines(3) if goals is not None else []
+        if recent:
+            # the live "did the robot get it" status of goals the operator sent
+            text += "\nGoals sent from this console, latest last (live status):\n" + "\n".join(
+                f"- {x}" for x in recent
+            )
+        return text
 
     def _edit_note(self) -> str:
         """Which edit path this turn has, for the system prompt."""
@@ -1354,6 +1387,53 @@ class EditProposals(WriteProposals):
                 "t": now,
             }
             return eid
+
+
+PLATFORM_CAN = {
+    "spot": ("Spot (legged, with arm)", "navigates, inspects (gaze), picks up, places and drags objects"),
+    "phoenix": ("Husky (phoenix, wheeled, NO arm)", "navigates and inspects only; never picks, places or drags"),
+    "husky": ("Husky (wheeled, NO arm)", "navigates and inspects only; never picks, places or drags"),
+}
+
+
+def fleet_roster(ros, live) -> list[dict]:
+    """[{robot, platform, label, can, online, arm}] for every robot the console
+    knows: the fleet topology's robots plus robots live over fleetlink. A
+    Spot is assumed to have its arm (the topology has no arm flag); a live
+    camera named hand* confirms it."""
+    names: list[str] = []
+    fleet = getattr(ros, "fleet", None) if ros is not None else None
+    try:
+        names += list(fleet.robots()) if fleet is not None else []
+    except Exception:  # noqa: BLE001
+        pass
+    links = {}
+    if live is not None:
+        try:
+            names += [r for r in live.robots() if r not in names]
+            links = (live.links() or {}).get("robots") or {}
+        except Exception:  # noqa: BLE001
+            links = {}
+    out = []
+    for r in names:
+        try:
+            platform = ros.platform(r) if ros is not None else "spot"
+        except Exception:  # noqa: BLE001
+            platform = "spot"
+        label, can = PLATFORM_CAN.get(platform, (platform, "navigates and inspects"))
+        hand = False
+        if live is not None and platform == "spot":
+            try:
+                hand = any(str(c).startswith("hand") for c in live.cameras(r) or [])
+            except Exception:  # noqa: BLE001
+                hand = False
+        if hand:
+            label = "Spot (legged, with arm: hand camera live)"
+        link = links.get(r)
+        online = bool(link.get("connected")) if isinstance(link, dict) else None
+        out.append({"robot": r, "platform": platform, "label": label, "can": can,
+                    "online": online, "arm": platform == "spot"})  # fmt: skip
+    return out
 
 
 def _clip(text: str, n: int = TOOL_CONTENT_CHARS) -> str:

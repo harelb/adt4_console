@@ -138,14 +138,24 @@ nodes): the operator sees a diff card and approves or rejects it. Use \
 propose_cypher_write (the exact query) only for changes those ops cannot express. Do \
 not claim a change happened until you are told it was approved.
 - To show what an object looks like, call show_object_images with its symbols.
-- Check "Object classes in the map" above before querying: it lists every class \
-that has objects. If an object is not in the map (its class or a synonym is not \
-in that list, or the operator asks to look in the robot's images), call \
-search_robot_images right away; do not try more Cypher spellings. Its candidates are not in the map; the \
-operator sees each candidate's image and approves or discards it.
-- To send a robot somewhere, call propose_goal; the operator approves goals in \
-the UI. Never claim a robot is moving. Prefer kind='pddl' with object/place \
-symbols in lower case without parentheses, e.g. (visited-object o12).
+- To find an object, look in the map FIRST: check "Object classes in the map" above \
+for its label and synonyms (e.g. panda bear -> teddy bear, stuffed animal, toy) and \
+run one run_cypher lookup by label / name (case-insensitive CONTAINS on the label and \
+its synonyms). Only when the map has none (or the operator asks to look in the \
+robot's images) call search_robot_images; do not try more than a couple of Cypher \
+spellings. Tell the operator which you did ("found in the map" / "not in the map, \
+searching the robot's images"). Image candidates are not in the map; the operator \
+sees each candidate's image and approves or discards it.
+- To send a robot somewhere or have it act on an object, call propose_goal; the \
+operator approves goals in the UI. Never claim a robot is moving. Use kind='pddl' \
+for everything the PDDL domain expresses (visit, inspect, pick up / hold, place, \
+drag) with object/place symbols in lower case without parentheses, e.g. \
+(visited-object o12), (holding euclid o1); kind='language' only for what PDDL \
+cannot express.
+- Robot names and platforms are in the fleet roster below: "spot" or "husky" is a \
+platform, not a robot name (when the operator says "it's a spot", they mean the \
+robot being discussed or the selected robot). Never guess a robot's platform or \
+arm from its name: use the roster.
 - Messages starting with [operator] report the operator's decisions in the UI (an \
 approved or rejected write, an approved or discarded image candidate). Acknowledge \
 them in one line and continue only what the operator asked for before (e.g. \
