@@ -53,7 +53,7 @@ def add_object(src, label: str, pos, *, size_m: float = 1.5, image_path: str | N
             "MATCH (n:Object {nodeSymbol: $sym}) "
             "CREATE (n)-[:HAS_OBSERVATION]->(:Observation {rgb_path: $p, bbox_2d: $bb, "
             "timestamp_ns: $t, score: $score, kept: true, source: $source})",
-            parameters={"sym": sym, "p": str(image_path), "t": stamp_ns, "score": score,
+            **{"sym": sym, "p": str(image_path), "t": stamp_ns, "score": score,
                         "bb": [int(v) for v in bbox_2d] if bbox_2d else None, "source": source},
         )  # fmt: skip
     try:
@@ -77,7 +77,7 @@ def _legacy_create(db, label, x, y, z, size_m, stamp_ns, source):
     if rows and label not in (rows[0]["names"] or []):
         ids, names = list(rows[0]["ids"] or []), list(rows[0]["names"] or [])
         db.execute("MATCH (l:_Labelspace {layer: 'object'}) SET l.ids = $ids, l.names = $names",
-                   parameters={"ids": ids + [max(ids, default=-1) + 1], "names": names + [label]})  # fmt: skip
+                   **{"ids": ids + [max(ids, default=-1) + 1], "names": names + [label]})  # fmt: skip
     rows, _, _ = db.execute(
         "MATCH (n) WHERE n.nodeSymbol =~ 'O\\\\(?[0-9]+\\\\)?' "
         "RETURN max(toInteger(replace(replace(substring(n.nodeSymbol, 1), '(', ''), ')', ''))) AS m"
@@ -97,6 +97,6 @@ def _legacy_create(db, label, x, y, z, size_m, stamp_ns, source):
         "CREATE (n:Object) SET n = $props, "
         "n.center = point({x: $x, y: $y, z: $z}), n.bbox_center = point({x: $x, y: $y, z: $z}), "
         "n.bbox_dim = point({x: $s, y: $s, z: $s})",
-        parameters={"props": props, "x": x, "y": y, "z": z, "s": float(size_m)},
+        **{"props": props, "x": x, "y": y, "z": z, "s": float(size_m)},
     )
     return sym, bump_map_counters(db, ["OBJECTS"], [sym])

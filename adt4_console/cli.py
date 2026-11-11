@@ -24,7 +24,12 @@ def parse_args(argv=None):
         prog="adt4-console", description="ADT4 web console (base-station server)"
     )
     p.add_argument("--host", default="0.0.0.0")
-    p.add_argument("--port", type=int, default=8090)
+    p.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("ADT4_CONSOLE_PORT") or 8090),
+        help="HTTP port (default: $ADT4_CONSOLE_PORT, else 8090)",
+    )
     p.add_argument("--token", default=os.environ.get("ADT4_CONSOLE_TOKEN"),
                    help="bearer token for /api (default: $ADT4_CONSOLE_TOKEN)")  # fmt: skip
     p.add_argument(

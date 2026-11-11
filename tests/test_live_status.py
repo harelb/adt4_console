@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from .conftest import make_client
+from .conftest import make_client, needs_fleetlink
 from .test_live_plan import FakeReceiver
 
 
@@ -46,6 +46,7 @@ def test_waiting_then_connected(settings):
         assert client.get("/api/live").json()["transport"]["state"] == "connected"
 
 
+@needs_fleetlink
 def test_real_zenoh_without_router_waits(settings):
     """``--fleetlink`` with nothing listening: no exception, no retry thread in
     the console, just ``waiting`` (ZenohTransport retries in the background)."""

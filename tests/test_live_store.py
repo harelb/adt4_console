@@ -6,15 +6,17 @@ import dataclasses
 import numpy as np
 import pytest
 
-from .conftest import make_client
+from .conftest import make_client, needs_fleetlink
 
-pytest.importorskip("hydra_image_store")
+pytest.importorskip("hydra_python.image_store")
 pytest.importorskip("zstandard")
+
+pytestmark = needs_fleetlink
 cv2 = pytest.importorskip("cv2")
 
 
 def _robot_store(root, n):
-    from hydra_image_store import FrameKind, ImageStore, make_node_id
+    from hydra_python.image_store import FrameKind, ImageStore, make_node_id
 
     src = root.parent / "src"
     src.mkdir(parents=True)

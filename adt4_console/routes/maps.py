@@ -58,7 +58,7 @@ def bump_map_counters(db, dirty_layers=None, affected_ids=None) -> int:
         "ON MATCH SET s.version = s.version + 1 "
         "SET s.dirty_layers = $dl, s.affected_ids = $ai "
         "RETURN s.version AS v",
-        parameters={"dl": list(dirty_layers or []), "ai": list(affected_ids or [])},
+        **{"dl": list(dirty_layers or []), "ai": list(affected_ids or [])},
     )
     version = records[0]["v"] if records else 0
     db.execute(

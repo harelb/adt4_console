@@ -9,9 +9,11 @@ import time
 import types
 
 import pytest
-from dcist_launch_system import fleet_helpers
-from dcist_launch_system.fleet import maps as fleet_maps
-from dcist_launch_system.fleet import run_scan
+
+pytest.importorskip("dcist_launch_system.fleet", reason="needs the fleet core")
+from dcist_launch_system import fleet_helpers  # noqa: E402
+from dcist_launch_system.fleet import maps as fleet_maps  # noqa: E402
+from dcist_launch_system.fleet import run_scan  # noqa: E402
 
 from adt4_console.routes import maps as maps_route
 

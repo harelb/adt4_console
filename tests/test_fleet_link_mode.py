@@ -3,6 +3,8 @@
 from adt4_console.cli import default_zenoh_connect, parse_args, settings_from_args
 from adt4_console.routes.network import _fleet_link
 
+from .conftest import needs_fleetlink_mode
+
 TOPO = {
     "machines": {
         "r1": {"role": "robot", "addresses": {"silvus": "192.0.2.2"}},
@@ -44,6 +46,7 @@ def test_cli_explicit_zenoh_connect_wins(monkeypatch):
     assert settings_from_args(parse_args([])).zenoh_connect == "tcp/127.0.0.1:7447"
 
 
+@needs_fleetlink_mode
 def test_network_fleet_link_info():
     info = _fleet_link(TOPO)
     assert info["fleet_link"] == "fleetlink"

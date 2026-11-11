@@ -2,7 +2,7 @@ import time
 
 from ruamel.yaml import YAML
 
-from .conftest import make_client
+from .conftest import make_client, needs_fleet_core, needs_robot_colors
 
 
 class FakeSSH:
@@ -48,6 +48,7 @@ PLAN = {
 }
 
 
+@needs_fleet_core
 def test_launch_kill_session_confirm_then_launch(settings):
     ssh = FakeSSH([("tmux has-session", (0, "", ""))])  # session already running
     client, svc = make_client(settings, launch_deps=_launch_deps(ssh))
@@ -72,6 +73,7 @@ def test_launch_kill_session_confirm_then_launch(settings):
     )
 
 
+@needs_fleet_core
 def test_launch_large_overwrite_needs_typed_confirm(settings):
     ssh = FakeSSH(
         [
@@ -91,6 +93,7 @@ def test_launch_large_overwrite_needs_typed_confirm(settings):
     assert not ssh.ran("rm -rf") and not ssh.ran("run-adt4")
 
 
+@needs_fleet_core
 def test_launch_validation_and_dry_run(client):
     r = client.post("/api/launch", json={**PLAN, "experiment": ""})
     assert r.status_code == 400 and "experiment" in r.json()["detail"]
@@ -121,6 +124,7 @@ def test_launch_validation_and_dry_run(client):
     assert r.status_code == 400 and "link network" in r.json()["detail"]
 
 
+@needs_fleet_core
 def test_topology_edit_delete_save_preserves_file(client, topology_copy):
     topology_copy.write_text(
         topology_copy.read_text().replace(
@@ -160,6 +164,7 @@ def test_topology_edit_delete_save_preserves_file(client, topology_copy):
     assert "machines:  # fleet machines" in topology_copy.read_text()  # comment kept
 
 
+@needs_robot_colors
 def test_robot_colors_from_topology(client):
     colors = client.get("/api/network/colors").json()["colors"]
     topo = client.get("/api/topology").json()

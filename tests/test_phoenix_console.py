@@ -124,12 +124,17 @@ def test_spot_subscriptions_unchanged(fake_types):
         subs["/hamilton/omniplanner_node/compiled_plan_out"]
         == "robot_executor_msgs/msg/ActionSequenceMsg"
     )
-    for t in (
-        "/hamilton/spot_executor_node/action_result",
-        "/hamilton/spot_executor/action_result",
-        "/hamilton/spot_executor_node/runtime_guards",
-        "/hamilton/spot_executor_node/teleop_state",
-    ):
+    from adt4_console.optional import available
+
+    expected = ["/hamilton/spot_executor_node/teleop_state"]
+    if available("action_results"):
+        expected += [
+            "/hamilton/spot_executor_node/action_result",
+            "/hamilton/spot_executor/action_result",
+        ]
+    if available("lease_state"):
+        expected.append("/hamilton/spot_executor_node/runtime_guards")
+    for t in expected:
         assert t in subs
     assert "/hamilton/manual_mode" not in subs
 

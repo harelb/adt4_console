@@ -1,0 +1,58 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    # pure-python tests; the ones that need ROS 2, Neo4j, spark_dsg or other
+    # workspace packages skip
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          # the fleet topology loader (dcist_launch_system) the console calls
+          repository: MIT-SPARK/Awesome-DCIST-T4
+          path: adt4
+          sparse-checkout: dcist_launch_system/src
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[server,test]"
+      - name: Test
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/adt4/dcist_launch_system/src
+        run: python -m pytest -q -rs -p no:cacheprovider tests
+
+  frontend:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/ruff-action@v3
+        with:
+          args: check
+      - uses: astral-sh/ruff-action@v3
+        with:
+          args: format --check

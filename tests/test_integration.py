@@ -156,7 +156,11 @@ def test_ingest_into_neo4j_then_serve(tmp_path):
         )
         objects = [r for r in codec.decode_records(enc) if (r.layer, r.part) == (2, 0)]
         assert abs(len(objects) - 509) <= 5
-        assert client.get("/api/graph/neo4j:test/mesh/manifest").json()["tiles"]
+        from adt4_console.optional import optional
+
+        if optional("heracles.graph_interface", "read_mesh_path", "mesh"):
+            # heracles stores the mesh path of an ingested map
+            assert client.get("/api/graph/neo4j:test/mesh/manifest").json()["tiles"]
         detail = client.get("/api/graph/neo4j:test/node/O(2)").json()
         assert detail["layer"] == 2
         if (PENN / "image_store").is_dir():

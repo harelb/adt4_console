@@ -36,6 +36,7 @@ def _hide_packages(names: str) -> None:
 if os.environ.get("ADT4_CONSOLE_TEST_HIDE"):
     _hide_packages(os.environ["ADT4_CONSOLE_TEST_HIDE"])
 
+from adt4_console import optional  # noqa: E402
 from adt4_console.app import build_services, create_app  # noqa: E402
 from adt4_console.fleet_service import FleetDeps  # noqa: E402
 from adt4_console.settings import Settings  # noqa: E402
@@ -52,6 +53,46 @@ NEO4J_URI = os.environ.get("ADT4_CONSOLE_TEST_NEO4J", "neo4j://localhost:7697")
 NEO4J_AUTH = (
     os.environ.get("HERACLES_NEO4J_USERNAME", "neo4j"),
     os.environ.get("HERACLES_NEO4J_PASSWORD", "neo4j_pw"),
+)
+
+
+def _needs(feature: str):
+    return pytest.mark.skipif(
+        not optional.available(feature),
+        reason=f"needs {optional.FEATURES[feature][0]} ({feature})",
+    )
+
+
+# tests of features whose package may be missing (optional.FEATURES)
+needs_fleet_core = _needs("fleet_core")
+needs_fleetlink = _needs("fleetlink")
+needs_images = _needs("image_store")
+needs_map_edit = _needs("map_edit")
+needs_lease_state = _needs("lease_state")
+needs_action_results = _needs("action_results")
+# heracles' Neo4j version counter (graph_interface.read_version)
+needs_version_counter = pytest.mark.skipif(
+    optional.optional("heracles.graph_interface", "read_version", "version counter")
+    is None,
+    reason="needs heracles.graph_interface.read_version",
+)
+
+
+def _helper(name: str) -> bool:
+    try:
+        from dcist_launch_system import fleet_helpers
+    except ImportError:
+        return False
+    return hasattr(fleet_helpers, name)
+
+
+# fleet tooling with fleetlink link modes / topology robot colors
+needs_fleetlink_mode = pytest.mark.skipif(
+    not _helper("fleetlink_port"), reason="needs fleet_helpers' fleetlink link mode"
+)
+needs_robot_colors = pytest.mark.skipif(
+    optional.optional("dcist_launch_system.robot_colors", None, "robot colors") is None,
+    reason="needs dcist_launch_system.robot_colors",
 )
 
 

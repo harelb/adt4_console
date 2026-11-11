@@ -6,7 +6,9 @@ import msgpack
 import numpy as np
 import pytest
 
-from .conftest import make_client
+from .conftest import make_client, needs_fleetlink
+
+pytestmark = needs_fleetlink
 
 MSGPACK = "application/x-msgpack"
 POSE = {"x": 0.0, "y": 0.0, "z": 0.0, "qw": 1.0, "qx": 0.0, "qy": 0.0, "qz": 0.0,

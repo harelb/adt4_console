@@ -9,7 +9,7 @@ import pytest
 from adt4_console.ros_bridge import RosBridge
 from adt4_console.routes import launch as launch_routes
 from adt4_console.routes.launch import HYDRA_PGREP
-from tests.conftest import make_client
+from tests.conftest import make_client, needs_fleet_core
 
 
 class FakeHelpers:
@@ -76,6 +76,7 @@ def app(settings, monkeypatch):
         yield client, svc, helpers
 
 
+@needs_fleet_core
 def test_stop_save_calls_hydra_then_roman(app, monkeypatch):
     client, svc, helpers = app
     calls = _fake_ros(svc, monkeypatch, services_up={"/hamilton/hydra/shutdown"})
@@ -106,6 +107,7 @@ def test_stop_save_calls_hydra_then_roman(app, monkeypatch):
     assert "adt4_system stopped and closed" in log
 
 
+@needs_fleet_core
 def test_stop_save_roman_failure_is_a_warning(app, monkeypatch):
     client, svc, helpers = app
     _fake_ros(svc, monkeypatch, fail={"/hamilton/roman/shutdown"})
@@ -118,6 +120,7 @@ def test_stop_save_roman_failure_is_a_warning(app, monkeypatch):
     assert not helpers.calls
 
 
+@needs_fleet_core
 def test_stop_save_fleetlink_skips_exit_wait(app, monkeypatch):
     client, svc, _ = app
     _fake_ros(
@@ -133,6 +136,7 @@ def test_stop_save_fleetlink_skips_exit_wait(app, monkeypatch):
     assert "fleetlink mode" in log
 
 
+@needs_fleet_core
 def test_stop_save_falls_back_to_tmux_when_hydra_service_fails(app, monkeypatch):
     client, svc, helpers = app
     calls = _fake_ros(svc, monkeypatch, fail={"/hamilton/hydra/shutdown"})
@@ -249,6 +253,7 @@ def test_stop_save_without_teardown_leaves_the_session(app, monkeypatch):
     assert "teardown" not in job["result"] and not helpers.ssh
 
 
+@needs_fleet_core
 def test_stop_save_tmux_waits_for_hydra_before_teardown(app):
     client, svc, helpers = app
     helpers.hydra_polls = 3  # hydra still saving for two checks

@@ -1139,6 +1139,8 @@ def test_preview_route_matches_omniplanner():
     from .conftest import PENN
 
     tsp = pytest.importorskip("omniplanner.tsp")
+    if not hasattr(tsp.LayerPlanner, "restricted_to_components"):
+        pytest.skip("this omniplanner has no LayerPlanner.restricted_to_components")
     if not (PENN / "hydra" / "backend" / "dsg.json").is_file():
         pytest.skip("no Penn map")
     from adt4_console.graph_service import FileSource

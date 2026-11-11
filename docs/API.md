@@ -1,23 +1,21 @@
 # ADT4 Console — API & protocol contract
 
-Single source of truth for the three parts built in parallel:
+The contract between the parts:
 
-* `adt4_console/` — FastAPI server (Python, runs on the base station in `spark_env`)
-* `adt4_console/frontend/` — React 19 + Vite 7 + TS SPA, built into `adt4_console/adt4_console/static/`
-* `fleetlink/` — robot→base live scene-graph bridge (Python, runs on robots + inside the console)
+* `adt4_console/` — FastAPI server (Python; on the base station it runs in ADT4's `spark_env`)
+* `frontend/` — React 19 + Vite 7 + TS SPA, built into `adt4_console/static/`
+* [fleetlink](https://github.com/harelb/fleetlink) — robot→base live scene-graph link (optional)
 
-Shared wire codec: `fleetlink/fleetlink/codec.py` (read its module docstring — the graph
-and mesh-tile formats below are defined there and MUST NOT be redefined elsewhere).
+Wire codec: `adt4_console/codec.py`, the browser-facing part of fleetlink's `codec`
+(read its module docstring — the graph and mesh-tile formats below are defined there and
+MUST NOT be redefined elsewhere; `frontend/src/codec.ts` mirrors it).
 
 ## 0. Process / environment
 
-* Python: `python3` (venv with system site
-  packages; has fastapi, uvicorn, httpx, msgpack, zstandard, numpy, trimesh, neo4j,
-  eclipse-zenoh==1.8.0, ruamel.yaml, textual). ROS Jazzy messages/rclpy importable after
-  `source /opt/ros/jazzy/setup.zsh && source ~/dcist_ws/install/setup.zsh`.
-* spark_dsg + heracles come from the colcon workspace (sourced setup).
-* Dev imports without install: `sys.path` gets `adt4_console/`, `fleetlink/`,
-  `dcist_launch_system/src/` (done by `adt4_console/bin/adt4-console`, like `bin/fleet-adt4`).
+* Python 3.12 with the `server` extras of `setup.py` (fastapi, uvicorn, msgpack, numpy,
+  trimesh, neo4j, ...). ROS 2 Jazzy messages / rclpy importable from the sourced workspace;
+  spark_dsg, heracles and `dcist_launch_system` come from the workspace too.
+* Optional packages turn features off when missing (`GET /api/health` `features`; README).
 * **ROS is optional**: the server must start and serve everything that does not need ROS
   with `--no-ros` (or when `rclpy` import fails) — ROS-backed endpoints return 503.
 * Same for fleetlink: `--no-fleetlink` or zenoh unavailable → live endpoints return empty.

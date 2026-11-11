@@ -12,7 +12,7 @@ import pytest
 
 from adt4_console.chat import clean_history, to_anthropic, to_openai
 
-from .conftest import make_client
+from .conftest import make_client, needs_version_counter
 from .test_chat_llm import _call, _chat, _client
 
 NEO4J_URI = os.environ.get("ADT4_TEST_NEO4J", "neo4j://localhost:7697")
@@ -188,6 +188,7 @@ def test_cypher_tools_and_schema_in_prompt(neo4j_chat):
 
 
 @live_neo4j
+@needs_version_counter
 def test_write_runs_only_after_approval(neo4j_chat):
     import neo4j
 

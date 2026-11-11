@@ -6,7 +6,7 @@ import pytest
 
 from adt4_console import codec
 
-from .conftest import make_client
+from .conftest import make_client, needs_images
 from .synthetic import JPEG, OBJECTS, build_run
 
 pytest.importorskip("spark_dsg")
@@ -57,6 +57,7 @@ def test_mesh_manifest_and_tiles(gclient):
     assert gclient.get("/api/graph/file:syn/mesh/tile/9_9_9").status_code == 404
 
 
+@needs_images
 def test_node_detail_images_and_trajectory(gclient):
     d = gclient.get("/api/graph/file:syn/node/O0").json()  # unparenthesised form works
     assert d["sym"] == "O(0)" and d["label_name"] == "chair" and d["layer"] == 2

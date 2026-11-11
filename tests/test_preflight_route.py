@@ -2,7 +2,9 @@
 
 import time
 
-from .conftest import make_client
+from .conftest import make_client, needs_fleet_core
+
+pytestmark = needs_fleet_core
 
 
 def _out(*checks, head="a" * 40):

@@ -10,3 +10,6 @@ install/
 log/
 .pytest_cache/
 .ruff_cache/
+# omniplanner writes PDDL problems here when tests plan
+pddl_dumps/
+pddl_problem_debugging.pddl

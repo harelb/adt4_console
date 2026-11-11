@@ -1,0 +1,17 @@
+---
+# Same hooks as Awesome-DCIST-T4 (ruff settings in ruff.toml)
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v3.2.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-added-large-files
+        args: [--maxkb=2000]  # frontend/public/models/*.glb
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.2
+    hooks:
+      - id: ruff
+        args: [--select, I, --fix]
+      - id: ruff
+      - id: ruff-format
