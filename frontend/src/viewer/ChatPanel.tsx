@@ -30,7 +30,7 @@ import type {FastDownwardInfo} from "../lib/fastDownward";
 import {decideMapEdit, MapEditCard, mapEditNote, statusOf, toMapEditItem, type MapEditItem} from "./MapEditCard";
 import {decideSceneEdit, SceneEditCard, sceneEditNote, sceneEditStatus, toSceneEditItem, undoSceneEdit, type SceneEditItem} from "./SceneEditCard";
 import {refreshEdit} from "../stores/mapEdit";
-import {candidateNote, candidateOrdinals, cellText, cypherErrorShort, fmtLeft, lookupSummary, mergeTargetsAfterCommit, scrollAnchor, toolGroups, trimTranscript, writeNote, type TranscriptItem, type WriteOutcome} from "../lib/chatTranscript";
+import {candidateMeta, candidateNote, candidateOrdinals, cellText, cypherErrorShort, fmtExpiry, fmtExtent, lookupSummary, mergeTargetsAfterCommit, scrollAnchor, toolGroups, trimTranscript, writeNote, type TranscriptItem, type WriteOutcome} from "../lib/chatTranscript";
 
 export type ChatItem =
   | {type: "user"; text: string; note?: boolean}
@@ -123,6 +123,14 @@ export interface ObjectCandidate {
   bbox_min: number[] | null;
   bbox_max: number[] | null;
   num_views?: number;
+  /** every view the card can show (the console groups same-object candidates
+   *  into one card): which server candidate (index) and which of its views */
+  views?: {index: number; view: number; image_uri: string | null}[];
+  /** server candidate indices folded into this card (``index`` first) */
+  members?: number[];
+  /** "ok" | "suspect" | "degenerate" geometry, and why */
+  geometry?: string;
+  flags?: string[];
   would_merge_into?: {symbol: string; distance_m: number | null} | null;
   /** seconds left when it arrived, and when that was (ms) */
   expires_in_s?: number | null;
@@ -133,6 +141,15 @@ export interface ObjectCandidate {
 }
 
 const nums = (v: unknown): number[] | null => (Array.isArray(v) && v.every(x => typeof x === "number") ? (v as number[]) : null);
+
+const toViewRefs = (vs: unknown[]): NonNullable<ObjectCandidate["views"]> =>
+  vs
+    .filter((v): v is Record<string, unknown> => Boolean(v) && typeof v === "object")
+    .map(v => ({
+      index: Number(v.index ?? 0),
+      view: Number(v.view ?? 0),
+      image_uri: typeof v.image_uri === "string" && v.image_uri.startsWith("data:image/") ? v.image_uri : null,
+    }));
 
 /** One streamed NDJSON object → a chat item (null: not shown, e.g. ``done``). */
 export function toChatItem(o: Record<string, unknown>): ChatItem | null {
@@ -181,6 +198,10 @@ export function toChatItem(o: Record<string, unknown>): ChatItem | null {
         bbox_min: nums(o.bbox_min),
         bbox_max: nums(o.bbox_max),
         num_views: typeof o.num_views === "number" ? o.num_views : undefined,
+        views: Array.isArray(o.views) ? toViewRefs(o.views) : undefined,
+        members: Array.isArray(o.members) ? o.members.filter((x): x is number => typeof x === "number") : undefined,
+        geometry: typeof o.geometry === "string" ? o.geometry : undefined,
+        flags: Array.isArray(o.flags) ? o.flags.filter((x): x is string => typeof x === "string") : undefined,
         would_merge_into: m && typeof m.symbol === "string" ? {symbol: m.symbol, distance_m: typeof m.distance_m === "number" ? m.distance_m : null} : null,
         expires_in_s: typeof o.expires_in_s === "number" ? o.expires_in_s : null,
         received: Date.now(),
@@ -1132,24 +1153,25 @@ function CandidateCard({it, idx, ord, onAct}: {it: ObjectCandidate; idx: number;
   const left = it.expires_in_s != null ? it.expires_in_s - (now - (it.received ?? now)) / 1000 : null;
   const expired = left !== null && left <= 0 && !done;
   const size = it.bbox_min && it.bbox_max ? it.bbox_max.map((v, k) => Math.abs(v - (it.bbox_min as number[])[k])) : null;
-  const views = Math.max(1, it.num_views ?? 1);
-  const src =
-    view === 0 && it.image_uri
-      ? it.image_uri
-      : withToken(`api/sam3/frame.jpg?pending_id=${encodeURIComponent(it.pending_id)}&index=${it.index}&view=${view}&max_dim=640`);
+  const refs = it.views && it.views.length > 0 ? it.views : null;
+  const views = refs ? refs.length : Math.max(1, it.num_views ?? 1);
+  const ref = refs ? refs[Math.min(view, refs.length - 1)] : {index: it.index, view, image_uri: view === 0 ? it.image_uri : null};
+  const src = ref.image_uri ?? withToken(`api/sam3/frame.jpg?pending_id=${encodeURIComponent(it.pending_id)}&index=${ref.index}&view=${ref.view}&max_dim=640`);
+  const countdown = left !== null && !done ? fmtExpiry(left) : null;
+  const dup = (it.members?.length ?? 1) - 1;
   return (
     <div className="msg msg-candidate" data-item={idx}>
       <div className="row gap between">
         <span>
-          <Badge tone="warn">not in map</Badge> <strong>{it.label}</strong> <span className="muted small">score {it.score.toFixed(2)}</span>
-          {ord && ord.n > 1 && (
-            <span className="muted small">
-              {" "}
-              · {ord.k} of {ord.n}
+          <Badge tone="warn">not in map</Badge> <strong>{it.label}</strong>{" "}
+          <span className="muted small">{candidateMeta(it.score, ord, null).join(" · ")}</span>
+          {countdown && (
+            <span className={`small ${expired ? "tone-err" : "muted"}`} title="The server holds this search's results this long; approve before, or search again after">
+              {" · "}
+              {countdown}
             </span>
           )}
         </span>
-        {left !== null && !done && <span className={`small mono ${expired ? "tone-err" : "muted"}`} title="The candidate is held this long; search again after">{fmtLeft(left)}</span>}
       </div>
       <img className="candidate-img" src={src} alt={`SAM3 mask of ${it.label}, view ${view + 1}`} />
       {views > 1 && (
@@ -1163,8 +1185,23 @@ function CandidateCard({it, idx, ord, onAct}: {it: ObjectCandidate; idx: number;
       )}
       <div className="small mono">
         at {fmt(it.centroid)}
-        {size && <span className="muted"> · size {fmt(size)} m</span>}
+        {size && <span className="muted"> · size ({size.map(fmtExtent).join(", ")}) m</span>}
       </div>
+      {(dup > 0 || (it.flags && it.flags.length > 0)) && (
+        <div className="small">
+          {dup > 0 && (
+            <span className="muted" title="Detections of the same object in other keyframes; one card, approving adds it once">
+              same object in {dup + 1} detections
+            </span>
+          )}
+          {dup > 0 && it.flags && it.flags.length > 0 && " · "}
+          {it.flags && it.flags.length > 0 && (
+            <span className={it.geometry === "degenerate" ? "tone-err" : "tone-warn"} title="Geometry from few or bad depth pixels; the position may be off">
+              {it.flags.join(", ")}
+            </span>
+          )}
+        </div>
+      )}
       <div className="small">
         {it.would_merge_into ? (
           <span className="tone-warn">
