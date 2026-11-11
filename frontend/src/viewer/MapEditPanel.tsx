@@ -10,6 +10,7 @@
 import {useEffect, useMemo, useState} from "react";
 import {Badge, Segmented, Spinner, Toggle} from "../components/ui";
 import {withToken} from "../lib/auth";
+import {useFeature} from "../lib/features";
 import {batchUpdateOps, common, edgeOp, editApi, editLayerOf, selectionSummary, uiSummary, type EditLayer} from "../lib/mapEdit";
 import {
   applyOps,
@@ -380,9 +381,19 @@ export function MapEditPanel() {
   const {on, src, error, busy} = useMapEdit();
   const set = useMapEdit(s => s.set);
   const label = useViewer(s => (src ? s.sources[src]?.label : null));
+  const canEdit = useFeature("map_edit");
   useEffect(() => {
-    if (on) void refreshEdit();
-  }, [on]);
+    if (on && canEdit) void refreshEdit();
+  }, [on, canEdit]);
+  if (!canEdit)
+    return (
+      <section className="vsec map-edit" data-testid="map-edit">
+        <header className="vsec-head">
+          <h4>Edit the map</h4>
+        </header>
+        <div className="small muted">Map editing is off: this workspace's heracles has no graph_edit.</div>
+      </section>
+    );
   return (
     <section className="vsec map-edit" data-testid="map-edit">
       <header className="vsec-head">

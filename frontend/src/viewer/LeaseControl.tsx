@@ -9,6 +9,8 @@ import {leaseFromGuards, leaseView, recentLeaseRefusal, shortOwner} from "../lib
 import type {LeaseInfo} from "../types";
 import {Badge, Modal, Spinner} from "../components/ui";
 import {usePlatform} from "./usePlatform";
+import {useFleet} from "../stores/fleet";
+import {takeLeaseOn, useFeature} from "../lib/features";
 
 function consoleNow(): number {
   return Date.now() / 1000 + (consoleClockOffset() ?? 0);
@@ -119,14 +121,20 @@ export function TakeLeaseButton({robot, owner, className = "btn btn-sm", onTaken
   );
 }
 
-/** Lease badge + Take lease button (button only while the lease is not ours). */
+/** Lease badge + Take lease button (button only while the lease is not ours).
+ *  The badge needs a lease source (the executors' runtime guards), the button the
+ *  executor's ~/take_lease service; with neither there is nothing to show. */
 export function LeaseControl({robot}: {robot: string}) {
   const lease = useLease(robot);
+  const leaseState = useFeature("lease_state");
+  const canTake = useFleet(s => takeLeaseOn(s.health, robot));
   if (usePlatform(robot) !== "spot") return null;
+  const badge = leaseState || lease !== null;
+  if (!badge && !canTake) return null;
   return (
     <span className="row gap-sm lease-control">
-      <LeaseBadge robot={robot} />
-      {!lease?.owned && <TakeLeaseButton robot={robot} owner={lease?.owner} className="btn btn-xs" />}
+      {badge && <LeaseBadge robot={robot} />}
+      {canTake && !lease?.owned && <TakeLeaseButton robot={robot} owner={lease?.owner} className="btn btn-xs" />}
     </span>
   );
 }
@@ -138,6 +146,7 @@ export function LeaseRefusalNotice({robot}: {robot: string | null}) {
   const status = useRobots(s => (robot ? s.plan[robot]?.status : undefined));
   const lease = useLease(robot);
   const platform = usePlatform(robot);
+  const canTake = useFleet(s => (robot ? takeLeaseOn(s.health, robot) : false));
   const [, force] = useState(0);
   if (!robot || platform !== "spot") return null;
   const refusal = recentLeaseRefusal(status, robot, consoleNow(), {since: tookAt[robot] ?? 0});
@@ -148,7 +157,7 @@ export function LeaseRefusalNotice({robot}: {robot: string | null}) {
       <span title="The planner refused the plan: the executor does not hold the Spot lease">
         {robot}: lease held by {owner ? shortOwner(owner) : "someone else"} — Take lease?
       </span>
-      <TakeLeaseButton robot={robot} owner={owner} className="btn btn-xs" onTaken={() => force(x => x + 1)} />
+      {canTake && <TakeLeaseButton robot={robot} owner={owner} className="btn btn-xs" onTaken={() => force(x => x + 1)} />}
     </div>
   );
 }

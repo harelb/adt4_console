@@ -7,6 +7,7 @@ import {onBackendState} from "../lib/api";
 import {JobConfirmHost, JobsDrawer} from "./Jobs";
 import {Dot, Sheet} from "./ui";
 import {useTheme} from "../stores/theme";
+import {featureOn, type Feature} from "../lib/features";
 
 const P = {
   fleet: "M3 5h18v4H3zM3 11h18v4H3zM3 17h18v4H3z M6 7h.01M6 13h.01M6 19h.01",
@@ -35,13 +36,15 @@ export function Icon({name, size = 18}: {name: keyof typeof P; size?: number}) {
   );
 }
 
-const NAV: {to: string; label: string; short?: string; icon: keyof typeof P}[] = [
+type NavItem = {to: string; label: string; short?: string; icon: keyof typeof P; feature?: Feature};
+const ALL_NAV: NavItem[] = [
   {to: "/fleet", label: "Fleet", icon: "fleet"},
-  {to: "/launch", label: "Launch", icon: "launch"},
-  {to: "/maps", label: "Maps", icon: "maps"},
+  // launching, map transfers and the network tools need the fleet core
+  {to: "/launch", label: "Launch", icon: "launch", feature: "fleet_core"},
+  {to: "/maps", label: "Maps", icon: "maps", feature: "fleet_core"},
   {to: "/viewer", label: "Robot viewer", short: "Viewer", icon: "viewer"},
   {to: "/mission", label: "Mission planner", short: "Mission", icon: "mission"},
-  {to: "/network", label: "Network", icon: "network"},
+  {to: "/network", label: "Network", icon: "network", feature: "fleet_core"},
   {to: "/config", label: "Config", icon: "config"},
 ];
 
@@ -181,6 +184,7 @@ const Logo = ({size = 22}: {size?: number}) => (
 
 /** Phone navigation: four main pages + "More" for the rest. */
 function TabBar() {
+  const NAV = useNav();
   const [more, setMore] = useState(false);
   const {pathname} = useLocation();
   const main = NAV.slice(0, 4);
@@ -238,7 +242,14 @@ export function saveNavCollapsed(on: boolean) {
   }
 }
 
+/** The pages this server has (a page whose feature is off is hidden). */
+function useNav(): NavItem[] {
+  const health = useFleet(s => s.health);
+  return ALL_NAV.filter(n => !n.feature || featureOn(health, n.feature));
+}
+
 export function Shell() {
+  const NAV = useNav();
   const backendUp = useBackendUp();
   const authError = useWsStatus(s => s.authError);
   const [collapsed, setCollapsed] = useState(() => loadNavCollapsed());

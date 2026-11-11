@@ -8,6 +8,10 @@ export interface Health {
   fleetlink: boolean;
   fleetlink_error?: string | null;
   neo4j: Record<string, boolean>;
+  /** optional server features (lib/features.ts); a missing key is on */
+  features?: Record<string, boolean>;
+  /** robot -> its executor serves ~/take_lease */
+  take_lease?: Record<string, boolean>;
 }
 
 export interface ConsoleConfig {
