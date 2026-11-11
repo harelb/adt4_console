@@ -5,7 +5,6 @@ Run with the spark_env python (no ROS needed).
 """
 
 import argparse
-import csv
 import json
 import sys
 import time

@@ -19,7 +19,6 @@ Usage (needs trimesh, fast_simplification, pycollada):
 from __future__ import annotations
 
 import argparse
-import math
 import pathlib
 
 import numpy as np

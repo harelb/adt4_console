@@ -4,3 +4,7 @@ target-version = "py312"
 
 [lint]
 extend-select = ["I"]
+
+[lint.per-file-ignores]
+# pytest fixtures imported from another test module are "redefined" as arguments
+"tests/*" = ["F811"]

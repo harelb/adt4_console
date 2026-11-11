@@ -196,7 +196,7 @@ def test_a_refused_edit_is_reported_not_refreshed():
     def refuse(**kw):
         return "Refused: there is no place t9."
 
-    mod.remove_scene_place = refuse  # noqa: assigning over __getattr__
+    mod.remove_scene_place = refuse  # assigning over __getattr__
     out = svc.run("remove_scene_place", {"symbol": "t9"}, "neo4j:live")
     assert (
         out["ok"] is False

@@ -170,7 +170,7 @@ def test_tile_cache_manifest_layer(tmp_path):
     )
     assert live.get("city", 21, 5, 7) == b"\xff\xd8city"
     assert calls == ["https://city.example/tile/21/7/5"]
-    layers = {l["id"]: l for l in live.layers()}
+    layers = {layer["id"]: layer for layer in live.layers()}
     assert (
         layers["city"]["default"]
         and layers["city"]["zmax"] == 21

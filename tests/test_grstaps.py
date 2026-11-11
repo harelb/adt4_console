@@ -15,7 +15,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from .test_omni_planner import (
+from .test_omni_planner import (  # noqa: F401 (fixtures)
     _G,
     SPOT1,
     SPOT2,
@@ -24,7 +24,7 @@ from .test_omni_planner import (
     mission_settings,
     omni,
     svc,
-)  # noqa: F401
+)
 
 engine = pytest.importorskip("adt4_console.mission.grstaps_engine")
 try:
