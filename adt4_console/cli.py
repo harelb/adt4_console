@@ -62,7 +62,7 @@ def parse_args(argv=None):
     p.add_argument(
         "--zenoh-connect",
         help="zenoh router for the fleetlink receiver (default: the local fleetlink "
-        "router tcp/127.0.0.1:<zenoh.fleetlink_port> when $ADT4_FLEET_LINK is "
+        "router tcp/127.0.0.1:<zenoh.fleetlink_port> when $ADT4_FLEETLINK_MODE is "
         "'fleetlink', else the ROS router tcp/127.0.0.1:7447)",
     )
     p.add_argument(
@@ -132,7 +132,7 @@ def parse_args(argv=None):
 def default_zenoh_connect(topology=None, environ=None) -> str:
     """The receiver's router: the fleetlink router in fleetlink mode, else 7447."""
     environ = os.environ if environ is None else environ
-    if environ.get("ADT4_FLEET_LINK") != "fleetlink":
+    if environ.get("ADT4_FLEETLINK_MODE") != "fleetlink":
         return "tcp/127.0.0.1:7447"
     port = environ.get("ADT4_FLEETLINK_PORT", "")
     if not port.isdigit():

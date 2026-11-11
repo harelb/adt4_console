@@ -21,28 +21,28 @@ TOPO = {
 
 def test_default_zenoh_connect():
     assert default_zenoh_connect(environ={}) == "tcp/127.0.0.1:7447"
-    assert default_zenoh_connect(environ={"ADT4_FLEET_LINK": "router"}) == (
+    assert default_zenoh_connect(environ={"ADT4_FLEETLINK_MODE": "router"}) == (
         "tcp/127.0.0.1:7447"
     )
     assert (
         default_zenoh_connect(
-            environ={"ADT4_FLEET_LINK": "fleetlink", "ADT4_FLEETLINK_PORT": "17450"}
+            environ={"ADT4_FLEETLINK_MODE": "fleetlink", "ADT4_FLEETLINK_PORT": "17450"}
         )
         == "tcp/127.0.0.1:17450"
     )
     # port from topology.yaml when not exported (repo topology: 7450)
-    assert default_zenoh_connect(environ={"ADT4_FLEET_LINK": "fleetlink"}) == (
+    assert default_zenoh_connect(environ={"ADT4_FLEETLINK_MODE": "fleetlink"}) == (
         "tcp/127.0.0.1:7450"
     )
 
 
 def test_cli_explicit_zenoh_connect_wins(monkeypatch):
-    monkeypatch.setenv("ADT4_FLEET_LINK", "fleetlink")
+    monkeypatch.setenv("ADT4_FLEETLINK_MODE", "fleetlink")
     monkeypatch.setenv("ADT4_FLEETLINK_PORT", "7450")
     s = settings_from_args(parse_args(["--zenoh-connect", "tcp/1.2.3.4:9"]))
     assert s.zenoh_connect == "tcp/1.2.3.4:9"
     assert settings_from_args(parse_args([])).zenoh_connect == "tcp/127.0.0.1:7450"
-    monkeypatch.delenv("ADT4_FLEET_LINK")
+    monkeypatch.delenv("ADT4_FLEETLINK_MODE")
     assert settings_from_args(parse_args([])).zenoh_connect == "tcp/127.0.0.1:7447"
 
 
