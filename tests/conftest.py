@@ -68,6 +68,9 @@ needs_fleet_core = _needs("fleet_core")
 needs_fleetlink = _needs("fleetlink")
 needs_images = _needs("image_store")
 needs_map_edit = _needs("map_edit")
+needs_rclpy = pytest.mark.skipif(
+    optional.optional("rclpy.qos", None, "ROS 2") is None, reason="needs ROS 2 (rclpy)"
+)
 needs_lease_state = _needs("lease_state")
 needs_action_results = _needs("action_results")
 # heracles' Neo4j version counter (graph_interface.read_version)

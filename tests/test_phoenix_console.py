@@ -15,6 +15,8 @@ from adt4_console import teleop_service as ts
 from adt4_console.ros_bridge import NotSupported, RosBridge, path_to_dict
 from tests.conftest import make_client
 
+from .conftest import needs_rclpy
+
 TOPO = {
     "machines": {
         "hamilton": {"role": "robot", "platform_type": "spot"},
@@ -105,6 +107,7 @@ def fake_types(monkeypatch):
     monkeypatch.setattr(rb_mod, "import_type", lambda path: path)
 
 
+@needs_rclpy
 def test_phoenix_subscriptions_skip_spot_executor(fake_types):
     rb = _bridge()
     rb.node = FakeNode()
@@ -115,6 +118,7 @@ def test_phoenix_subscriptions_skip_spot_executor(fake_types):
     assert not [t for t in subs if "spot_executor" in t]
 
 
+@needs_rclpy
 def test_spot_subscriptions_unchanged(fake_types):
     rb = _bridge()
     rb.node = FakeNode()

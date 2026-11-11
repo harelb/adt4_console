@@ -32,7 +32,9 @@ end_header
 
 
 def build_run(root: pathlib.Path) -> pathlib.Path:
-    import spark_dsg as dsg
+    import pytest
+
+    dsg = pytest.importorskip("spark_dsg")
 
     run = root / "synthetic_run"
     backend = run / "hydra" / "backend"
