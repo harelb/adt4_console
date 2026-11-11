@@ -2,8 +2,17 @@
 // localStorage, not sessionStorage: an iOS home-screen web app loses
 // sessionStorage every time it is closed. Tokens saved by older builds in
 // sessionStorage are migrated on first read.
+import {create} from "zustand";
+
 const KEY = "adt4_console_token";
 let cached: string | null | undefined;
+
+export const useAuthStatus = create<{required: boolean}>(() => ({required: false}));
+
+/** Only a server authentication rejection opens the sign-in dialog. */
+export function requireToken() {
+  useAuthStatus.setState({required: true});
+}
 
 function safeGet(): string | null {
   try {

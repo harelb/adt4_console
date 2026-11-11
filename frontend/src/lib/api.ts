@@ -1,6 +1,6 @@
 // REST client: bearer auth, typed errors, msgpack support.
 import {useCallback, useEffect, useRef, useState} from "react";
-import {getToken} from "./auth";
+import {getToken, requireToken} from "./auth";
 import {unpack} from "../codec";
 import {wireProgress} from "./loadProgress";
 import {transfer} from "../stores/loading";
@@ -45,6 +45,7 @@ function headers(extra?: HeadersInit): Headers {
 }
 
 async function errorFrom(res: Response): Promise<ApiError> {
+  if (res.status === 401 && res.headers.get("WWW-Authenticate")?.toLowerCase().startsWith("bearer")) requireToken();
   let detail = "";
   let body: unknown = null;
   try {
@@ -194,7 +195,7 @@ export function errorText(e: unknown): string {
     if (e.kind === "down") return "Backend unreachable";
     if (e.kind === "ros") return "ROS not connected" + (e.detail && !/ros/i.test(e.detail) ? `: ${e.detail}` : "");
     if (e.kind === "unavailable") return `Unavailable: ${e.detail}`;
-    if (e.kind === "auth") return "Not authorised: open the console with ?token=...";
+    if (e.kind === "auth") return "Not authorised: sign in with the console access token.";
     return e.detail || `HTTP ${e.status}`;
   }
   return e instanceof Error ? e.message : String(e);

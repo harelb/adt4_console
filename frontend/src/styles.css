@@ -1159,6 +1159,17 @@ input[type="checkbox"] {
 }
 
 /* ---------- modal ---------- */
+.token-dialog .modal-backdrop {
+  z-index: 4000;
+}
+.token-dialog .modal {
+  width: min(420px, 100%);
+}
+.token-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
 .modal-backdrop {
   position: fixed;
   inset: 0;

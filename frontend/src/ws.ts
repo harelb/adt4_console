@@ -4,7 +4,7 @@
 // waiting out the backoff.
 import {create} from "zustand";
 import {decode, encode} from "@msgpack/msgpack";
-import {withToken} from "./lib/auth";
+import {requireToken, withToken} from "./lib/auth";
 
 export interface Frame {
   topic: string;
@@ -116,6 +116,7 @@ class WsClient {
       if (this.ws === ws) this.ws = null;
       // 4401 = bad/missing token (server closes before accept)
       useWsStatus.setState({connected: false, authError: ev.code === 4401});
+      if (ev.code === 4401) requireToken();
       this.schedule();
     };
     ws.onerror = () => {
