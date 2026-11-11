@@ -154,7 +154,10 @@ def plugins_yaml_path() -> pathlib.Path | None:
     """The omniplanner plugins the base station runs: ``ADT4_OMNIPLANNER_PLUGINS``
     (e.g. config/grstaps_repair/omniplanner_plugins.yaml for GRSTAPS-X), else the
     run-adt4 session's config (every generated session exports ``config``, e.g.
-    grstaps_repair for base_station_web_grstaps_repair), else the default config's."""
+    grstaps_repair for base_station_web_grstaps_repair), else the default config's.
+    Prefer the imported package's source config when present, then its ament
+    share directory; try the selected config across roots before any default.
+    """
     env = os.environ.get("ADT4_OMNIPLANNER_PLUGINS")
     if env:
         p = pathlib.Path(env).expanduser()
@@ -163,23 +166,26 @@ def plugins_yaml_path() -> pathlib.Path | None:
         log.warning(
             "ADT4_OMNIPLANNER_PLUGINS=%s is not a file; using the default plugins", env
         )
+    roots = []
     try:
         import dcist_launch_system
 
-        root = pathlib.Path(dcist_launch_system.__file__).resolve().parents[2]
-        for conf in dict.fromkeys(
-            c for c in (os.environ.get("config"), "default") if c
-        ):
+        roots.append(pathlib.Path(dcist_launch_system.__file__).resolve().parents[2])
+    except Exception:  # noqa: BLE001 — standalone checkout without the launch package
+        pass
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        roots.append(pathlib.Path(get_package_share_directory("dcist_launch_system")))
+    except Exception:  # noqa: BLE001 — ROS is optional
+        pass
+    roots.append(pathlib.Path(__file__).resolve().parents[2] / "dcist_launch_system")
+    for conf in dict.fromkeys(c for c in (os.environ.get("config"), "default") if c):
+        for root in roots:
             p = root / "config" / conf / "omniplanner_plugins.yaml"
             if p.is_file():
                 return p
-    except Exception:  # noqa: BLE001
-        pass
-    p = (
-        pathlib.Path(__file__).resolve().parents[2]
-        / "dcist_launch_system/config/default/omniplanner_plugins.yaml"
-    )
-    return p if p.is_file() else None
+    return None
 
 
 def load_plugins(path=None) -> list[dict]:

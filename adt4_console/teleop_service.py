@@ -139,6 +139,10 @@ class TeleopService:
         self.clock = clock
         self.platform_of = platform_of
         self._lock = threading.Lock()
+        # State changes and their publications form one operation per robot.
+        # Keep these locks separate from _lock: publishing may block or inspect
+        # session state, and a slow robot must not block another robot's STOP.
+        self._dispatch_locks: dict[str, threading.RLock] = {}
         self._drives: dict[str, _Drive] = {}
         # robot -> {"t": wall time, "reason": str}: STOP latched (phoenix)
         self._stopped: dict[str, dict] = {}
@@ -156,7 +160,9 @@ class TeleopService:
         self._thread.start()
 
     def stop(self) -> None:
-        for robot in list(self._drives):
+        with self._lock:
+            robots = list(self._drives)
+        for robot in robots:
             self.release(robot, None, "console stopping")
         self._stop.set()
 
@@ -174,10 +180,16 @@ class TeleopService:
         return dict(teleop_table(self.platform(robot))["caps"])
 
     # -------------------------------------------------------------- driving
+    def _dispatch(self, robot: str):
+        with self._lock:
+            if robot not in self._dispatch_locks:
+                self._dispatch_locks[robot] = threading.RLock()
+            return self._dispatch_locks[robot]
+
     def acquire(self, robot: str, owner: str) -> tuple[bool, str]:
         """Claim ``robot`` for ``owner`` (one driver at a time)."""
         now = self.clock()
-        with self._lock:
+        with self._dispatch(robot), self._lock:
             d = self._drives.get(robot)
             if d is not None and d.owner != owner:
                 if now - d.t_cmd < DRIVER_IDLE_S or d.moving:
@@ -191,29 +203,30 @@ class TeleopService:
     def command(self, robot: str, owner: str, vx, vy, wz) -> dict:
         """One velocity command from ``owner``.  Returns what was published."""
         cmd = clamp_cmd(vx, vy, wz, teleop_table(self.platform(robot))["caps"])
-        if not is_zero(cmd):
+        with self._dispatch(robot):
+            if not is_zero(cmd):
+                with self._lock:
+                    latched = robot in self._stopped
+                if latched:
+                    return {"ok": False, "error": STOPPED_ERROR, "stopped": True}
+            ok, why = self.acquire(robot, owner)
+            if not ok:
+                return {"ok": False, "error": why}
+            now = self.clock()
             with self._lock:
-                latched = robot in self._stopped
-            if latched:
-                return {"ok": False, "error": STOPPED_ERROR, "stopped": True}
-        ok, why = self.acquire(robot, owner)
-        if not ok:
-            return {"ok": False, "error": why}
-        now = self.clock()
-        with self._lock:
-            d = self._drives[robot]
-            d.t_cmd = now
-            zero = is_zero(cmd)
-            if not zero:
-                d.t_nonzero = now
-            # idle zeros are not forwarded (one zero after motion is)
-            send = not zero or d.moving
-            d.cmd = cmd
+                d = self._drives[robot]
+                d.t_cmd = now
+                zero = is_zero(cmd)
+                if not zero:
+                    d.t_nonzero = now
+                # idle zeros are not forwarded (one zero after motion is)
+                send = not zero or d.moving
+                d.cmd = cmd
+                if send:
+                    d.moving = not zero
+                    d.sent += 1
             if send:
-                d.moving = not zero
-                d.sent += 1
-        if send:
-            self._send(robot, cmd)
+                self._send(robot, cmd)
         return {
             "ok": True,
             "sent": send,
@@ -223,37 +236,45 @@ class TeleopService:
     def release(self, robot: str, owner: str | None, reason: str = "released") -> None:
         """Owner done (socket closed, Stop): zero the robot if it was moving.
         ``owner=None`` releases whoever drives."""
-        with self._lock:
-            d = self._drives.get(robot)
-            if d is None or (owner is not None and d.owner != owner):
-                return
-            del self._drives[robot]
-            moving = d.moving
-        if moving:
-            log.info("teleop %s: %s, zeroing", robot, reason)
-            self._send(robot, (0.0, 0.0, 0.0))
+        with self._dispatch(robot):
+            with self._lock:
+                d = self._drives.get(robot)
+                if d is None or (owner is not None and d.owner != owner):
+                    return
+                del self._drives[robot]
+                moving = d.moving
+            if moving:
+                log.info("teleop %s: %s, zeroing", robot, reason)
+                self._send(robot, (0.0, 0.0, 0.0))
 
     def zero(self, robot: str) -> None:
         """Unconditional zero command (operator Stop)."""
-        with self._lock:
-            d = self._drives.get(robot)
-            if d is not None:
-                d.moving = False
-                d.cmd = (0.0, 0.0, 0.0)
-        self._send(robot, (0.0, 0.0, 0.0))
+        with self._dispatch(robot):
+            with self._lock:
+                d = self._drives.get(robot)
+                if d is not None:
+                    d.moving = False
+                    d.cmd = (0.0, 0.0, 0.0)
+            self._send(robot, (0.0, 0.0, 0.0))
 
     def halt(self, robot: str, reason: str = "STOP") -> None:
         """Operator STOP on a robot whose stop does not end teleop robot-side
         (phoenix): latch ``robot`` stopped first (so no command slips in), cut
         every drive session (every client: phone and laptop alike), then zero."""
+        stopped = {"t": time.time(), "reason": reason}
         with self._lock:
-            self._stopped[robot] = {"t": time.time(), "reason": reason}
-        self.release(robot, None, reason)
-        self.zero(robot)
+            self._stopped[robot] = stopped
+        with self._dispatch(robot):
+            # A re-arm that was already dispatching when STOP arrived must not
+            # clear this STOP while it waits for an in-flight publication.
+            with self._lock:
+                self._stopped[robot] = stopped
+            self.release(robot, None, reason)
+            self.zero(robot)
 
     def rearm(self, robot: str) -> bool:
         """Clear the STOP latch (Resume, or a fresh explicit arm).  True if set."""
-        with self._lock:
+        with self._dispatch(robot), self._lock:
             return self._stopped.pop(robot, None) is not None
 
     def stopped(self, robot: str) -> dict | None:
@@ -264,18 +285,23 @@ class TeleopService:
 
     def check_deadman(self) -> list[str]:
         """Zero every robot whose driver went quiet while moving."""
-        now = self.clock()
         stopped = []
         with self._lock:
-            for robot, d in self._drives.items():
-                if d.moving and now - d.t_cmd > DEADMAN_S:
+            robots = list(self._drives)
+        for robot in robots:
+            with self._dispatch(robot):
+                with self._lock:
+                    d = self._drives.get(robot)
+                    if d is None or not d.moving or self.clock() - d.t_cmd <= DEADMAN_S:
+                        continue
                     d.moving = False
                     d.cmd = (0.0, 0.0, 0.0)
                     d.deadman_stops += 1
-                    stopped.append(robot)
-        for robot in stopped:
-            log.warning("teleop %s: no command for %.1f s, zeroing", robot, DEADMAN_S)
-            self._send(robot, (0.0, 0.0, 0.0))
+                stopped.append(robot)
+                log.warning(
+                    "teleop %s: no command for %.1f s, zeroing", robot, DEADMAN_S
+                )
+                self._send(robot, (0.0, 0.0, 0.0))
         return stopped
 
     def _send(self, robot: str, cmd) -> None:

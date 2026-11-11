@@ -96,7 +96,7 @@ tab and removes it from the address bar.
 | `ADT4_ENV` | where `spark_env` is (re-exec, remote image-store commands) |
 | `ADT4_ROBOT_NAME` | default `--planner-ns` |
 | `ADT4_OUTPUT_DIR` | where GRSTAPS-X writes its problem files (default under `~/adt4_output`) |
-| `ADT4_OMNIPLANNER_PLUGINS` | omniplanner plugin file the console's planner preview reads |
+| `ADT4_OMNIPLANNER_PLUGINS` | explicit omniplanner plugin file; otherwise the console uses the session's `config` in the sourced `dcist_launch_system` checkout or its installed ROS share directory |
 | `config` | ADT4 config name, to find that config's omniplanner plugins |
 | `ADT4_FLEETLINK_MODE`, `ADT4_FLEETLINK_PORT` | fleetlink mode and router port (default `--zenoh-connect`) |
 | `ADT4_GUROBI_LICENSE` / `GRB_LICENSE_FILE`, `ADT4_ITAGS_BINARY`, `ADT4_GRSTAPS_TIMEOUT_S`, `ADT4_GRSTAPS_WORK_DIR`, `ADT4_GRSTAPS_ALLOW_HUSKY` | GRSTAPS-X mission planning |
