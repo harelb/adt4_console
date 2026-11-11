@@ -2180,12 +2180,19 @@ class GraphService:
         return src
 
     def list(self) -> list[dict]:
+        """Every source, but live ones only for robots fleetlink knows now: a
+        ``live:<robot>`` created by a viewer asking for a robot that is not on
+        the team (e.g. a fleet robot not running today) is not listed."""
+        live: set[str] = set()
         if self.live is not None and self.live.receiver is not None:
-            for robot in self.live.robots():
+            live = set(self.live.robots())
+            for robot in live:
                 self.live_source(robot)
         with self._lock:
             srcs = list(self.sources.values())
-        return [s.info() for s in srcs]
+        return [
+            s.info() for s in srcs if not isinstance(s, LiveSource) or s.name in live
+        ]
 
     def notify_version(self, src_id: str, reason: str, delta=None) -> None:
         """Push ``graph/<src>/version``.  With ``delta`` (a fleetlink GraphDelta from

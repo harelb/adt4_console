@@ -7,7 +7,7 @@
 import {useMemo} from "react";
 import {frameAlignOf, useLiveRobots, useRobots} from "../stores/robots";
 import {useRobotColorOf} from "../lib/palette";
-import {poseInGlobal, relocStatus, robotOfSource} from "../lib/frameAlign";
+import {healthNode, poseInGlobal, priorName, relocStatus, robotOfSource, type RelocContext} from "../lib/frameAlign";
 import {nearestPlace} from "../lib/graphModel";
 import {useViewer} from "../stores/viewer";
 import {useFocusedRobot} from "./useRobotFocus";
@@ -35,8 +35,28 @@ export function useDistToPrior(robot: string, pose: Pose | undefined, fa: FrameA
   return best;
 }
 
-/** "relocalized · 4 matches · last 20 s ago" / "no prior match yet — starting
- *  guess" / "suspect — 13 m outside the prior map" (older agents: the
+/** The prior map the robots relocalize against (the registered prior source,
+ *  "file:prior:<name>", preferring a shown one) and the robot's ROMAN /
+ *  hydra_multi monitor rows, for :func:`relocStatus`. */
+export function useRelocContext(robot: string): RelocContext {
+  const sources = useViewer(s => s.sources);
+  const order = useViewer(s => s.order);
+  const health = useRobots(s => s.state[robot]?.health);
+  return useMemo(() => {
+    const priors = order.filter(id => id.startsWith("file:prior:") && sources[id]);
+    const id = priors.find(i => sources[i]?.enabled) ?? priors[0];
+    return {
+      prior: id ? priorName(sources[id]?.label || id.slice("file:".length)) : null,
+      roman: healthNode(health, robot, "roman_lc"),
+      hydraMulti: healthNode(health, robot, "hydra_multi"),
+    };
+  }, [sources, order, health, robot]);
+}
+
+/** "relocalized · 4 matches · last 20 s ago" / "not relocalized · matching prior map…" /
+ *  "not relocalized · no prior-map match yet" (old wording "no prior match yet —
+ *  starting guess" was read as "starting gauss") /
+ *  "suspect — 13 m outside the prior map" (older agents: the
  *  transform-only "aligned to map (relocalized)"). */
 export function AlignStatus({robot, className = ""}: {robot: string; className?: string}) {
   const fa = useRobots(s => frameAlignOf(robot, s));
@@ -44,7 +64,8 @@ export function AlignStatus({robot, className = ""}: {robot: string; className?:
   const pose = useRobots(s => s.state[robot]?.pose);
   const at = useRobots(s => s.stateAt[robot]);
   const dist = useDistToPrior(robot, pose, fa);
-  const st = relocStatus(fa, reloc, dist, at ? (Date.now() - at) / 1000 : 0);
+  const ctx = useRelocContext(robot);
+  const st = relocStatus(fa, reloc, dist, at ? (Date.now() - at) / 1000 : 0, ctx);
   if (st.tone === "none") return null;
   return (
     <span className={`align-status tone-${st.tone} ${className}`} title={st.title} data-testid={`align-${robot}`}>

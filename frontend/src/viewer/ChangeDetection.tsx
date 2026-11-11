@@ -7,7 +7,7 @@ import {ApiError, errorText, getJSON, postJSON} from "../lib/api";
 import {relocStatus} from "../lib/frameAlign";
 import {frameAlignOf, useRobots} from "../stores/robots";
 import {ws} from "../ws";
-import {useDistToPrior} from "./RobotLegend";
+import {useDistToPrior, useRelocContext} from "./RobotLegend";
 import {Badge, type Tone} from "../components/ui";
 
 export interface CdState {
@@ -30,7 +30,8 @@ export function ChangeDetectionControl({robot}: {robot: string}) {
   const pose = useRobots(s => s.state[robot]?.pose);
   const at = useRobots(s => s.stateAt[robot]);
   const dist = useDistToPrior(robot, pose, fa);
-  const rs = relocStatus(fa, reloc, dist, at ? (Date.now() - at) / 1000 : 0);
+  const ctx = useRelocContext(robot);
+  const rs = relocStatus(fa, reloc, dist, at ? (Date.now() - at) / 1000 : 0, ctx);
   const [st, setSt] = useState<CdState | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<{tone: Tone; text: string} | null>(null);
