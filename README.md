@@ -78,8 +78,15 @@ components `console` / `console_neo4j`). Open `http://<base station>:8090/`.
 | `--geo-anchor`, `--tiles-dir`, `--tiles-live` | map-to-UTM anchors and satellite tiles (`scripts/geo/`) |
 | `--map-edits auto\|staged\|immediate` | when map edits are staged |
 
-With a token, open the console once as `http://host:8090/?token=TOKEN`; the UI keeps it for the
-tab and removes it from the address bar.
+When a token is configured, opening the console without a valid saved token shows a
+sign-in dialog with a password field. Enter the access token; the console checks it
+and remembers a valid token in this browser. An incorrect token can be retried.
+Without a configured token, no sign-in dialog appears. A server connection failure
+does not trigger the dialog.
+
+Opening `http://host:8090/?token=TOKEN` still works: the UI saves the token in browser
+storage and removes it from the address bar. If the server token changes, sign in
+again with the new token.
 
 ### Environment variables
 

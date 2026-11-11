@@ -251,7 +251,6 @@ function useNav(): NavItem[] {
 export function Shell() {
   const NAV = useNav();
   const backendUp = useBackendUp();
-  const authError = useWsStatus(s => s.authError);
   const [collapsed, setCollapsed] = useState(() => loadNavCollapsed());
   const toggle = () =>
     setCollapsed(c => {
@@ -284,11 +283,6 @@ export function Shell() {
         {!backendUp && (
           <div className="banner banner-err" role="alert">
             Console server unreachable. Showing the last known data; reconnecting automatically.
-          </div>
-        )}
-        {backendUp && authError && (
-          <div className="banner banner-err" role="alert">
-            Not authorised: open the console with <span className="mono">?token=...</span> (the server has a token configured).
           </div>
         )}
         <div className="content">

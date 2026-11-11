@@ -8,6 +8,7 @@ import {MapsPage} from "./pages/Maps";
 import {NetworkPage} from "./pages/Network";
 import {ConfigPage} from "./pages/Config";
 import {ManipulationApprovalHost} from "./viewer/ManipulationApproval";
+import {TokenDialogHost} from "./components/TokenDialog";
 
 const ViewerPage = lazy(() => import("./viewer/ViewerPage"));
 
@@ -44,5 +45,5 @@ const router = createHashRouter([
 ]);
 
 export function App() {
-  return <><RouterProvider router={router} /><ManipulationApprovalHost /></>;
+  return <><RouterProvider router={router} /><ManipulationApprovalHost /><TokenDialogHost /></>;
 }
