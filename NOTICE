@@ -3,3 +3,11 @@ Copyright 2026 Harel Biggie
 
 This product includes software developed at the MIT SPARK Lab and the MIT
 Robust Robotics Group for the Awesome-DCIST-T4 (ADT4) project.
+
+The robot models in frontend/public/models (spot.glb, husky.glb) are derived from
+third-party robot meshes and keep their sources' terms; see
+frontend/public/models/README.md:
+- spot.glb: Spot meshes from robustrobotics/spot_tools (MIT, Copyright 2025 Robust
+  Robotics Group), following Boston Dynamics' Spot robot model.
+- husky.glb: Husky A200 meshes from Clearpath Robotics' clearpath_platform_description
+  (BSD-3-Clause, Copyright Clearpath Robotics, Inc.).

@@ -396,4 +396,5 @@ and ruff. Optional inputs:
 
 Apache-2.0 (`LICENSE`, `NOTICE`). The robot models in `frontend/public/models/` are baked by
 `frontend/scripts/bake_robot_models.py` from the Spot (spot_tools_ros) and Clearpath Husky
-A200 (clearpath_platform_description) URDF meshes.
+A200 (clearpath_platform_description) URDF meshes and keep those meshes' terms, not
+Apache-2.0: see [`frontend/public/models/README.md`](frontend/public/models/README.md).
