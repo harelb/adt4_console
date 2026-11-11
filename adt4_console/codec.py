@@ -1,9 +1,10 @@
 """Compact scene-graph / mesh wire format the console serves to the browser.
 
 Pure numpy + msgpack: ``frontend/src/codec.ts`` mirrors it, so the byte layout
-must not change. It is the browser-facing part of fleetlink's ``codec`` (same
-layout; fleetlink's robot link adds an envelope and compression on top), kept
-here so the console serves maps without fleetlink installed.
+must not change. This is the browser-facing part of fleetlink's ``codec``
+(https://github.com/harelb/fleetlink; same layout, fleetlink adds the robot
+link's envelope and compression). The console uses ``fleetlink.codec`` when
+fleetlink is installed and this copy otherwise, so it serves maps without it.
 
 Graph wire format (``encode_graph`` / ``GraphState.delta``)::
 

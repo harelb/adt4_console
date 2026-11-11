@@ -11,7 +11,7 @@ from .conftest import make_client
 from .synthetic import JPEG
 
 dsg = pytest.importorskip("spark_dsg")
-pytest.importorskip("hydra_image_store")
+pytest.importorskip("hydra_python.image_store")
 PIL = pytest.importorskip("PIL.Image")
 
 from adt4_console import place_keyframes as pk  # noqa: E402
@@ -57,7 +57,7 @@ def _T(xyz, yaw_deg):
 
 
 def build_place_run(root):
-    from hydra_image_store import FrameKind, ImageStore, make_node_id
+    from hydra_python.image_store import FrameKind, ImageStore, make_node_id
 
     run = root / "place_run"
     (run / "hydra" / "backend").mkdir(parents=True)

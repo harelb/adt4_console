@@ -12,7 +12,7 @@ from .conftest import make_client
 from .synthetic import JPEG, build_run
 
 dsg = pytest.importorskip("spark_dsg")
-pytest.importorskip("hydra_image_store")
+pytest.importorskip("hydra_python.image_store")
 
 # agent index -> (position, yaw deg); a3 is far from everything
 AGENTS = {
@@ -47,7 +47,7 @@ def _write_store(run):
     """a0: own keyframe (identity offset; a0 has no stamp). a1: no own keyframe (its
     stamp is 1 s, its frames are 2-3 ns), two keyframes 0.5 m / 0.2 m ahead (body x)
     with 30 / 10 deg extra heading. a2, a3: nothing anchored."""
-    from hydra_image_store import FrameKind, ImageStore, make_node_id
+    from hydra_python.image_store import FrameKind, ImageStore, make_node_id
 
     shutil.rmtree(run / "image_store", ignore_errors=True)
     src = run / "agent_src"
@@ -163,7 +163,7 @@ def test_index_cached_per_version(aclient):
 
 def test_live_records_without_rotations(tmp_path):
     """Live sources only know node positions: headings come from the frames' odometry."""
-    from hydra_image_store import FrameKind, ImageStore, make_node_id
+    from hydra_python.image_store import FrameKind, ImageStore, make_node_id
 
     from adt4_console import codec
     from adt4_console.agent_images import AgentFrameIndex

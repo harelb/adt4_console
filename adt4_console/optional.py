@@ -49,7 +49,9 @@ FEATURES: dict[str, tuple[str, str | None, str]] = {
         "replan recommendations after scene changes",
     ),
     "image_store": (
-        "hydra_image_store",
+        # Hydra's pure-python image store (image_store.py also takes ADT4's
+        # older hydra_image_store name for it)
+        "hydra_python.image_store",
         None,
         "keyframe images, object crops and image search results",
     ),

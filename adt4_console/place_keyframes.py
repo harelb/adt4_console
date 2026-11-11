@@ -465,10 +465,13 @@ def _date(t_ns: int) -> str | None:
 
 
 def store_keyframes(store, lookup=None) -> list[dict]:
-    """The keyframes of an ``hydra_image_store.ImageStore`` with their camera poses:
+    """The keyframes of an Hydra ``ImageStore`` (image_store.py) with their camera poses:
     world_T_body from ``lookup`` (node id -> 4x4, the graph's agent poses) via the
     anchor, else the odometric pose (``ImageStore.body_pose``), then body_T_sensor."""
-    from hydra_image_store import FrameKind, as_pose_lookup
+    from .image_store import load
+
+    ims = load()
+    FrameKind, as_pose_lookup = ims.FrameKind, ims.as_pose_lookup
 
     cams, body_T_sensor = {}, {}
     for c in store.sensors():

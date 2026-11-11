@@ -68,8 +68,12 @@ def build_run(root: pathlib.Path) -> pathlib.Path:
 
 
 def _build_image_store(run: pathlib.Path) -> None:
-    """Images of O(0) (two kept observations) and a(0) (keyframe + sub-keyframe)."""
-    from hydra_image_store import FrameKind, ImageStore, make_node_id
+    """Images of O(0) (two kept observations) and a(0) (keyframe + sub-keyframe);
+    none without Hydra's image store (tests that need them skip, see needs_images)."""
+    try:
+        from hydra_python.image_store import FrameKind, ImageStore, make_node_id
+    except ImportError:
+        return
 
     src = run / "src_images"
     src.mkdir()

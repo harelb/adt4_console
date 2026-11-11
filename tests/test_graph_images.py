@@ -8,8 +8,10 @@ import shutil
 import numpy as np
 import pytest
 
-from .conftest import make_client
+from .conftest import make_client, needs_images
 from .synthetic import build_run
+
+pytestmark = needs_images
 
 pytest.importorskip("spark_dsg")
 PIL = pytest.importorskip("PIL.Image")
@@ -31,7 +33,7 @@ def _mask():
 
 def build_store(store_dir, src):
     """O(0): two kept observations (best one masked); O(2): one unmasked; O(1): none."""
-    from hydra_image_store import FrameKind, ImageStore, make_node_id
+    from hydra_python.image_store import FrameKind, ImageStore, make_node_id
 
     src.mkdir(parents=True, exist_ok=True)
     w = ImageStore.open_writer(store_dir, robot_id=0)
@@ -155,7 +157,7 @@ def test_crop_box_square_and_clamped():
 
 
 def test_neo4j_observation_rows_carry_masks(tmp_path):
-    from hydra_image_store.codec import rle_encode
+    from hydra_python.image_store.codec import rle_encode
 
     from adt4_console.graph_service import _neo4j_image
 
@@ -203,7 +205,7 @@ def test_file_source_indexes_a_run_with_only_raw_logs(settings, tmp_path, monkey
     import pathlib
 
     os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
-    his = pytest.importorskip("hydra_image_store")
+    his = pytest.importorskip("hydra_image_store")  # ADT4 checkout: its test writers
     pytest.importorskip("hydra_image_store.tail")
     pytest.importorskip("yaml")
     pytest.importorskip("cv2")
@@ -221,7 +223,7 @@ def test_file_source_indexes_a_run_with_only_raw_logs(settings, tmp_path, monkey
     with client:
         syms = client.get("/api/graph/file:raw/imaged").json()["syms"]
         assert syms and (run / "image_store" / "store.sqlite").is_file()
-        from hydra_image_store import ImageStore
+        from hydra_python.image_store import ImageStore
 
         with ImageStore.open(run / "image_store", index=False) as s:
             expect = {f"O({n & ((1 << 56) - 1)})" for n in s.object_nodes()
@@ -238,7 +240,7 @@ def test_live_source_opens_only_the_current_mirror(tmp_path):
     import os
     import time
 
-    from hydra_image_store import ImageStore
+    from hydra_python.image_store import ImageStore
 
     from adt4_console.graph_service import LiveSource
 
@@ -273,12 +275,12 @@ def test_live_source_opens_only_the_current_mirror(tmp_path):
 
 
 def test_store_with_sub_keyframes_is_not_opened_nor_modified(tmp_path, caplog):
-    """Stores written before hydra_image_store dropped sub-keyframes (frame kind 1)
+    """Stores written before Hydra's image store dropped sub-keyframes (frame kind 1)
     stay hidden until `hydra-image-store-adt4 convert` ran; the console never writes."""
     import hashlib
     import sqlite3
 
-    from hydra_image_store import FrameKind, ImageStore
+    from hydra_python.image_store import FrameKind, ImageStore
 
     from adt4_console.graph_service import needs_convert, open_image_store
 

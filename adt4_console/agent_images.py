@@ -138,7 +138,7 @@ class AgentFrameIndex:
     def from_store(
         cls, store, lookup=None, positions=None, stamp=None
     ) -> "AgentFrameIndex":
-        """Index an ``hydra_image_store.ImageStore``.
+        """Index an Hydra ``ImageStore`` (image_store.py).
 
         ``lookup(node_id) -> 4x4 | None`` gives (optimized) agent poses, e.g. a
         spark_dsg graph via ``as_pose_lookup``. Without one, ``positions``
@@ -147,7 +147,9 @@ class AgentFrameIndex:
         ``stamp(node_id) -> ns | None`` picks the agents' own keyframes
         (:func:`own_keyframes`).
         """
-        from hydra_image_store import FrameKind
+        from .image_store import load
+
+        FrameKind = load().FrameKind
 
         frames = [
             f

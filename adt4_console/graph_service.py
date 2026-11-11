@@ -41,8 +41,13 @@ class NotFound(Exception):
 
 
 def _codec():
-    from . import codec
-
+    """The browser wire codec: fleetlink's when fleetlink is installed (the
+    robots' live graphs come in its format), else the console's copy of its
+    browser-facing part (codec.py, same byte layout)."""
+    try:
+        from fleetlink import codec
+    except ImportError:
+        from . import codec
     return codec
 
 
@@ -209,9 +214,11 @@ RAW_LOG_DIRS = (
 
 def _has_raw_logs(run: pathlib.Path) -> bool:
     """Hydra/Khronos raw image logs (keyframe zips / track logs) the indexer builds a
-    store from (hydra_image_store.indexer.has_raw_inputs)."""
+    store from (the image store's indexer.has_raw_inputs)."""
     try:
-        from hydra_image_store.indexer import has_raw_inputs
+        from .image_store import submodule
+
+        has_raw_inputs = submodule("indexer").has_raw_inputs
 
         return bool(has_raw_inputs(run))
     except ImportError:
@@ -242,21 +249,23 @@ def open_image_store(*paths, index: bool = True):
     since, is indexed first (``ImageStore.open``; skipped while a ``hydra-image-store
     tail`` keeps the store up to date). ``index=False`` never writes (mirrors).
 
-    The reader is the optional ``hydra_image_store`` package; without it (or
+    The reader is the optional Hydra image store (image_store.py); without it (or
     without a store) nodes simply show no images.
     """
     found = [t for t in (_store_target(p) for p in paths) if t]
     if not found:
         return None
     try:
-        from hydra_image_store import ImageStore
+        from .image_store import load
+
+        ImageStore = load().ImageStore
 
         old = [t for t in found if needs_convert(t)]
         if old:
             # never converted silently: it rewrites a store the user did not ask to modify
             log.warning(
                 "image store %s has sub-keyframes (frame kind 1, written before "
-                "hydra_image_store dropped them); its images stay hidden until it is "
+                "Hydra's image store dropped them); its images stay hidden until it is "
                 "converted (once, in place): hydra-image-store-adt4 convert %s",
                 old,
                 " ".join(old),
@@ -266,7 +275,7 @@ def open_image_store(*paths, index: bool = True):
                 return None
         try:
             return ImageStore.open(*found, index=index)
-        except TypeError:  # hydra_image_store before the indexer
+        except TypeError:  # an image store before the indexer
             return ImageStore.open(*found)
     except Exception as e:  # noqa: BLE001
         log.warning("image store %s unavailable: %s", found, e)
@@ -275,7 +284,7 @@ def open_image_store(*paths, index: bool = True):
 
 def needs_convert(target) -> bool:
     """A store (dir, run dir or ``store.sqlite``) that still has sub-keyframes (frame
-    kind 1), which the current hydra_image_store rejects: older ADT4 stores need
+    kind 1), which Hydra's image store rejects: older ADT4 stores need
     ``hydra-image-store-adt4 convert`` first. Read-only check."""
     p = pathlib.Path(str(target))
     for db in (p, p / "store.sqlite", p / "image_store" / "store.sqlite"):
@@ -310,7 +319,7 @@ class NodeImage:
     observations, where its segmentation mask lives (store RLE / PNG)."""
 
     path: pathlib.Path
-    obs: object = None  # hydra_image_store Observation (kept object observation)
+    obs: object = None  # image store Observation (kept object observation)
     store: object = None  # the ImageStore that decodes ``obs``' mask
     mask_path: pathlib.Path | None = None  # Neo4j Observation.mask_path
     mask_rle: str | None = None  # Neo4j Observation.mask_rle (sensor-sized)
@@ -353,7 +362,9 @@ class NodeImage:
             if self.obs is not None and self.store is not None:
                 return self.store.mask(self.obs)
             if self.mask_rle and shape is not None:
-                from hydra_image_store.codec import rle_decode
+                from .image_store import submodule
+
+                rle_decode = submodule("codec").rle_decode
 
                 return rle_decode(self.mask_rle, shape)
             if self.mask_path is not None and self.mask_path.is_file():
@@ -1146,7 +1157,9 @@ class FileSource(Source):
         loaded = self.loaded()
         lookup = None
         if loaded.G is not None:
-            from hydra_image_store import as_pose_lookup
+            from .image_store import load as _ims
+
+            as_pose_lookup = _ims().as_pose_lookup
 
             lookup = as_pose_lookup(loaded.G)
         with self._store_lock:
@@ -1162,7 +1175,9 @@ class FileSource(Source):
         store = self.image_store()
         with self._store_lock:
             if store is not None and is_agent_record(loaded.records.get(sym)):
-                from hydra_image_store import as_pose_lookup
+                from .image_store import load as _ims
+
+                as_pose_lookup = _ims().as_pose_lookup
 
                 images = self.store_agent_images(
                     store,
@@ -1319,7 +1334,9 @@ class Neo4jSource(Source):
 
     def query(self, cypher: str, **params):
         try:
-            records, _, _ = self.db().execute(cypher, parameters=params)
+            # parameters as keywords: heracles' Neo4jWrapper.execute(parameters=)
+            # reached the driver under the wrong name in older heracles
+            records, _, _ = self.db().execute(cypher, **params)
         except GraphUnavailable:
             raise
         except Exception as e:  # noqa: BLE001

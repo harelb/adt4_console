@@ -41,8 +41,13 @@ DISK_KEEP = 6  # cached meshes kept on disk (newest first)
 
 
 def _codec():
-    from . import codec
-
+    """The browser wire codec: fleetlink's when fleetlink is installed (the
+    robots' live graphs come in its format), else the console's copy of its
+    browser-facing part (codec.py, same byte layout)."""
+    try:
+        from fleetlink import codec
+    except ImportError:
+        from . import codec
     return codec
 
 
