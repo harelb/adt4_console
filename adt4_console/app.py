@@ -7,6 +7,7 @@ with fakes (``build_services(settings, fleet_deps=..., launch_deps=..., receiver
 from __future__ import annotations
 
 import contextlib
+import html
 import logging
 import pathlib
 from dataclasses import dataclass, field
@@ -312,7 +313,11 @@ def wire_scene_repair(svc) -> None:
 PLACEHOLDER = """<!doctype html><html><head><meta charset="utf-8"><title>ADT4 Console</title>
 <style>body{font-family:system-ui,sans-serif;background:#111;color:#ddd;margin:3rem}
 code{color:#8cf}</style></head><body><h1>ADT4 Console</h1>
-<p>The web UI is not built yet (<code>adt4_console/adt4_console/static/index.html</code> is missing).</p>
+<p>The web UI is not built: there is no <code>index.html</code> in <code>{static_dir}</code>.</p>
+<p>Build it (Node &ge; 20.19) and rebuild the package:
+<code>cd adt4_console/frontend &amp;&amp; npm ci &amp;&amp; npm run build</code>, then
+<code>colcon build --packages-select adt4_console</code>
+(in Awesome-DCIST-T4, <code>install/python_setup.bash</code> does the first step).</p>
 <p>The API is up: try <a href="/api/health">/api/health</a> (add <code>?token=…</code> if a token is set).</p>
 </body></html>"""
 
@@ -385,6 +390,13 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
 def _mount_static(app: FastAPI, static_dir: pathlib.Path) -> None:
     """Serve the built SPA with an index.html fallback for client-side routes."""
     root = static_dir.resolve()
+    placeholder = PLACEHOLDER.replace("{static_dir}", html.escape(str(root)))
+    if not (root / "index.html").is_file():
+        log.warning(
+            "web UI not built (no %s): serving a placeholder page; run "
+            "`npm ci && npm run build` in frontend/ and rebuild the package",
+            root / "index.html",
+        )
 
     @app.get("/{path:path}", include_in_schema=False)
     async def spa(path: str):
@@ -408,4 +420,4 @@ def _mount_static(app: FastAPI, static_dir: pathlib.Path) -> None:
                 return FileResponse(target, headers=headers, media_type=media)
         if index.is_file():
             return FileResponse(index, headers={"Cache-Control": "no-cache"})
-        return HTMLResponse(PLACEHOLDER)
+        return HTMLResponse(placeholder)

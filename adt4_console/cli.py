@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import pathlib
+import sys
 
 
 def _pairs(values, flag) -> dict[str, str]:
@@ -188,7 +190,31 @@ def settings_from_args(args):
     )
 
 
+def _reexec_in_spark_env() -> None:
+    """Run under ``$ADT4_ENV/spark_env``'s Python when this one lacks the server's
+    pip packages (``ros2 run`` starts entry points with the system Python; in
+    Awesome-DCIST-T4 fastapi/uvicorn live in spark_env, like fleet-adt4)."""
+    if os.environ.get("_ADT4_CONSOLE_REEXEC"):
+        return
+    try:
+        import fastapi  # noqa: F401
+        import uvicorn  # noqa: F401
+
+        return
+    except ImportError:
+        pass
+    env = os.environ.get("ADT4_ENV", "")
+    if not env:
+        return
+    python = pathlib.Path(env) / "spark_env" / "bin" / "python3"
+    if python.exists() and pathlib.Path(sys.prefix) != python.parent.parent:
+        os.environ["_ADT4_CONSOLE_REEXEC"] = "1"
+        os.execv(str(python), [str(python), "-m", "adt4_console", *sys.argv[1:]])
+
+
 def main(argv=None):
+    if argv is None:
+        _reexec_in_spark_env()
     args = parse_args(argv)
     logging.basicConfig(
         level=args.log_level.upper(),

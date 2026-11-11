@@ -366,33 +366,9 @@ def _is_local(svc, m: dict) -> bool:
 
 
 def _local_store_env() -> dict:
-    """Env for running ``python -m fleetlink.image_pack`` locally: the console finds
-    fleetlink on sys.path (bin/adt4-console), a child process needs PYTHONPATH."""
-    import importlib.util
-
-    env = dict(os.environ)
-    repo = pathlib.Path(__file__).resolve().parents[3]
-    ws = pathlib.Path(os.path.expanduser("~/dcist_ws/src/awesome_dcist_t4"))
-    extra = []
-    try:
-        import fleetlink
-
-        extra.append(str(pathlib.Path(fleetlink.__file__).resolve().parents[1]))
-    except ImportError:
-        extra += [str(c) for c in (repo / "fleetlink", ws / "fleetlink") if c.is_dir()][
-            :1
-        ]
-    if importlib.util.find_spec("hydra_image_store") is None:
-        cands = (
-            repo / "hydra" / "hydra_image_store" / "src",
-            ws / "hydra" / "hydra_image_store" / "src",
-        )
-        extra += [str(c) for c in cands if c.is_dir()][:1]
-    if extra:
-        env["PYTHONPATH"] = os.pathsep.join(
-            extra + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])
-        )
-    return env
+    """The environment for a local pack/unpack child process: this one's (the
+    installed fleetlink and hydra_image_store are on its PYTHONPATH)."""
+    return dict(os.environ)
 
 
 def pack_args(run_dir: str, images: str, compression: str) -> list[str]:

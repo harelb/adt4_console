@@ -1,0 +1,12 @@
+# the web UI is built at install time (frontend/: npm ci && npm run build)
+adt4_console/static/
+frontend/node_modules/
+*.tsbuildinfo
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+install/
+log/
+.pytest_cache/
+.ruff_cache/
