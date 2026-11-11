@@ -135,32 +135,84 @@ export function isBigJump(j: {dxy: number; dyaw: number}): boolean {
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "es"}`;
 
+/** One row of a robot's ros_system_monitor table (C1 ``health.nodes``). */
+export interface HealthNode {
+  nickname?: string;
+  node_name?: string;
+  status?: string;
+  notes?: string;
+}
+
+/** What the reloc status can say beyond the agent's ``reloc``: the prior map
+ *  it matches against (as the console registered it, e.g. "Nov11_Building45_v2
+ *  (euclid)": the prior's experiment and the robot that recorded it), and the
+ *  robot's own ROMAN loop-closure / hydra_multi monitor rows. */
+export interface RelocContext {
+  prior?: string | null;
+  roman?: HealthNode | null;
+  hydraMulti?: HealthNode | null;
+}
+
+/** ``<robot>/<name>`` (or bare ``name``) in a C1 ``health`` table; null if the
+ *  table lacks it, undefined when there is no table (nothing to say). */
+export function healthNode(health: {nodes?: unknown} | null | undefined, robot: string, name: string): HealthNode | null | undefined {
+  const nodes = health?.nodes;
+  if (!Array.isArray(nodes)) return undefined;
+  for (const n of nodes as HealthNode[]) {
+    if (n && (n.nickname === `${robot}/${name}` || n.nickname === name)) return n;
+  }
+  return null;
+}
+
+/** The prior map's display name from a graph-source label ("prior: X" -> "X"). */
+export function priorName(label: string | null | undefined): string | null {
+  if (!label) return null;
+  const name = label.replace(/^prior:\s*/, "").replace(/ \(([^()]+)\)$/, " (recorded by $1)");
+  return name || null;
+}
+
+const ROMAN_UP = new Set(["nominal", "warning"]);
+const nodeLine = (what: string, n: HealthNode | null | undefined) =>
+  n ? `${what}: ${n.status ?? "?"}${n.notes ? ` — ${n.notes}` : ""}` : `${what}: not in the robot's status table`;
+
 /** Legend / Live-panel status with the relocalization evidence (``reloc``):
- *  amber until a prior-map loop closure, red when the placement is suspect
- *  (outside the prior map, or a second big correction: the first one is the
- *  relocalization itself), green otherwise. ``distToPrior`` = metres from the
- *  robot to the nearest prior-map place (null: no prior shown / no pose).
- *  Agents without ``reloc`` keep :func:`alignStatus`. */
+ *  amber until a prior-map loop closure ("matching" while the robot's ROMAN
+ *  loop-closure node reports in, else "no match"), red when the placement is
+ *  suspect (outside the prior map, or a second big correction: the first one
+ *  is the relocalization itself), green otherwise. ``distToPrior`` = metres
+ *  from the robot to the nearest prior-map place (null: no prior shown / no
+ *  pose). Agents without ``reloc`` keep :func:`alignStatus`. The text never
+ *  names another robot: a prior map is named in the tooltip only. */
 export function relocStatus(
   fa: FrameAlign | null | undefined,
   reloc: Reloc | null | undefined,
   distToPrior: number | null,
   sinceStateS = 0,
+  ctx: RelocContext = {},
 ): AlignStatus {
   const base = alignStatus(fa, sinceStateS);
   if (!reloc || base.tone !== "ok" || !fa || fa.parent === fa.child) return base;
   const since = Math.max(0, sinceStateS);
   const lcAge = reloc.last_lc_age_s === null || reloc.last_lc_age_s === undefined ? null : reloc.last_lc_age_s + since;
+  const priorIds = [...new Set((reloc.lcs ?? []).map(lc => lc.prior))].sort((a, b) => a - b);
+  const priorName = ctx.prior ? `prior map ${ctx.prior}` : "the prior map";
   const lines = [
-    `${reloc.prior_lcs} loop closures against the prior map${reloc.prior_lcs ? ` (best ${reloc.best_assoc} objects, last ${fmtAge(lcAge ?? 0)} ago)` : ""}`,
+    `${reloc.prior_lcs} loop closures against ${priorName}${reloc.prior_lcs ? ` (best ${reloc.best_assoc} objects, last ${fmtAge(lcAge ?? 0)} ago${priorIds.length ? `, ROMAN prior id ${priorIds.join(", ")}` : ""})` : ""}`,
     `${fa.parent} -> ${fa.child} moved ${reloc.jumps} times` +
       (reloc.total ? `, in all ${reloc.total.dxy.toFixed(1)} m / ${reloc.total.dyaw.toFixed(0)}°` : ""),
     distToPrior === null ? "prior map not shown: cannot check the robot is inside it" : `nearest prior place ${distToPrior.toFixed(1)} m away`,
+    ...(ctx.roman !== undefined ? [nodeLine("ROMAN loop closures (roman_lc)", ctx.roman)] : []),
+    ...(ctx.hydraMulti && ctx.hydraMulti.status && !ROMAN_UP.has(ctx.hydraMulti.status) ? [nodeLine("hydra_multi", ctx.hydraMulti)] : []),
     base.title,
   ];
   const title = lines.join("\n");
   if (reloc.prior_lcs === 0) {
-    return {tone: "warn", text: "no prior match yet — starting guess", title: `not relocalized: ROMAN has not matched the prior map yet, so ${fa.parent} -> ${fa.child} is hydra's starting guess\n${title}`};
+    const matching = !!ctx.roman?.status && ROMAN_UP.has(ctx.roman.status);
+    return {
+      tone: "warn",
+      text: matching ? "not relocalized · matching prior map…" : "not relocalized · no prior-map match yet",
+      title: `not relocalized: ROMAN has no loop closure against ${priorName} yet, so ${fa.parent} -> ${fa.child} is only the initial estimate, not a match\n${title}`,
+    };
   }
   const big = (reloc.recent_jumps ?? (reloc.last_jump ? [reloc.last_jump] : [])).filter(isBigJump).length;
   if (distToPrior !== null && distToPrior > OUTSIDE_PRIOR_M) {

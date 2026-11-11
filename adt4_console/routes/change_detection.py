@@ -53,7 +53,7 @@ def relocalized(state: dict | None) -> dict:
         if not reloc.get("prior_lcs"):
             return {
                 "ok": False,
-                "reason": "no prior-map match yet (ROMAN): the alignment is the starting guess",
+                "reason": "not relocalized: no prior-map match yet (ROMAN has no loop closure against the prior map; map -> odom is only the initial estimate)",
             }
         jumps = reloc.get("recent_jumps") or (
             [reloc["last_jump"]] if reloc.get("last_jump") else []

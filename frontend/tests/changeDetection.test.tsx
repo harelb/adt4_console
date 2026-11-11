@@ -55,7 +55,7 @@ describe("change detection control", () => {
     const start = el.querySelector("[data-testid=cd-start-euclid]") as HTMLButtonElement;
     expect(el.textContent).toContain("paused");
     expect(start.disabled).toBe(true);
-    expect(el.querySelector("[data-testid=cd-gate-euclid]")?.textContent).toContain("no prior match yet");
+    expect(el.querySelector("[data-testid=cd-gate-euclid]")?.textContent).toContain("no prior-map match yet");
     act(() => (Array.from(el.querySelectorAll("button")).find(b => b.textContent === "Start anyway…") as HTMLButtonElement).click());
     await act(async () => (el.querySelector("[data-testid=cd-override-euclid]") as HTMLButtonElement).click());
     expect(posts).toEqual([{url: "api/robots/euclid/change_detection/reset_start", body: {override: true}}]);

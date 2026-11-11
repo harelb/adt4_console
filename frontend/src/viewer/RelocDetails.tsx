@@ -2,6 +2,7 @@
 // ``reloc``): its latest loop closures against the prior map and how its
 // ``map -> odom`` placement moved. Nothing for agents that do not report it.
 import {useRobots} from "../stores/robots";
+import {useRelocContext} from "./RobotLegend";
 import {isBigJump} from "../lib/frameAlign";
 
 const fmtAge = (s: number | null | undefined) =>
@@ -10,13 +11,14 @@ const fmtAge = (s: number | null | undefined) =>
 export function RelocDetails({robot}: {robot: string}) {
   const reloc = useRobots(s => s.state[robot]?.reloc ?? s.link[robot]?.reloc);
   const at = useRobots(s => s.stateAt[robot]);
+  const {prior} = useRelocContext(robot);
   if (!reloc) return null;
   const since = at ? Math.max(0, (Date.now() - at) / 1000) : 0;
   const age = (a: number | null | undefined) => (a === null || a === undefined ? null : a + since);
   const jumps = reloc.recent_jumps ?? (reloc.last_jump ? [reloc.last_jump] : []);
   return (
     <details className="reloc-details small" data-testid={`reloc-${robot}`}>
-      <summary>
+      <summary title={prior ? `prior map: ${prior}` : undefined}>
         relocalization · {reloc.prior_lcs} prior matches · {reloc.jumps} corrections
         {reloc.total ? ` · moved ${reloc.total.dxy.toFixed(1)} m / ${reloc.total.dyaw.toFixed(0)}°` : ""}
       </summary>
@@ -25,6 +27,7 @@ export function RelocDetails({robot}: {robot: string}) {
           <thead>
             <tr>
               <th>ago</th>
+              <th title="ROMAN robot id of the prior session (its prior map's roman/<id>.roman_map.pkl)">prior id</th>
               <th>live ↔ prior submap</th>
               <th>objects</th>
             </tr>
@@ -33,6 +36,7 @@ export function RelocDetails({robot}: {robot: string}) {
             {reloc.lcs.map((lc, i) => (
               <tr key={i} className={lc.assoc <= 5 ? "muted" : ""} title={lc.assoc <= 5 ? "few matched objects: a weak match" : undefined}>
                 <td>{fmtAge(age(lc.age_s))}</td>
+                <td>{lc.prior}</td>
                 <td>
                   {lc.live_submap} ↔ {lc.prior_submap}
                 </td>
@@ -42,7 +46,7 @@ export function RelocDetails({robot}: {robot: string}) {
           </tbody>
         </table>
       ) : (
-        <div className="muted">no loop closure against the prior map yet</div>
+        <div className="muted">no loop closure against {prior ? `prior map ${prior}` : "the prior map"} yet</div>
       )}
       {jumps.length > 0 && (
         <table className="reloc-table mono">
