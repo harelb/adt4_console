@@ -1,0 +1,198 @@
+"""``adt4-console`` command line (API.md §0)."""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+
+
+def _pairs(values, flag) -> dict[str, str]:
+    out = {}
+    for v in values or []:
+        if "=" not in v:
+            raise SystemExit(f"{flag} expects NAME=VALUE, got {v!r}")
+        k, val = v.split("=", 1)
+        out[k.strip()] = val.strip()
+    return out
+
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(
+        prog="adt4-console", description="ADT4 web console (base-station server)"
+    )
+    p.add_argument("--host", default="0.0.0.0")
+    p.add_argument("--port", type=int, default=8090)
+    p.add_argument("--token", default=os.environ.get("ADT4_CONSOLE_TOKEN"),
+                   help="bearer token for /api (default: $ADT4_CONSOLE_TOKEN)")  # fmt: skip
+    p.add_argument(
+        "--topology", help="topology.yaml (default: network_diagnostics/config)"
+    )
+    p.add_argument("--network", help="active network (default: auto-detect)")
+    p.add_argument("--output-root", default="~/adt4_output")
+    p.add_argument("--neo4j", action="append", metavar="NAME=URI",
+                   help="Neo4j graph source (creds: HERACLES_NEO4J_USERNAME/PASSWORD)")  # fmt: skip
+    p.add_argument(
+        "--prior-neo4j", metavar="NAME", help="which --neo4j target holds the prior"
+    )
+    p.add_argument("--sam3-neo4j", metavar="NAME",
+                   help="the --neo4j target the SAM3 server reads (a live-map load reloads SAM3 only "
+                   "when it loads into it)")  # fmt: skip
+    p.add_argument("--live-neo4j", metavar="NAME",
+                   help="the --neo4j target that maps are loaded into when picked in the viewer "
+                   "(default: the only / first --neo4j)")  # fmt: skip
+    p.add_argument("--map", action="append", metavar="NAME=RUN_DIR",
+                   help="file graph source: run dir containing hydra/backend")  # fmt: skip
+    p.add_argument("--no-ros", action="store_true")
+    p.add_argument("--no-fleetlink", action="store_true")
+    p.add_argument(
+        "--live-store-root",
+        default=None,
+        help="where live image-store mirrors (fleetlink C6) are written: "
+        "<root>/<robot>/<store_id>/image_store (default <output-root>/live; "
+        "'' disables mirroring)",
+    )
+    p.add_argument(
+        "--zenoh-connect",
+        help="zenoh router for the fleetlink receiver (default: the local fleetlink "
+        "router tcp/127.0.0.1:<zenoh.fleetlink_port> when $ADT4_FLEET_LINK is "
+        "'fleetlink', else the ROS router tcp/127.0.0.1:7447)",
+    )
+    p.add_argument(
+        "--robots", help="comma-separated robots to plan for (default: topology)"
+    )
+    p.add_argument(
+        "--planner-ns",
+        help="namespace omniplanner runs in (default: $ADT4_ROBOT_NAME / local base station)",
+    )
+    p.add_argument(
+        "--no-llm", action="store_true", help="always use the offline chat fallback"
+    )
+    p.add_argument(
+        "--llm-provider", choices=["auto", "openai", "anthropic"], default="auto"
+    )
+    p.add_argument("--llm-model", help="chat model (default: gpt-4.1-mini for OpenAI)")
+    p.add_argument(
+        "--llm-budget-usd",
+        type=float,
+        default=10.0,
+        help="hard cap on cumulative chat LLM spend; afterwards chat goes offline",
+    )
+    p.add_argument(
+        "--sam3-url",
+        default=os.environ.get("SAM3_QUERY_SERVER_URL", "http://127.0.0.1:8077"),
+        help="SAM3 query server used by chat's robot-image search",
+    )
+    p.add_argument(
+        "--terminal",
+        action="store_true",
+        default=os.environ.get("ADT4_CONSOLE_TERMINAL", "") not in ("", "0", "false"),
+        help="allow browser terminals (ssh) on fleet machines from the Fleet page; "
+        "anyone who can reach the console gets a shell, so pair it with --token "
+        "off a closed network",
+    )
+    g = p.add_argument_group("geo / missions / quad")
+    g.add_argument("--geo-anchor", action="append", metavar="SRC=JSON",
+                   help="map→UTM anchor (scripts/geo/anchor_from_gps.py) for a source; SRC '*' "
+                   "= every source (default: <run>/geo_anchor.json)")  # fmt: skip
+    g.add_argument("--tiles-dir", default="~/.adt4_console/tiles",
+                   help="satellite tile cache (scripts/geo/fetch_tiles.py)")  # fmt: skip
+    g.add_argument("--tiles-live", action="store_true",
+                   help="fetch missing satellite tiles from the internet (cached for offline use)")  # fmt: skip
+    g.add_argument("--quad-cmd-uri", help="PUSH (bound) URI for Penn quad waypoints, e.g. tcp://*:6555")
+    g.add_argument("--quad-image-uri", help="Penn quad stamped-image server, e.g. tcp://203.0.113.30:6556")
+    g.add_argument("--quad-utm-origin", type=float, nargs=2, default=(0.0, 0.0), metavar=("E", "N"),
+                   help="UtmToMapInfo.local_utm_origin of the quad frame")  # fmt: skip
+    g.add_argument("--quad-map-offset", type=float, nargs=2, default=(0.0, 0.0), metavar=("X", "Y"),
+                   help="UtmToMapInfo.map_offset of the quad frame")  # fmt: skip
+    g.add_argument("--map-edits", choices=("auto", "staged", "immediate"), default="auto",
+                   help="map edits: staged + published with a confirm while a launch is active "
+                   "(auto, default), always staged, or always applied immediately")
+    p.add_argument("--log-level", default="info")
+    return p.parse_args(argv)
+
+
+def default_zenoh_connect(topology=None, environ=None) -> str:
+    """The receiver's router: the fleetlink router in fleetlink mode, else 7447."""
+    environ = os.environ if environ is None else environ
+    if environ.get("ADT4_FLEET_LINK") != "fleetlink":
+        return "tcp/127.0.0.1:7447"
+    port = environ.get("ADT4_FLEETLINK_PORT", "")
+    if not port.isdigit():
+        try:
+            from dcist_launch_system import fleet_helpers as fh
+
+            port = fh.fleetlink_port(fh.load_topology(topology))
+        except Exception:  # noqa: BLE001 — never block startup on this
+            port = 7450
+    return f"tcp/127.0.0.1:{port}"
+
+
+def settings_from_args(args):
+    from .settings import Settings
+
+    neo4j = _pairs(args.neo4j, "--neo4j")
+    if args.prior_neo4j and args.prior_neo4j not in neo4j:
+        raise SystemExit(f"--prior-neo4j {args.prior_neo4j} is not a --neo4j target")
+    if args.live_neo4j and args.live_neo4j not in neo4j:
+        raise SystemExit(f"--live-neo4j {args.live_neo4j} is not a --neo4j target")
+    return Settings(
+        host=args.host,
+        port=args.port,
+        token=args.token or None,
+        topology=args.topology,
+        network=args.network,
+        output_root=args.output_root,
+        live_store_root=args.live_store_root,
+        neo4j=neo4j,
+        prior_neo4j=args.prior_neo4j,
+        live_neo4j=args.live_neo4j,
+        sam3_neo4j=args.sam3_neo4j,
+        maps=_pairs(args.map, "--map"),
+        ros=not args.no_ros,
+        fleetlink=not args.no_fleetlink,
+        zenoh_connect=args.zenoh_connect or default_zenoh_connect(args.topology),
+        robots=[r.strip() for r in args.robots.split(",") if r.strip()]
+        if args.robots
+        else None,
+        llm=not args.no_llm,
+        llm_provider=args.llm_provider,
+        llm_model=args.llm_model,
+        llm_budget_usd=args.llm_budget_usd,
+        planner_ns=args.planner_ns,
+        terminal=args.terminal,
+        sam3_url=args.sam3_url,
+        launch_state_path="~/.adt4_console/active_launch.json",
+        geo_anchors=_pairs(args.geo_anchor, "--geo-anchor"),
+        tiles_dir=args.tiles_dir,
+        tiles_live=args.tiles_live,
+        missions_dir="~/.adt4_console/missions",
+        quad_images_dir="~/.adt4_console/quad_images",
+        snapshots_dir="~/.adt4_console/snapshots",
+        mesh_cache_dir="~/.adt4_console/mesh_cache",
+        map_edit_mode=args.map_edits,
+        quad_cmd_uri=args.quad_cmd_uri,
+        quad_image_uri=args.quad_image_uri,
+        quad_utm_origin=tuple(args.quad_utm_origin),
+        quad_map_offset=tuple(args.quad_map_offset),
+    )
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    logging.basicConfig(
+        level=args.log_level.upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    settings = settings_from_args(args)
+
+    import uvicorn
+
+    from .app import create_app
+
+    app = create_app(settings)
+    uvicorn.run(app, host=settings.host, port=settings.port, log_level=args.log_level)
+
+
+if __name__ == "__main__":
+    main()

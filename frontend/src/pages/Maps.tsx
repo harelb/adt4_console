@@ -1,0 +1,779 @@
+import {useEffect, useMemo, useRef, useState, type ReactNode} from "react";
+import {activateMap} from "../stores/liveMap";
+import {useNavigate} from "react-router";
+import {errorText, getJSON, postJSON, useApi} from "../lib/api";
+import {trackJob, useJobs} from "../stores/jobs";
+import {useFleet} from "../stores/fleet";
+import type {ConsoleConfig, GraphSource, MapEntry, MapsResponse, TransferPlan} from "../types";
+import {Badge, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Spinner, Toggle} from "../components/ui";
+import {ChecksumMatrix, JobStateBadge} from "../components/Jobs";
+import {jobIdOf} from "./Fleet";
+import {launchHref} from "../lib/launchLink";
+import {fmtBytes, matchRanges} from "../lib/fuzzy";
+import {isIncomplete, loadPrefs, mapTime, savePrefs, searchMaps, sortMaps, SORT_LABELS, type MapRow, type MapsPrefs, type SearchHit, type SortKey} from "../lib/mapList";
+import {COPY_STATE_TEXT, copyBadge, copyEntry, copyOfText, verifyNames} from "../lib/runCopies";
+
+type Dialog =
+  | {kind: "transfer"; machine: string; map: MapEntry}
+  | {kind: "verify"; machine: string; map: MapEntry}
+  | {kind: "ingest"; machine: string; map: MapEntry};
+
+const fmtDate = (epochS: number | null | undefined, withTime = true): string => {
+  if (!epochS) return "-";
+  const d = new Date(epochS * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return withTime ? `${day} ${pad(d.getHours())}:${pad(d.getMinutes())}` : day;
+};
+
+function sizeText(m: MapEntry): string {
+  if (typeof m.size_bytes === "number") return fmtBytes(m.size_bytes);
+  if (typeof m.size === "number") return fmtBytes(m.size);
+  return m.size && m.size !== "?" ? m.size : "-";
+}
+
+/** `text` with the fuzzy-matched characters marked. */
+export function Highlight({text, indices}: {text: string; indices?: number[]}) {
+  if (!indices?.length) return <>{text}</>;
+  const parts: ReactNode[] = [];
+  let at = 0;
+  for (const [a, b] of matchRanges(indices.filter(i => i < text.length))) {
+    if (a > at) parts.push(text.slice(at, a));
+    parts.push(
+      <mark key={a} className="fz-hit">
+        {text.slice(a, b)}
+      </mark>,
+    );
+    at = b;
+  }
+  if (at < text.length) parts.push(text.slice(at));
+  return <>{parts}</>;
+}
+
+/** "images: 559 kf · 117 MB" (+ check result) or "no images". */
+export function ImageStoreBadge({map}: {map: MapEntry}) {
+  const st = map.image_store;
+  if (!map.has_image_store || !st)
+    return (
+      <span className="img-badge">
+        <Badge tone="off">no images</Badge>
+      </span>
+    );
+  const kf = st.frames?.keyframe ?? 0;
+  const size = st.size_bytes != null ? ` · ${fmtBytes(st.size_bytes)}` : map.size_pending ? " · …" : "";
+  const kinds = Object.entries(st.frames ?? {})
+    .map(([k, n]) => `${n} ${k}`)
+    .join(", ");
+  const title = [
+    `image store: ${kinds || "no frames"}`,
+    `${st.observations} object observations, ${st.sensors} sensor(s)`,
+    map.sessions ? `${map.sessions} earlier session store(s) under sessions/` : "",
+    st.check.ok ? "quick check: ok" : `quick check FAILED: ${st.check.problems.join("; ")}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return (
+    <span className="img-badge">
+      <Badge tone={st.check.ok ? "ok" : "warn"} title={title}>
+        images: {kf} kf{size}
+        {!st.check.ok && " · check failed"}
+      </Badge>
+    </span>
+  );
+}
+
+function FileChips({map}: {map: MapEntry}) {
+  if (map.has_dsg === undefined) return null; // older backend
+  const files: [string, boolean | undefined][] = [
+    ["dsg.json", map.has_dsg],
+    ["dsg_with_mesh", map.has_dsg_mesh],
+    ["mesh.ply", map.has_mesh],
+  ];
+  return (
+    <>
+      {files.map(([label, ok]) => (
+        <span key={label} className={`chip mono ${ok ? "chip-ok" : "chip-missing"}`} title={`hydra/backend/${label}${label.endsWith("mesh") ? ".json" : ""} ${ok ? "present" : "missing"}`}>
+          {label}
+        </span>
+      ))}
+    </>
+  );
+}
+
+export function MapsPage() {
+  const maps = useApi<MapsResponse>("api/maps");
+  const config = useApi<ConsoleConfig>("api/config");
+  const fleet = useFleet(s => s.machines);
+  const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [query, setQuery] = useState("");
+  const [prefs, setPrefsState] = useState<MapsPrefs>(loadPrefs);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [verifyJob, setVerifyJob] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [opening, setOpening] = useState<string | null>(null);
+  const jobs = useJobs(s => s.jobs);
+  const navigate = useNavigate();
+  const setPrefs = (p: Partial<MapsPrefs>) =>
+    setPrefsState(old => {
+      const next = {...old, ...p};
+      savePrefs(next);
+      return next;
+    });
+
+  // "/" focuses the search box (fzf habit), unless already typing somewhere
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      e.preventDefault();
+      searchRef.current?.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // sizes still being measured in the background: list again shortly (bounded)
+  const polls = useRef(0);
+  const pending = maps.data?.pending ?? [];
+  useEffect(() => {
+    if (!pending.length || maps.loading || polls.current >= 40) return;
+    const id = window.setTimeout(() => {
+      polls.current += 1;
+      maps.reload();
+    }, 4000);
+    return () => window.clearTimeout(id);
+  }, [pending.length, maps.loading, maps.reload]);
+
+  // the backend lists this host as "local" when the topology does not name it
+  const local = maps.data?.base || config.data?.local_machine || fleet?.machines.find(m => m.local)?.name || "local";
+  const entries = Object.entries(maps.data?.machines ?? {}).sort(([a], [b]) => (a === local ? -1 : b === local ? 1 : a.localeCompare(b)));
+  const machineNames = entries.map(([m]) => m);
+
+  const rows = useMemo<MapRow[]>(() => entries.flatMap(([machine, list]) => (Array.isArray(list) ? list.map(map => ({machine, map})) : [])), [maps.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  const incomplete = useMemo(() => rows.filter(r => isIncomplete(r.map)).length, [rows]);
+  const shown = useMemo(() => {
+    const kept = prefs.hideIncomplete ? rows.filter(r => !isIncomplete(r.map)) : rows;
+    return sortMaps(searchMaps(kept, query), prefs.sort, query);
+  }, [rows, query, prefs.sort, prefs.hideIncomplete]);
+  const searching = query.trim().length > 0;
+
+  const startJob = async (path: string, body: unknown, title: string) => {
+    setErr(null);
+    try {
+      const r = await postJSON(path, body);
+      const id = jobIdOf(r);
+      if (id) trackJob(id, title);
+      return id;
+    } catch (e) {
+      setErr(errorText(e));
+      return null;
+    }
+  };
+
+  const openInViewer = async (machine: string, m: MapEntry) => {
+    setErr(null);
+    setOpening(m.name);
+    try {
+      // reuse an already registered file source pointing at this run dir, else register one
+      const sources = await getJSON<GraphSource[]>("api/graph/sources").catch(() => [] as GraphSource[]);
+      let id = (Array.isArray(sources) ? sources : []).find(s => s.id === `file:${m.name}`)?.id;
+      if (!id) {
+        await postJSON("api/maps/register", {name: m.name, path: m.path});
+        id = `file:${m.name}`;
+      }
+      navigate(`/viewer?src=${encodeURIComponent(id)}`);
+    } catch (e) {
+      setErr(`${machine}: ${errorText(e)}`);
+    } finally {
+      setOpening(null);
+    }
+  };
+
+  const vjob = verifyJob ? jobs[verifyJob] : null;
+  const vres = vjob?.result as {rows?: {path: string; consistent: boolean; cells: Record<string, string>}[]; machines?: string[]} | undefined;
+  const total = rows.length;
+  const withImages = rows.filter(r => r.map.has_image_store).length;
+  const tableProps = (machine: string | null) => ({
+    local,
+    opening,
+    showMachine: machine === null,
+    onTransfer: (r: SearchHit) => setDialog({kind: "transfer", machine: r.machine, map: r.map}),
+    onVerify: (r: SearchHit) => setDialog({kind: "verify", machine: r.machine, map: r.map}),
+    onOpenCopy: (r: SearchHit) => {
+      const c = copyEntry(maps.data, r.map, local);
+      if (c) void openInViewer(local, c);
+    },
+    onIngest: (r: SearchHit) => setDialog({kind: "ingest", machine: r.machine, map: r.map}),
+    onOpen: (r: SearchHit) => openInViewer(r.machine, r.map),
+    onLaunch: (r: SearchHit) => r.map.path && navigate(launchHref(r.machine, r.map.path)),
+  });
+
+  return (
+    <div className="page">
+      <PageHeader
+        title="Maps"
+        sub={
+          maps.data ? (
+            <span className="row gap wrap">
+              {searching || (prefs.hideIncomplete && incomplete) ? `${shown.length} of ${total} runs` : `${total} runs`} across {entries.length} machines · {withImages} with an image store
+              {prefs.hideIncomplete && incomplete > 0 && ` · ${incomplete} incomplete hidden`}
+              {pending.length > 0 && (
+                <span className="muted small row gap-sm">
+                  <Spinner /> measuring sizes on {pending.join(", ")}
+                </span>
+              )}
+            </span>
+          ) : (
+            "Experiment outputs on every machine"
+          )
+        }
+        actions={
+          <>
+            <input
+              className="input maps-search"
+              type="search"
+              placeholder="Search maps (fuzzy)  /"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => e.key === "Escape" && setQuery("")}
+              aria-label="Search maps"
+              ref={searchRef}
+            />
+            <select className="input maps-sort" value={prefs.sort} onChange={e => setPrefs({sort: e.target.value as SortKey})} aria-label="Sort maps">
+              {(Object.keys(SORT_LABELS) as SortKey[]).map(k => (
+                <option key={k} value={k}>
+                  {SORT_LABELS[k]}
+                </option>
+              ))}
+            </select>
+            <Toggle checked={prefs.grouped} onChange={v => setPrefs({grouped: v})} label="Group by machine" />
+            <Toggle checked={prefs.hideIncomplete} onChange={v => setPrefs({hideIncomplete: v})} label="Hide incomplete" />
+            <button className="btn" onClick={maps.reload} disabled={maps.loading}>
+              {maps.loading && <Spinner />} Rescan
+            </button>
+          </>
+        }
+      />
+      {err && <ErrorBox error={err} compact />}
+      <DatabaseReset targets={config.data?.neo4j_targets ?? []} onStart={(target, title) => startJob("api/maps/reset", {target}, title)} />
+      {maps.loading && !maps.data && <Loading label="Listing experiments (ssh to each machine)" />}
+      {maps.error && !maps.data && <ErrorBox error={maps.error} onRetry={maps.reload} />}
+      {maps.data && entries.length === 0 && <Empty title="No machines reported maps" />}
+
+      {vjob && (
+        <Card title={<span className="row gap">Verify <JobStateBadge state={vjob.state} /></span>} actions={<button className="btn btn-sm" onClick={() => setVerifyJob(null)}>Dismiss</button>}>
+          {vres?.rows && vres.machines ? <ChecksumMatrix rows={vres.rows} machines={vres.machines} /> : <Spinner label="Hashing files on each machine" />}
+        </Card>
+      )}
+
+      {!prefs.grouped && maps.data && (
+        <>
+          {entries
+            .filter(([, list]) => !Array.isArray(list))
+            .map(([machine, list]) => (
+              <div key={machine} className="inline-err mono">
+                {machine}: unreachable — {(list as {error: string}).error}
+              </div>
+            ))}
+          <Card className="map-machine" title="All machines" actions={<span className="muted small">{shown.length} runs</span>}>
+            <MapTable rows={shown} {...tableProps(null)} emptyText={searching ? `No map matches "${query}".` : "No experiments."} />
+          </Card>
+        </>
+      )}
+
+      {prefs.grouped &&
+        entries.map(([machine, list]) => {
+          const mine = shown.filter(r => r.machine === machine);
+          if (searching && Array.isArray(list) && !mine.length) return null;
+          return (
+            <Card
+              key={machine}
+              className="map-machine"
+              title={
+                <button className="link-btn" onClick={() => setCollapsed(c => ({...c, [machine]: !c[machine]}))} aria-expanded={!collapsed[machine]}>
+                  <span className={`caret ${collapsed[machine] ? "" : "open"}`} />
+                  {machine}
+                  {machine === local && <Badge tone="info">base station (local)</Badge>}
+                </button>
+              }
+              actions={
+                Array.isArray(list) ? (
+                  <span className="muted small">{searching ? `${mine.length} of ${list.length}` : list.length} experiments</span>
+                ) : (
+                  <Badge tone="err">unreachable</Badge>
+                )
+              }
+            >
+              {!collapsed[machine] &&
+                (Array.isArray(list) ? <MapTable rows={mine} {...tableProps(machine)} emptyText="No experiments." /> : <div className="inline-err mono">{list.error}</div>)}
+            </Card>
+          );
+        })}
+      {prefs.grouped && searching && maps.data && !shown.length && <Empty title={`No map matches "${query}"`}>Matching is fuzzy over run name, machine and path; try fewer letters.</Empty>}
+
+      {dialog?.kind === "transfer" && (
+        <TransferDialog
+          machine={dialog.machine}
+          map={dialog.map}
+          local={local}
+          onClose={() => setDialog(null)}
+          onStart={async body => {
+            setDialog(null);
+            await startJob("api/maps/transfer", body, `Transfer ${dialog.map.name}`);
+          }}
+        />
+      )}
+      {dialog?.kind === "verify" && (
+        <VerifyDialog
+          map={dialog.map}
+          pairing={verifyNames(dialog.machine, dialog.map, local)}
+          machines={machineNames}
+          onClose={() => setDialog(null)}
+          onStart={async body => {
+            setDialog(null);
+            const id = await startJob("api/maps/verify", body, `Verify ${dialog.map.name}`);
+            if (id) setVerifyJob(id);
+          }}
+        />
+      )}
+      {dialog?.kind === "ingest" && (
+        <IngestDialog
+          map={dialog.map}
+          targets={config.data?.neo4j_targets ?? []}
+          onClose={() => setDialog(null)}
+          onStart={async body => {
+            setDialog(null);
+            await startJob("api/maps/ingest", body, `Load ${dialog.map.name} into Neo4j`);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+const OTHER_SUBDIR_SKIP = new Set(["image_store"]);
+const MAX_SUBDIR_CHIPS = 6;
+
+function SubdirChips({subdirs}: {subdirs: string[]}) {
+  const all = subdirs.filter(s => !OTHER_SUBDIR_SKIP.has(s));
+  const rest = all.slice(MAX_SUBDIR_CHIPS);
+  return (
+    <>
+      {all.slice(0, MAX_SUBDIR_CHIPS).map(s => (
+        <span key={s} className="chip mono chip-dim">
+          {s}/
+        </span>
+      ))}
+      {rest.length > 0 && (
+        <span className="chip chip-dim" title={rest.map(s => `${s}/`).join("\n")}>
+          +{rest.length} more
+        </span>
+      )}
+    </>
+  );
+}
+
+function CopyLine({map, local, isLocal}: {map: MapEntry; local: string; isLocal: boolean}) {
+  if (isLocal) {
+    const text = copyOfText(map);
+    if (!text || !map.copy_of) return null;
+    const st = map.copy_of.state;
+    return (
+      <div className="muted small mono copy-of" title={`${text}\n${COPY_STATE_TEXT[st]}${map.origin?.transferred_at ? `\ncopied ${map.origin.transferred_at}` : ""}`}>
+        {text} <Badge tone={st === "in_sync" ? "ok" : st === "outdated" ? "warn" : "off"}>{st === "in_sync" ? "in sync" : st === "outdated" ? "outdated" : "source offline"}</Badge>
+      </div>
+    );
+  }
+  const b = copyBadge(map, local);
+  if (!b) return null;
+  return (
+    <span className="copy-badge">
+      <Badge tone={b.tone} title={b.title}>
+        {b.text}
+      </Badge>
+    </span>
+  );
+}
+
+function MapTable({rows, local, opening, showMachine, emptyText, onTransfer, onVerify, onOpenCopy, onIngest, onOpen, onLaunch}: {
+  rows: SearchHit[];
+  local: string;
+  opening: string | null;
+  showMachine: boolean;
+  emptyText: string;
+  onTransfer: (r: SearchHit) => void;
+  onVerify: (r: SearchHit) => void;
+  onOpenCopy: (r: SearchHit) => void;
+  onIngest: (r: SearchHit) => void;
+  onOpen: (r: SearchHit) => void;
+  onLaunch: (r: SearchHit) => void;
+}) {
+  if (!rows.length) return <div className="muted pad">{emptyText}</div>;
+  return (
+    <div className="table-wrap">
+      <table className="table stack maps-table">
+        <thead>
+          <tr>
+            <th>experiment</th>
+            <th>date</th>
+            <th className="num">size</th>
+            <th>contents</th>
+            <th className="actions-col">actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => {
+            const m = r.map;
+            const isLocal = r.machine === local;
+            const hasCopy = !!m.copy?.name && m.copy.state !== "not_copied";
+            const t = mapTime(m);
+            return (
+              <tr key={`${r.machine}:${m.path ?? m.name}`}>
+                <td className="cell-title">
+                  <div className="row gap wrap">
+                    <span className="mono strong">
+                      <Highlight text={m.name} indices={r.hits.name} />
+                    </span>
+                    {m.is_prior && <Badge tone="info">prior</Badge>}
+                    {!isLocal && <CopyLine map={m} local={local} isLocal={false} />}
+                    {showMachine && (
+                      <span className="chip mono">
+                        <Highlight text={r.machine} indices={r.hits.machine} />
+                      </span>
+                    )}
+                  </div>
+                  {m.path && (
+                    <div className="muted small mono ellipsis" title={m.abs_path ?? m.path}>
+                      <Highlight text={m.path} indices={r.hits.path} />
+                    </div>
+                  )}
+                  {!showMachine && r.hits.machine && (
+                    <div className="muted small">
+                      machine: <Highlight text={r.machine} indices={r.hits.machine} />
+                    </div>
+                  )}
+                  {isLocal && <CopyLine map={m} local={local} isLocal />}
+                  {m.error && <div className="inline-err mono small">{m.error}</div>}
+                </td>
+                <td className="mono small nowrap" data-label="date" title={m.mtime ? `modified ${fmtDate(m.mtime)}` : m.name_date ? "date parsed from the run name" : "unknown"}>
+                  {m.mtime ? fmtDate(t) : m.name_date ? `${fmtDate(m.name_date, false)}*` : "-"}
+                </td>
+                <td className="num mono nowrap" data-label="size">
+                  {m.size_pending ? (
+                    <span className="muted" title="measuring (du) in the background">
+                      <Spinner />
+                    </span>
+                  ) : (
+                    sizeText(m)
+                  )}
+                </td>
+                <td data-label="contents">
+                  <div className="chips">
+                    <ImageStoreBadge map={m} />
+                    <FileChips map={m} />
+                    <SubdirChips subdirs={m.subdirs ?? []} />
+                  </div>
+                </td>
+                <td className="actions-col cell-actions">
+                  <div className="row gap-sm end wrap">
+                    {!isLocal && hasCopy && (
+                      <>
+                        <button className="btn btn-sm" onClick={() => onOpenCopy(r)} disabled={opening === m.copy?.name} title={`Open ${local}:${m.copy?.name} in the viewer`}>
+                          {opening === m.copy?.name && <Spinner />} Open copy
+                        </button>
+                        <button className={`btn btn-sm ${m.copy?.state === "outdated" ? "btn-primary" : ""}`} onClick={() => onTransfer(r)} title="Incremental rsync into the existing copy; the image store is re-packed only if it changed">
+                          Update copy
+                        </button>
+                      </>
+                    )}
+                    {!isLocal && !hasCopy && (
+                      <button className="btn btn-sm" onClick={() => onTransfer(r)}>
+                        Transfer to base
+                      </button>
+                    )}
+                    <button className="btn btn-sm" onClick={() => onVerify(r)}>
+                      Verify
+                    </button>
+                    {m.path && (
+                      <button className="btn btn-sm" onClick={() => onLaunch(r)} title="Open Launch with this run as the prior map">
+                        Launch with map
+                      </button>
+                    )}
+                    {isLocal && (
+                      <>
+                        <button
+                          className="btn btn-sm"
+                          onClick={() => void activateMap(m.abs_path || m.path || "", m.name)}
+                          disabled={!(m.abs_path || m.path) || !(m.has_dsg || m.has_dsg_mesh)}
+                          title="Make it the console's map: load it into the live Neo4j (planning works once the scene graph is in; images and features follow)"
+                        >
+                          Make live
+                        </button>
+                        <button className="btn btn-sm" onClick={() => onIngest(r)}>
+                          Load into Neo4j
+                        </button>
+                        <button className="btn btn-sm btn-primary" onClick={() => onOpen(r)} disabled={opening === m.name}>
+                          {opening === m.name && <Spinner />} Open in viewer
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TransferDialog({machine, map, local, onClose, onStart}: {machine: string; map: MapEntry; local: string; onClose: () => void; onStart: (b: unknown) => void}) {
+  const [asName, setAsName] = useState<string | null>(null); // null = the planned name
+  const [bags, setBags] = useState(false);
+  const [limit, setLimit] = useState(false);
+  const [kbps, setKbps] = useState(2000);
+  const hasStore = map.has_image_store ?? (map.subdirs ?? []).includes("image_store");
+  // an existing copy keeps its image settings; else keyframes only, fast codec
+  const prev = map.copy?.state !== "not_copied" ? map.copy : null;
+  const [images, setImages] = useState<"keyframes" | "all" | "none">(hasStore ? "keyframes" : "all");
+  const [compression, setCompression] = useState<"none" | "lossless" | "fast">(hasStore ? "fast" : "none");
+  const [plan, setPlan] = useState<TransferPlan | null>(null);
+  const [planErr, setPlanErr] = useState<string | null>(null);
+  const comp = images === "none" ? "none" : compression;
+  useEffect(() => {
+    let live = true;
+    const q = new URLSearchParams({src: machine, experiment: map.name, images, compression: comp});
+    getJSON<TransferPlan>(`api/maps/transfer/plan?${q}`)
+      .then(p => live && (setPlan(p), setPlanErr(null)))
+      .catch(e => live && setPlanErr(errorText(e)));
+    return () => {
+      live = false;
+    };
+  }, [machine, map.name, images, comp]);
+  const upToDate = plan?.status === "up_to_date";
+  const updating = plan?.status === "update" || upToDate;
+  const name = asName ?? plan?.dest_name ?? "";
+  const start = (force: boolean) =>
+    onStart({
+      src: machine,
+      experiment: map.name,
+      as_name: asName && asName !== plan?.dest_name ? asName : undefined,
+      include_bags: bags,
+      bwlimit_kbps: limit ? kbps : undefined,
+      images,
+      compression: comp,
+      force,
+    });
+  return (
+    <Modal
+      title={`${updating || prev ? "Update copy of" : "Transfer"} ${map.name}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          {upToDate && (
+            <button className="btn" onClick={() => start(true)} title="Copy again even though nothing changed">
+              Transfer anyway
+            </button>
+          )}
+          <button className="btn btn-primary" disabled={upToDate || (!plan && !planErr)} onClick={() => start(false)}>
+            {upToDate ? "Already up to date" : updating ? "Update copy" : "Start transfer"}
+          </button>
+        </>
+      }
+    >
+      <p>
+        rsync <span className="mono">{machine}</span> to <span className="mono">{local || "this base station"}</span>.
+      </p>
+      {plan ? (
+        <div className={`transfer-plan tone-${plan.status === "collision" ? "warn" : upToDate ? "ok" : "info"}`}>
+          <Badge tone={upToDate ? "ok" : plan.status === "collision" ? "warn" : "info"}>{plan.status === "up_to_date" ? "up to date" : plan.status}</Badge> {plan.note}
+          <div className="muted small mono">run {plan.run_id}</div>
+        </div>
+      ) : planErr ? (
+        <ErrorBox error={planErr} compact />
+      ) : (
+        <Spinner label="Checking the base station for an existing copy" />
+      )}
+      <Field label="Name on base station" hint={updating ? "The existing copy is updated in place." : "Robot runs land as <experiment>__<robot>; a name holding another run gets __2."}>
+        <input className="input mono" value={name} disabled={updating} onChange={e => setAsName(e.target.value)} aria-label="Name on base station" />
+      </Field>
+      {hasStore ? (
+        <div className="row gap wrap">
+          <Field label="Image store frames">
+            <select className="input" value={images} onChange={e => setImages(e.target.value as typeof images)} aria-label="Image store frames">
+              <option value="keyframes">Keyframes only (what SAM3 searches)</option>
+              <option value="all">All frames</option>
+              <option value="none">None (skip the image store)</option>
+            </select>
+          </Field>
+          <Field label="Compression">
+            <select className="input" value={comp} disabled={images === "none"} onChange={e => setCompression(e.target.value as typeof compression)} aria-label="Image store compression">
+              <option value="fast">Fast (RGB q75, half-res depth + zstd)</option>
+              <option value="lossless">Lossless (stored RGB, depth delta + zstd)</option>
+              <option value="none">None (copy as stored)</option>
+            </select>
+          </Field>
+        </div>
+      ) : (
+        <p className="muted small">This run has no image store; the run directory is copied as is.</p>
+      )}
+      {hasStore && plan && updating && !plan.send_store && images !== "none" && !(images === "all" && comp === "none") && (
+        <p className="muted small">Image store unchanged since the last copy: it will not be re-packed.</p>
+      )}
+      {hasStore && images === "all" && compression === "none" && <p className="muted small">Plain rsync of the whole run directory.</p>}
+      <Toggle checked={bags} onChange={setBags} label="Include rosbags (large)" />
+      <Toggle checked={limit} onChange={setLimit} label="Limit bandwidth (shared radio)" />
+      {limit && (
+        <Field label={`Bandwidth limit: ${kbps} kB/s`}>
+          <input type="range" min={100} max={20000} step={100} value={kbps} onChange={e => setKbps(Number(e.target.value))} aria-label="Bandwidth limit" />
+        </Field>
+      )}
+    </Modal>
+  );
+}
+
+function VerifyDialog({map, machines, pairing, onClose, onStart}: {map: MapEntry; machines: string[]; pairing: Record<string, string> | null; onClose: () => void; onStart: (b: unknown) => void}) {
+  const [sel, setSel] = useState<string[]>(pairing ? Object.keys(pairing) : machines);
+  const nameOn = (m: string) => pairing?.[m] ?? map.name;
+  return (
+    <Modal
+      title={`Verify ${map.name}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn btn-primary"
+            disabled={!sel.length}
+            onClick={() => onStart({experiment: map.name, machines: sel, names: pairing ? Object.fromEntries(sel.map(m => [m, nameOn(m)])) : undefined})}
+          >
+            Compare checksums
+          </button>
+        </>
+      }
+    >
+      <p>{pairing ? "Compares this run with its copy (paired by run id), file by file." : "Hashes every file of the experiment on each selected machine and compares them."}</p>
+      <div className="robot-pick">
+        {machines.map(m => (
+          <label key={m} className={`pick ${sel.includes(m) ? "on" : ""}`}>
+            <input type="checkbox" checked={sel.includes(m)} onChange={() => setSel(s => (s.includes(m) ? s.filter(x => x !== m) : [...s, m]))} />
+            <span className="pick-name">{m}</span>
+            {pairing && sel.includes(m) && <span className="muted small mono">{nameOn(m)}</span>}
+          </label>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
+function IngestDialog({map, targets, onClose, onStart}: {map: MapEntry; targets: ConsoleConfig["neo4j_targets"]; onClose: () => void; onStart: (b: unknown) => void}) {
+  const sorted = useMemo(() => [...targets].sort((a, b) => Number(b.prior) - Number(a.prior)), [targets]);
+  const [target, setTarget] = useState(sorted[0]?.name ?? "");
+  return (
+    <Modal
+      title={`Load ${map.name} into Neo4j`}
+      tone="warn"
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" disabled={!target} onClick={() => onStart({path: map.path, target})}>
+            Continue
+          </button>
+        </>
+      }
+    >
+      {targets.length === 0 ? (
+        <Empty title="No Neo4j targets configured">Start the console with --neo4j NAME=URI.</Empty>
+      ) : (
+        <>
+          <Field label="Target database">
+            <select className="input" value={target} onChange={e => setTarget(e.target.value)} aria-label="Neo4j target">
+              {sorted.map(t => (
+                <option key={t.name} value={t.name}>
+                  {t.name} {t.prior ? "(prior)" : ""} {t.uri}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <p className="muted">The target is wiped first. You will be asked to type a confirmation showing its current node count.</p>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+interface ResetStatus {
+  target: string;
+  source: string;
+  run: string;
+  nodes: number;
+  added_objects: number;
+  map_edits: number;
+}
+
+/** One row per map database: what it was loaded from, what has been added since, and a
+ *  one-click reset to that map (API.md §6.6). The job asks once before wiping. */
+export function DatabaseReset({targets, onStart}: {targets: ConsoleConfig["neo4j_targets"]; onStart: (target: string, title: string) => Promise<string | null>}) {
+  if (!targets.length) return null;
+  return (
+    <Card title="Map databases" actions={<span className="muted small">reset = reload the map; drops added objects and edits</span>}>
+      <div className="db-reset">
+        {targets.map(t => (
+          <DatabaseResetRow key={t.name} name={t.name} uri={t.uri} onStart={onStart} />
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function DatabaseResetRow({name, uri, onStart}: {name: string; uri: string; onStart: (target: string, title: string) => Promise<string | null>}) {
+  const st = useApi<ResetStatus>(`api/maps/reset?target=${encodeURIComponent(name)}`);
+  const [started, setStarted] = useState<string | null>(null);
+  const job = useJobs(s => (started ? s.jobs[started] : undefined));
+  const running = job && (job.state === "running" || job.state === "waiting");
+  const runName = st.data?.run.split("/").filter(Boolean).pop();
+  const added = st.data ? st.data.added_objects + st.data.map_edits : 0;
+  return (
+    <div className="db-reset-row" data-testid="db-reset-row">
+      <div className="db-reset-info">
+        <b className="mono">neo4j:{name}</b> <span className="muted small mono">{uri}</span>
+        <div className="small">
+          {st.loading && !st.data && <Spinner />}
+          {st.error && <span className="tone-err">{String(st.error)}</span>}
+          {st.data && (
+            <>
+              <span className="muted">loaded from</span> <span className="mono" title={st.data.source}>{runName}</span> · {st.data.nodes.toLocaleString()} nodes ·{" "}
+              {added ? (
+                <span className="tone-warn">
+                  {st.data.added_objects} added object(s), {st.data.map_edits} map edit(s)
+                </span>
+              ) : (
+                <span className="tone-ok">clean (nothing added)</span>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+      <button
+        className="btn btn-sm"
+        disabled={!st.data || Boolean(running)}
+        title={st.data ? `Wipe neo4j:${name} and reload ${st.data.source}: removes objects added by the chat, the live image tab or an operator, and map edits (about 15 min; asks once)` : "no map recorded for this database"}
+        onClick={async () => setStarted(await onStart(name, `Reset neo4j:${name} to ${runName}`))}
+        data-testid="db-reset"
+      >
+        {running ? <Spinner /> : "↺"} Reset to original map
+      </button>
+    </div>
+  );
+}
