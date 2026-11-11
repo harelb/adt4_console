@@ -110,6 +110,10 @@ export interface ImageStoreInfo {
   sensors: number;
   schema_version?: string | null;
   keyframes_unanchored?: number;
+  /** false: the run has raw image logs (keyframes/, tracks/) but no image_store/ yet */
+  indexed?: boolean;
+  /** counts of the run's raw image logs (what `image_store index` reads) */
+  raw?: {keyframe_archives: number; tracks: number; events?: boolean} | null;
   /** du of <run>/image_store; null while sizes are pending */
   size_bytes?: number | null;
   check: {ok: boolean; problems: string[]};

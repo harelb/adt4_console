@@ -327,20 +327,89 @@ RAW_LOG_EXCLUDES = [
     "/khronos/tracks/",
 ]
 # Store pack/unpack runs as ``python -m fleetlink.image_pack`` (the reader it uses,
-# hydra_image_store, comes from the same workspace).
+# hydra_image_store, comes from the same workspace); building a run's store from its
+# raw image logs as ``python -m hydra_python.image_store index``.
 PACK_MODULE = "fleetlink.image_pack"
-# On a remote machine: spark_env python, with the workspace's fleetlink and
+INDEX_MODULE = "hydra_python.image_store"
+# On a remote machine: $ADT4_ENV/spark_env python, with the workspace's fleetlink and
 # hydra_image_store sources on PYTHONPATH in case they are not installed there.
-# A machine whose fleetlink predates image_pack falls back to the old
-# ``python -m hydra_image_store`` (same archive format).
-REMOTE_PY = (
+# ADT4_ENV / ADT4_WS live in the machine's ~/.zshrc, which a non-interactive ssh
+# command never reads: remote_env() reads them once per machine from an interactive
+# zsh and store_command() sets them in front of this script.
+REMOTE_PY_BASE = (
     'PY="${ADT4_ENV:-$HOME/environments/dcist}/spark_env/bin/python3"; '
     '[ -x "$PY" ] || PY=python3; '
     'SRC="${ADT4_WS:-$HOME/dcist_ws}/src/awesome_dcist_t4"; '
     'export PYTHONPATH="$SRC/fleetlink:$SRC/hydra/hydra_image_store/src${PYTHONPATH:+:$PYTHONPATH}"; '
-    f'if "$PY" -c "import {PACK_MODULE}" 2>/dev/null; then MOD={PACK_MODULE}; '
+)
+# A machine whose fleetlink predates image_pack falls back to the old
+# ``python -m hydra_image_store`` (same archive format).
+REMOTE_PY = (
+    REMOTE_PY_BASE
+    + f'if "$PY" -c "import {PACK_MODULE}" 2>/dev/null; then MOD={PACK_MODULE}; '
     "else MOD=hydra_image_store; fi; "
 )
+# says on stderr which python / module ran (shown when the command fails)
+REMOTE_WHICH = 'echo "[$(hostname)] python: $PY -m $MOD" >&2; '
+
+# ADT4_ENV / ADT4_WS of a machine, read from its interactive zsh (~/.zshrc). The
+# markers find the values among whatever else an interactive shell prints.
+ENV_VARS = ("ADT4_ENV", "ADT4_WS")
+ENV_PROBE = (
+    "command -v zsh >/dev/null 2>&1 && zsh -ic "
+    + shlex.quote(
+        "printf '\\n"
+        + "".join(f"__{v}=%s\\n" for v in ENV_VARS)
+        + "' "
+        + " ".join(f'"${v}"' for v in ENV_VARS)
+    )
+    + " </dev/null 2>/dev/null"
+)
+_env_lock = threading.Lock()
+_remote_envs: dict[tuple[str, str], dict[str, str]] = {}
+
+
+def parse_remote_env(text: str) -> dict[str, str]:
+    """``{"ADT4_ENV": ..., "ADT4_WS": ...}`` from ENV_PROBE's output: the values on the
+    ``__NAME=`` marker lines (banners and other shell noise ignored); empty or
+    non-absolute values are left out (the command then uses its defaults)."""
+    out: dict[str, str] = {}
+    for line in (text or "").splitlines():
+        for var in ENV_VARS:
+            marker = f"__{var}="
+            at = line.find(marker)
+            if at < 0:
+                continue
+            value = line[at + len(marker) :].strip().rstrip("/")
+            if value.startswith("/") and var not in out:
+                out[var] = value
+    return out
+
+
+def remote_env(svc, m: dict) -> dict[str, str]:
+    """ADT4_ENV / ADT4_WS set in ``m``'s ~/.zshrc (cached per machine; a failed
+    probe is not cached, so the next command tries again)."""
+    key = (m.get("name", ""), m.get("ip", ""))
+    with _env_lock:
+        if key in _remote_envs:
+            return dict(_remote_envs[key])
+    try:
+        rc, out, _ = svc.helpers.ssh_cmd(m["user"], m["ip"], ENV_PROBE, timeout=15)
+    except Exception:  # noqa: BLE001
+        return {}
+    if rc != 0 and "__ADT4_" not in (out or ""):
+        return {}
+    env = parse_remote_env(out)
+    with _env_lock:
+        _remote_envs[key] = env
+    return dict(env)
+
+
+def describe_env(env: dict[str, str]) -> str:
+    """One log line on where the remote python comes from."""
+    if env.get("ADT4_ENV"):
+        return f"ADT4_ENV={env['ADT4_ENV']} (from ~/.zshrc): {env['ADT4_ENV']}/spark_env/bin/python3"
+    return "ADT4_ENV not found in ~/.zshrc: trying $HOME/environments/dcist/spark_env, else python3"
 
 
 def _is_local(svc, m: dict) -> bool:
@@ -401,17 +470,36 @@ def _unpack_summary(text: str) -> str:
     return ", ".join(parts[:8])
 
 
-def store_command(svc, m: dict, args: list[str]) -> tuple[list[str], dict | None]:
-    """argv (+ env) running ``python -m fleetlink.image_pack <args>`` on machine ``m``."""
+def store_command(
+    svc, m: dict, args: list[str], module: str | None = None
+) -> tuple[list[str], dict | None]:
+    """argv (+ env) running ``python -m <module> <args>`` on machine ``m``;
+    ``module`` None: fleetlink.image_pack (or the old hydra_image_store packer)."""
     if _is_local(svc, m):
         expanded = [os.path.expanduser(a) if a.startswith("~") else a for a in args]
-        return [sys.executable, "-m", PACK_MODULE, *expanded], _local_store_env()
+        return [
+            sys.executable,
+            "-m",
+            module or PACK_MODULE,
+            *expanded,
+        ], _local_store_env()
     remote_args = " ".join(
         a.replace("~", "$HOME", 1) if a.startswith("~") else shlex.quote(a)
         for a in args
     )
-    script = REMOTE_PY + f'exec "$PY" -m "$MOD" {remote_args}'
+    env = remote_env(svc, m)
+    exports = "".join(
+        f"{k}={shlex.quote(env[k])}; export {k}; " for k in ENV_VARS if env.get(k)
+    )
+    py = (
+        REMOTE_PY if module is None else REMOTE_PY_BASE + f"MOD={shlex.quote(module)}; "
+    )
+    script = exports + py + REMOTE_WHICH + f'exec "$PY" -m "$MOD" {remote_args}'
     return [*SSH, f"{m['user']}@{m['ip']}", f"sh -c {shlex.quote(script)}"], None
+
+
+# what fleetlink.image_pack says when the run has no (indexable) image store
+NO_STORE = "no image store at"
 
 
 def pipe_store(
@@ -425,6 +513,9 @@ def pipe_store(
         svc, src, pack_args(src_run, images, compression)
     )
     unpack_cmd, unpack_env = store_command(svc, dst, unpack_args(dst_run))
+    for m in (src, dst):
+        if not _is_local(svc, m):
+            job.log("dim", f"{m.get('name', '?')}: {describe_env(remote_env(svc, m))}")
     job.log("dim", "pack: " + " ".join(pack_cmd[-1:] if pack_env is None else pack_cmd))
     p_src = subprocess.Popen(
         pack_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=pack_env
@@ -789,16 +880,29 @@ def transfer(body: TransferBody, request: Request):
                 body.images,
                 body.compression,
             )
-            job.log("ok" if ok else "error", f"image store: {msg}")
-            if not ok:
-                return False
-            result["image_store"] = msg
+            if not ok and NO_STORE in msg:
+                # nothing indexed on the source (and pack could not index it): the
+                # map itself is copied; the images follow once the store is built
+                job.log(
+                    "warn",
+                    f"{src['name']}:{body.experiment} has no image store; the map was "
+                    "copied without images. Build it there (Maps: Build image store) "
+                    f"and transfer again. ({msg})",
+                )
+                result["image_store"] = "missing"
+            else:
+                job.log("ok" if ok else "error", f"image store: {msg}")
+                if not ok:
+                    return False
+                result["image_store"] = msg
         previous = (plan.get("copy") or {}).get("origin")
         origin = ri.make_origin(
             plan["source"], src["name"], body.images, body.compression, previous
         )
         if body.include_bags:
             origin["include_bags"] = True
+        if result.get("image_store") == "missing":
+            origin["store_fingerprint"] = None  # images still to send
         try:
             write_origin(svc, dst, f"{root}/{dest_name}", origin)
             job.log(
@@ -838,6 +942,191 @@ def _attach_pending_prior(svc, job, dst: dict, plan: dict) -> None:
             "ok",
             f"prior map of the active launch is now in the viewer ({prior['label']})",
         )
+
+
+# ---------------------------------------------------------------------------
+# Build a run's image store (``python -m hydra_python.image_store index``) from the
+# raw image logs Hydra / Khronos wrote during the run, on the machine that holds it.
+# ---------------------------------------------------------------------------
+
+
+class IndexImagesBody(BaseModel):
+    machine: str
+    name: str
+    # Hydra is still running: leave frames newer than the newest agent node pending
+    partial: bool = False
+
+
+_index_lock = threading.Lock()
+_indexing: dict[tuple[str, str], str] = {}  # (machine, run name) -> job id
+
+
+def _valid_run_name(name: str) -> bool:
+    return (
+        bool(name)
+        and name not in (".", "..")
+        and not name.startswith(("-", "."))
+        and not any(c in name for c in "/\\\0\n\r")
+        and len(name) <= 255
+    )
+
+
+def _has_raw_logs(entry: dict) -> bool:
+    store = entry.get("image_store") or {}
+    if store.get("raw"):
+        return True
+    subdirs = set(entry.get("subdirs") or [])
+    return bool(subdirs & {"keyframes", "tracks"})
+
+
+def _forget_sizes(machine: str, keys: list[str]) -> None:
+    """Drop cached sizes of a run so the next listing measures it again."""
+    with _cache_lock:
+        cached = _cache().get(machine)
+        if cached:
+            for k in keys:
+                cached.pop(k, None)
+
+
+def stream_command(
+    job, cmd: list[str], env: dict | None, keep: int = 30
+) -> tuple[int, str]:
+    """Run ``cmd``, each output line (stdout + stderr) into the job log; cancellable.
+    Returns (returncode, last lines)."""
+    import collections
+    import queue
+
+    p = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+        text=True,
+        errors="replace",
+        bufsize=1,
+    )
+    lines: queue.Queue = queue.Queue()
+    tail: collections.deque = collections.deque(maxlen=keep)
+
+    def read():
+        for line in p.stdout:
+            lines.put(line.rstrip())
+        lines.put(None)
+
+    threading.Thread(target=read, daemon=True).start()
+    try:
+        while True:
+            try:
+                line = lines.get(timeout=0.5)
+            except queue.Empty:
+                job.check_cancelled()
+                continue
+            if line is None:
+                break
+            if line:
+                tail.append(line)
+                job.log("dim", line[:500])
+            job.check_cancelled()
+    except BaseException:
+        p.kill()
+        p.wait()
+        raise
+    return p.wait(), "\n".join(tail)
+
+
+@router.post("/index_images")
+def index_images(body: IndexImagesBody, request: Request):
+    """Build / update ``<run>/image_store`` of run ``name`` on ``machine`` (a robot
+    over ssh, or this host) from its raw image logs, then summarize it (``info``)."""
+    svc = services(request)
+    if not _valid_run_name(body.name):
+        raise HTTPException(400, f"invalid run name {body.name!r}")
+    m = _endpoint(svc, body.machine)
+    entry = _scan_one(svc, m, body.name)
+    if entry is None:
+        raise HTTPException(404, f"{m['name']}: no run {body.name}")
+    if not _has_raw_logs(entry):
+        raise HTTPException(
+            400, f"{m['name']}:{body.name} has no raw image logs (keyframes/, tracks/)"
+        )
+    run_dir = entry.get("abs_path") or f"{svc.settings.output_root}/{body.name}"
+    key = (m["name"], body.name)
+
+    def run(job):
+        try:
+            where = "this machine" if _is_local(svc, m) else m["name"]
+            if not _is_local(svc, m):
+                job.log("dim", f"{m['name']}: {describe_env(remote_env(svc, m))}")
+            args = ["index", run_dir] + (["--partial"] if body.partial else [])
+            cmd, env = store_command(svc, m, args, INDEX_MODULE)
+            job.log(
+                "info",
+                f"Indexing {run_dir} on {where}"
+                + (" (partial)" if body.partial else "")
+                + " ...",
+            )
+            job.log("dim", " ".join(cmd[-1:] if env is None else cmd))
+            job.set_progress(m["name"], 5)
+            t0 = time.time()
+            rc, tail = stream_command(job, cmd, env)
+            if rc != 0:
+                job.log("error", f"index failed (rc {rc}): {tail[-800:]}")
+                return False
+            job.log("ok", f"indexed in {time.time() - t0:.1f}s")
+            job.set_progress(m["name"], 80)
+            cmd, env = store_command(
+                svc, m, ["info", f"{run_dir}/{STORE_DIR}"], INDEX_MODULE
+            )
+            rc, tail = stream_command(job, cmd, env)
+            if rc != 0:
+                job.log("warn", f"info failed (rc {rc}): {tail[-400:]}")
+            _forget_sizes(m["name"], [body.name, run_dir])
+            try:
+                after = _scan_one(svc, m, body.name) or {}
+            except Exception as e:  # noqa: BLE001 - the store is built either way
+                job.log("warn", f"could not re-scan the run: {getattr(e, 'detail', e)}")
+                after = {}
+            store = after.get("image_store") or {}
+            kf = (store.get("frames") or {}).get("keyframe", 0)
+            check = store.get("check") or {}
+            job.log(
+                "ok" if check.get("ok", True) else "warn",
+                f"image store: {kf} keyframes, {store.get('frames_total', 0)} frames, "
+                f"{store.get('observations', 0)} observations"
+                + (
+                    ""
+                    if check.get("ok", True)
+                    else f"; check: {'; '.join(check.get('problems', []))}"
+                ),
+            )
+            job.set_progress(m["name"], 100)
+            return {
+                "machine": m["name"],
+                "name": body.name,
+                "path": run_dir,
+                "image_store": store,
+            }
+        finally:
+            with _index_lock:
+                if _indexing.get(key) == job.id:
+                    del _indexing[key]
+
+    with _index_lock:
+        running = _indexing.get(key)
+        if running:
+            raise HTTPException(
+                409,
+                {
+                    "detail": f"{m['name']}:{body.name} is already being indexed",
+                    "job_id": running,
+                },
+            )
+        job = svc.jobs.start(
+            "index_images", f"Build image store {m['name']}:{body.name}", run
+        )
+        _indexing[key] = job.id
+    return {"job_id": job.id}
 
 
 class VerifyBody(BaseModel):
