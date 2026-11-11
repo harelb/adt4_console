@@ -22,6 +22,8 @@ import {useStillFrames} from "./CameraPanel";
 import {VideoView} from "./VideoView";
 import {GridVideo} from "./GridVideo";
 import {usePhoenixGuards, usePlatform} from "./usePlatform";
+import {GRASP_CAM, useGraspCamera, useGraspOverride} from "../stores/graspCamera";
+import {GraspCamBadge} from "./GraspCamBadge";
 import "./driveFullscreen.css";
 
 /** Stick radius as a fraction of the shorter screen side (clamped, px). */
@@ -108,8 +110,20 @@ function StillTile({robot, cam}: {robot: string; cam: string}) {
 
 export function DriveFullscreen({robot, onExit}: {robot: string; onExit: () => void}) {
   const [cams, setCams] = useState<string[] | null>(null);
-  const [view, setViewRaw] = useState<DriveView>({kind: "map"});
-  const [media, setMediaRaw] = useState<Media>(() => (load(MEDIA_KEY) === "still" ? "still" : "video"));
+  const [ownView, setViewRaw] = useState<DriveView>({kind: "map"});
+  const [ownMedia, setMediaRaw] = useState<Media>(() => (load(MEDIA_KEY) === "still" ? "still" : "video"));
+  // a grasp in progress shows the hand camera as video (stores/graspCamera.ts);
+  // the operator's own view / media stay underneath and come back after it
+  const grasp = useGraspOverride(robot, cams);
+  const view: DriveView = grasp ? {kind: "cam", cam: GRASP_CAM} : ownView;
+  const media: Media = grasp ? "video" : ownMedia;
+  /** the operator picks a view or picture kind: that wins over the grasp override */
+  const takeOver = () => {
+    if (!grasp) return;
+    useGraspCamera.getState().end("manual");
+    setViewRaw({kind: "cam", cam: GRASP_CAM});
+    setMediaRaw("video");
+  };
   const [quality, setQualityRaw] = useState<Quality>(() => parseQuality(load(QUALITY_KEY)));
   const setQuality = (q: Quality) => {
     setQualityRaw(q);
@@ -117,11 +131,13 @@ export function DriveFullscreen({robot, onExit}: {robot: string; onExit: () => v
   };
   const [menu, setMenu] = useState(false);
   const setView = (v: DriveView) => {
+    takeOver();
     setViewRaw(v);
     save(VIEW_KEY, viewKey(v));
     setMenu(false);
   };
   const setMedia = (m: Media) => {
+    takeOver();
     setMediaRaw(m);
     save(MEDIA_KEY, m);
   };
@@ -404,6 +420,8 @@ export function DriveFullscreen({robot, onExit}: {robot: string; onExit: () => v
           {busy === "stop" ? <Spinner /> : "STOP"}
         </button>
       </div>
+
+      {grasp && <GraspCamBadge session={grasp} className="dfs-grasp" />}
 
       {menu && (
         <div className="dfs-menu" role="menu" aria-label="Views">
