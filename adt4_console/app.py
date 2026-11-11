@@ -75,6 +75,7 @@ class Services:
     launch_deps: object = None  # fleet.launch_workflow.LaunchDeps (None → real)
     helpers: object = field(default_factory=_fleet_helpers)  # fleet_helpers (or a fake)
     launch_state: object = None  # launch_state.LaunchState
+    launch_memory: object = None  # launch_state.LaunchMemory (the form's last choices)
     teleop: TeleopService | None = None
     geo: GeoService | None = None
     missions: object = None  # mission.service.MissionService
@@ -173,6 +174,7 @@ def build_services(
 
     svc.launch_state = launch_state.LaunchState(settings.launch_state_path)
     launch_state.restore(svc)
+    svc.launch_memory = launch_state.LaunchMemory(settings.launch_memory_path)
     from .edit_service import EditService
 
     svc.edits = EditService(settings, graph, hub, jobs,

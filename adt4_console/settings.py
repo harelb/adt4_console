@@ -40,6 +40,9 @@ class Settings:
     # the active launch (experiment, robots, prior map) survives console restarts
     # here; None = memory only (tests).  cli.py sets ~/.adt4_console/active_launch.json
     launch_state_path: str | None = None
+    # the Launch form's last choices (prior map, sessions, robots, ...) per base
+    # station; None = memory only (tests).  cli.py sets ~/.adt4_console/launch_memory.json
+    launch_memory_path: str | None = None
     planner_ns: str | None = None  # omniplanner namespace (base station name)
     # browser terminals on fleet machines (a shell for anyone who can reach the console)
     terminal: bool = False

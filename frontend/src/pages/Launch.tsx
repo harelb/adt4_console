@@ -1,6 +1,7 @@
 import {useEffect, useMemo, useRef, useState} from "react";
 import {useSearchParams} from "react-router";
 import {parseLaunchPreset} from "../lib/launchLink";
+import {defaultExperiment, isLaunchMode, lastPriorValue, nextExperimentName, type LastLaunch} from "../lib/launchMemory";
 import {preferBaseCopy, priorAvailability} from "../lib/runCopies";
 import {useFleet} from "../stores/fleet";
 import {trackJob} from "../stores/jobs";
@@ -8,15 +9,10 @@ import {errorText, postJSON, useApi} from "../lib/api";
 import {groupChecks, preflightLabel, preflightTone} from "../lib/preflight";
 import type {ConsoleConfig, LaunchDefaults, LaunchPlan, MapEntry, MapsResponse, PreflightResult} from "../types";
 import {Badge, Card, Dot, Empty, ErrorBox, Field, FuzzyPicker, Loading, PageHeader, Segmented, Spinner, Toggle} from "../components/ui";
+import {fmtAgo} from "../lib/fuzzy";
 import {jobIdOf} from "./Fleet";
 
 type Mode = "mapping" | "relocalize";
-
-function defaultExperiment(mode: Mode) {
-  const d = new Date();
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${mode === "mapping" ? "map" : "reloc"}_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`;
-}
 
 interface PriorOption {
   machine: string;
@@ -65,15 +61,58 @@ export function LaunchPage() {
     setPresetNote(note);
   }, [preset, maps.data, base]);
 
+  // the last launch's choices (server-side, per base station): applied once, when the
+  // page opens, so a relaunch after Stop & save keeps the prior map, sessions and robots
+  const last = (defaults.data?.last ?? null) as LastLaunch | null;
+  const lastApplied = useRef(false);
+  const applyLast = (l: LastLaunch, m: Mode, withPrior: boolean) => {
+    if (l.robots?.length) setRobots(l.robots);
+    if (l.session) setSession(l.session);
+    setBaseStation(l.base_station ?? "");
+    setBsSession(l.bs_session ?? "");
+    setLinkNet(l.link_network ?? "");
+    setLinkMode(l.link_mode ?? "");
+    setRecord(!!l.record);
+    if (withPrior) setPrior(lastPriorValue(l, base));
+    setExperiment(nextExperimentName(l.experiment, m));
+    setDry(null);
+  };
+
+  // a last launch in another mode is applied once that mode's defaults arrive
+  const pendingLast = useRef<{l: LastLaunch; withPrior: boolean} | null>(null);
+  const restoreLast = (l: LastLaunch, withPrior: boolean) => {
+    const m = isLaunchMode(l.mode) ? l.mode : mode;
+    if (m !== mode) {
+      pendingLast.current = {l, withPrior};
+      setMode(m);
+    } else applyLast(l, m, withPrior);
+  };
+
   // apply presets whenever the mode's defaults arrive
   useEffect(() => {
     const d = defaults.data;
     if (!d) return;
+    const l = (d.last ?? null) as LastLaunch | null;
+    if (!lastApplied.current && l) {
+      lastApplied.current = true;
+      if (!preset && isLaunchMode(l.mode) && l.mode !== mode) {
+        pendingLast.current = {l, withPrior: true};
+        setMode(l.mode); // reload that mode's defaults, then apply the last launch
+        return;
+      }
+      pendingLast.current = {l, withPrior: !preset};
+    }
     setRobots(d.robots ?? []);
     setSession(d.session ?? "");
     setBaseStation(d.base_station ?? "");
     setBsSession(d.bs_session ?? "");
     setDry(null);
+    const p = pendingLast.current;
+    if (p) {
+      pendingLast.current = null;
+      applyLast(p.l, mode, p.withPrior);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defaults.data]);
   useEffect(() => setExperiment(defaultExperiment(mode)), [mode]);
 
@@ -172,6 +211,26 @@ export function LaunchPage() {
           />
         }
       />
+      {last && (
+        <div className="launch-last row gap wrap small" data-testid="launch-last">
+          <span className="muted">Last launch{last.saved_at ? ` ${fmtAgo(last.saved_at)}` : ""}:</span>
+          <span className="mono">{last.experiment || "?"}</span>
+          {last.robots?.length ? <span className="mono">on {last.robots.join(", ")}</span> : null}
+          <span>
+            prior <span className="mono">{last.prior_path ? `${last.prior_source || base}:${last.prior_path.split("/").pop()}` : "none"}</span>
+          </span>
+          <button
+            className="btn btn-xs"
+            title="Fill the form with the last launch (same prior map, sessions, robots); the experiment name gets a new suffix"
+            onClick={() => {
+              restoreLast(last, true);
+              setPresetNote(null);
+            }}
+          >
+            Relaunch settings
+          </button>
+        </div>
+      )}
       {defaults.error && <ErrorBox error={defaults.error} onRetry={defaults.reload} compact />}
       {defaults.loading && !defaults.data && <Loading label="Loading presets" />}
       <div className="launch-grid">
@@ -250,6 +309,11 @@ export function LaunchPage() {
             ) : (
               <select className="input" value={prior} onChange={e => setPrior(e.target.value)} aria-label="Prior map">
                 <option value="">none</option>
+                {prior && !priorOptions.some(o => `${o.machine}\u0000${o.map.path}` === prior) && (
+                  <option value={prior}>
+                    {prior.split("\u0000")[0]}: {prior.split("\u0000")[1]} {maps.data ? "(not listed)" : ""}
+                  </option>
+                )}
                 {priorOptions.map(o => (
                   <option key={o.machine + o.map.path} value={`${o.machine}\u0000${o.map.path}`}>
                     {o.map.is_prior ? "[prior] " : ""}

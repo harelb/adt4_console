@@ -89,13 +89,37 @@ def launch_defaults(request: Request, mode: str = "mapping"):
         list_sessions,
     )
 
-    fleet = services(request).fleet
+    svc = services(request)
+    fleet = svc.fleet
     with fleet.lock:
         sel = default_selection(
             fleet.topo, fleet.runtime_config, mode, None, fleet.local_ips
         )
         links = link_choices(fleet.topo, fleet.network)
-    return {**sel, **links, "mode": mode, "sessions": list_sessions()}
+    return {
+        **sel,
+        **links,
+        "mode": mode,
+        "sessions": list_sessions(),
+        "last": last_launch(svc, sel.get("base_station")),
+    }
+
+
+def last_launch(svc, base_station: str | None = None) -> dict | None:
+    """The Launch form's last choices for ``base_station`` (prior map, sessions,
+    robots, ...), else those of the active launch record."""
+    from ..launch_state import memory_from_active
+
+    mem = getattr(svc, "launch_memory", None)
+    last = mem.get(base_station) if mem is not None else None
+    if last is None and svc.launch_state is not None:
+        last = memory_from_active(svc.launch_state.get())
+    return last
+
+
+@router.get("/launch/last")
+def launch_last(request: Request, base_station: str | None = None):
+    return {"last": last_launch(services(request), base_station)}
 
 
 @router.post("/launch/dry_run")
@@ -168,6 +192,10 @@ def launch(body: LaunchPlanBody, request: Request):
         build_robot_commands(plan, fleet.runtime_config, svc.settings.output_root)
     except LaunchError as e:
         raise HTTPException(400, str(e)) from None
+    # the next launch (a relaunch after Stop & save) starts from these choices,
+    # prior map included
+    if getattr(svc, "launch_memory", None) is not None:
+        svc.launch_memory.remember(body.model_dump())
 
     def run(job):
         cb = JobLaunchCallbacks(job, fleet.zenohd_state)
