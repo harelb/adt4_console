@@ -17,6 +17,8 @@ import {FastDownwardDetails} from "./FastDownward";
 import {PlannerSchedule} from "./PlannerSchedule";
 import {EnginePicker} from "./EnginePicker";
 import {GoalImages} from "./GoalImages";
+import {GoalStatus} from "./GoalStatus";
+import {NOTABLE, trackNote, useGoalTracks} from "../lib/goalTrack";
 import {DirectRouteButtons} from "./DirectRoute";
 import {autoRoster, onlineRobots, planAutoSend, type AutoRobot, type Fleet, type Skipped} from "../lib/autoSend";
 import {setAutoSend, useAutoSend} from "../stores/autoSend";
@@ -36,7 +38,7 @@ export type ChatItem =
   | {type: "user"; text: string; note?: boolean}
   | {type: "text"; text: string}
   | {type: "tool"; name: string; args: unknown; result: unknown}
-  | {type: "goal"; kind: string; body: Record<string, unknown>; robot?: string | null; sent?: {tone: SendTone; text: string}}
+  | {type: "goal"; kind: string; body: Record<string, unknown>; robot?: string | null; sent?: {tone: SendTone; text: string}; track?: string}
   | {type: "error"; text: string}
   | MissionCardItem
   | CypherWrite
@@ -57,6 +59,8 @@ export interface AutoSendItem {
   skipped: Skipped[];
   blocked?: string;
   result?: {tone: SendTone; text: string};
+  /** the goal's live status (lib/goalTrack) */
+  track?: string;
   /** the backend's lease report ({robot: {ok, message}}) */
   lease?: Record<string, {ok?: boolean; message?: string}> | null;
 }
@@ -274,6 +278,19 @@ const turnStart = {
   },
 };
 const abort = chatAbort;
+
+// the assistant hears how a goal it proposed went (once per notable stage): an
+// [operator] note in the transcript, like the auto-send result; no extra LLM call
+const noted = new Set<string>();
+useGoalTracks.subscribe(s => {
+  for (const v of Object.values(s.tracks)) {
+    if (!v || !NOTABLE.has(v.stage) || noted.has(`${v.id}:${v.stage}`)) continue;
+    noted.add(`${v.id}:${v.stage}`);
+    const text = trackNote(v);
+    if (transcript.current.some(t => (t as {text?: string}).text === text)) continue;
+    transcript.current = [...transcript.current, {role: "user", text}];
+  }
+});
 
 export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
   const {planRobot, order, sources} = useViewer();
@@ -584,17 +601,19 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
     }
     let result: AutoSendItem["result"];
     let lease: AutoSendItem["lease"] = null;
+    let track: string | undefined;
     try {
       const body: Record<string, unknown> = {goal: q.goal};
       if (q.constraints) body.constraints = q.constraints;
       if (q.engine === "grstaps") body.engine = "grstaps";
       const r = await sendGoal(plan.via, "pddl", body);
       result = goalSendMessage(`Sent through ${plan.via}`, r);
+      track = r?.track;
       lease = ((r as unknown as {lease?: AutoSendItem["lease"]}).lease ?? null) || null;
     } catch (e) {
       result = {tone: "err", text: `failed: ${errorText(e)}`};
     }
-    push({...card, result, lease});
+    push({...card, result, lease, track});
     if (q.card) setItems(cur => cur.map(c => (c === q.card ? {...(c as Extract<ChatItem, {type: "goal"}>), sent: {tone: result!.tone, text: `auto-sent: ${result!.text}`}} : c)));
     // the assistant should know the plan is underway
     transcript.current = [...transcript.current, {role: "user", text: `[operator] auto-sent ${q.goal} through ${plan.via}: ${result!.text}`}];
@@ -612,7 +631,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
       // a PDDL goal goes to the engine the card shows (GRSTAPS-X: its plugin or goal_manager)
       const engine = it.kind === "pddl" ? ((it.body as {engine?: string}).engine ?? useEngines.getState().engine) : undefined;
       const r = await sendGoal(robot, it.kind, engine === "grstaps" ? {...it.body, engine} : it.body);
-      patch(idx, c => ({...(c as typeof it), sent: goalSendMessage(`Sent to ${robot}`, r)}));
+      patch(idx, c => ({...(c as typeof it), sent: goalSendMessage(`Sent to ${robot}`, r), track: r?.track ?? (c as typeof it).track}));
     } catch (e) {
       patch(idx, c => ({...(c as typeof it), sent: {tone: "err", text: `failed: ${errorText(e)}`}}));
     }
@@ -1115,6 +1134,7 @@ function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"
       {pv?.p && shown && <DirectRouteButtons routes={pv.p.routes} />}
       {pv?.p?.schedule && shown && <PlannerSchedule schedule={pv.p.schedule} compact />}
       {sent && <div className={`small tone-${sent.tone}`}>{sent.text}</div>}
+      {it.track && <GoalStatus id={it.track} />}
     </div>
   );
 }
@@ -1220,6 +1240,7 @@ function AutoSendCard({it}: {it: AutoSendItem}) {
       </div>
       <pre className="mono small">{it.goal}</pre>
       {it.result && <div className={`small tone-${it.result.tone}`}>{it.result.text}</div>}
+      {it.track && <GoalStatus id={it.track} />}
       {it.blocked && <div className="small tone-err">{it.blocked}</div>}
       {it.via &&
         it.robots.map(r => (

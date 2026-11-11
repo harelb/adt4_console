@@ -816,6 +816,14 @@ class RosBridge:
         with self._link_cv:
             self._link_status[robot] = (time.time(), st)
             self._link_cv.notify_all()
+        topic = (st.get("topics") or {}).get(f"/{robot}/omniplanner_node/compiled_plan_out") or {}
+        acked = int(topic.get("acked") or 0)
+        # robot -> fleetlink's acked count of its compiled_plan_out (delivery)
+        acks = self.__dict__.setdefault("_plan_acked", {})
+        before = acks.get(robot)
+        acks[robot] = acked
+        if before is not None and acked > before:
+            self.goals.on_delivered(robot)
 
     def link_status(self, robot: str) -> dict | None:
         """The fleetlink-bridge's status of ``robot`` (fleetlink mode), or None when
@@ -1024,6 +1032,7 @@ class RosBridge:
         if st is None:
             return
         self._plan[robot].teleop = st
+        self.goals.on_teleop(robot, st)
         if self.hub is not None:
             self.hub.publish(f"robot/{robot}/teleop", self.teleop(robot))
 
@@ -1123,11 +1132,28 @@ class RosBridge:
 
     def _on_plan(self, robot, msg) -> None:
         self._plan[robot].plan = action_sequence_to_dict(msg)
+        self.goals.on_plan(robot, self._plan[robot].plan)
         self._publish_plan(robot)
 
     def _on_path_plan(self, robot, msg) -> None:
         self._plan[robot].plan = path_to_dict(msg, robot)
+        self.goals.on_plan(robot, self._plan[robot].plan)
         self._publish_plan(robot)
+
+    @property
+    def goals(self):
+        """Per-goal "did the robot get it" status (goal_tracker; pushed as
+        ``goal_track/<id>`` on the hub). Created on first use."""
+        g = self.__dict__.get("_goals")
+        if g is None:
+            from .goal_tracker import GoalTracker
+
+            g = self.__dict__["_goals"] = GoalTracker(publish=self._publish_track)
+        return g
+
+    def _publish_track(self, gid: str, view: dict) -> None:
+        if getattr(self, "hub", None) is not None:
+            self.hub.publish(f"goal_track/{gid}", view)
 
     def _on_repair_alert(self, default_robot, kind: str, text: str) -> None:
         """goal_manager's operator alert or a planner failure, attributed to the
@@ -1151,6 +1177,7 @@ class RosBridge:
         robot = st.get("robot") or self._last_goal_robot or default_robot
         st["seq"] = next(self._status_seq)
         self._plan[robot].status.append(st)
+        self.goals.on_plan_status(st)
         self._publish_plan(robot)
 
     def _on_schedule(self, default_robot, msg) -> None:
@@ -1167,6 +1194,7 @@ class RosBridge:
         new = lease_from_guards(msg)
         old = st.lease
         st.lease = new
+        self.goals.on_lease(robot, new)
         same = old is not None and all(
             old[k] == new[k] for k in ("known", "owned", "owner")
         )
@@ -1181,16 +1209,18 @@ class RosBridge:
         self._publish_plan(robot)
 
     def _on_result(self, robot, msg) -> None:
-        self._plan[robot].results.append(
-            {
-                "plan_id": msg.plan_id,
-                "action_index": int(msg.action_index),
-                "action_type": msg.action_type,
-                "status": msg.status,
-                "detail": msg.detail,
-                "t": _stamp(msg.header),
-            }
-        )
+        res = {
+            "plan_id": msg.plan_id,
+            "action_index": int(msg.action_index),
+            "action_type": msg.action_type,
+            "status": msg.status,
+            "detail": msg.detail,
+            "t": _stamp(msg.header),
+        }
+        # both executor topic spellings may carry the same result: count it once
+        if res not in self._plan[robot].results:
+            self.goals.on_result(robot, res)
+        self._plan[robot].results.append(res)
         self._publish_plan(robot)
 
     def _publish_plan(self, robot) -> None:
@@ -1267,6 +1297,25 @@ class RosBridge:
             out[r] = {"ok": bool(res.get("ok")), "message": res.get("message", "")}
         return out
 
+    def _track_goal(self, robot, kind, fields, extra) -> str | None:
+        """Register the goal with the tracker before it is published (its plan can
+        come back before ``publish`` returns); tracking never blocks a send."""
+        try:
+            robots = self.goal_robots(robot, fields)
+            fleetlink = {}
+            for r in robots:
+                try:
+                    fleetlink[f"fleetlink_{r}"] = self.link_status(r) is not None
+                except Exception:  # noqa: BLE001
+                    fleetlink[f"fleetlink_{r}"] = False
+            return self.goals.goal_sent(
+                robot, robots, kind, via=(extra or {}).get("via"), summary=goal_summary(fields),
+                platforms=fleetlink, direct=kind == "direct_path",
+            )  # fmt: skip
+        except Exception:  # noqa: BLE001
+            log.exception("goal tracking")
+            return None
+
     def _send(self, robot, kind, topic, msg_type, fields, extra=None) -> dict:
         self.ensure_robot(robot)
         leases = self.auto_take_leases(self.goal_robots(robot, fields))
@@ -1276,10 +1325,18 @@ class RosBridge:
             if failed:
                 extra["warning"] = "; ".join(filter(None, [(extra or {}).get("warning"),
                                    f"could not take the Spot lease of {', '.join(failed)}"]))  # fmt: skip
-        subs = self.publish(topic, msg_type, fields)
+        gid = self._track_goal(robot, kind, fields, extra)
+        try:
+            subs = self.publish(topic, msg_type, fields)
+        except Exception as e:
+            if gid:
+                self.goals.send_failed(gid, f"{type(e).__name__}: {e}")
+            raise
+        if subs == 0 and gid:
+            self.goals.send_failed(gid, f"nothing subscribes to {topic}")
         self._last_goal_robot = robot
         extra = {k: v for k, v in (extra or {}).items() if v is not None}
-        out = {"ok": True, "topic": topic, "msg": fields, "subscribers": subs, **extra}
+        out = {"ok": True, "topic": topic, "msg": fields, "subscribers": subs, "track": gid, **extra}
         entry = {
             "t": time.time(),
             "kind": kind,
@@ -1528,11 +1585,17 @@ class RosBridge:
         if self.platform(robot) != "spot":
             if cmd == "pause":
                 self.require_spot(robot, cmd)
-            return self.phoenix_mode_cmd(robot, cmd)
-        return self.publish_to_robot(
+            out = self.phoenix_mode_cmd(robot, cmd)
+            # phoenix stop = manual mode: the plan is held, a resume continues it
+            label = "stop (manual mode)" if cmd == "stop" else "resume (auto mode)"
+            self.goals.on_executor_cmd(robot, label, bool(out.get("ok")))
+            return out
+        out = self.publish_to_robot(
             robot, f"/{robot}/spot_executor_node/{cmd}", "std_msgs/msg/Bool", {"data": True},
             deliver_timeout,
         )  # fmt: skip
+        self.goals.on_executor_cmd(robot, cmd, bool(out.get("ok")))
+        return out
 
     def publish_to_robot(
         self,
@@ -1606,6 +1669,18 @@ class RosBridge:
         if not out["ok"] and not out["message"]:
             out["error"] = "no answer from the robot (relayed call failed or timed out)"
         return out
+
+
+def goal_summary(fields: dict) -> str:
+    """A goal's text for its status line (PDDL goal / command / points)."""
+    g = fields.get("goal") if isinstance(fields.get("goal"), dict) else fields
+    for k in ("pddl_goal", "command", "point_names_to_visit"):
+        v = g.get(k)
+        if v:
+            return " ".join(v) if isinstance(v, list) else str(v)
+    if "poses" in fields or "actions" in fields:
+        return "direct route"
+    return ""
 
 
 def _no_subscriber(out: dict, error: str) -> dict:

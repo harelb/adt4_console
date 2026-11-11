@@ -451,6 +451,8 @@ export interface GoalSendResult {
   warning?: string;
   constraints?: ConstraintFact[];
   plugin?: string;
+  /** the goal's live status id (api/goal_tracks/<track>, hub goal_track/<track>) */
+  track?: string;
 }
 
 export interface RobotPlan {
