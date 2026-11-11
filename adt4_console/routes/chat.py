@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
@@ -25,6 +26,8 @@ class ChatBody(BaseModel):
     mission_ctx: dict | None = None
     # GPT-5 / 6 reasoning effort: fast (default) | low | medium | high
     reasoning: str | None = None
+    # the chat's planner toggle: the engine of the PDDL goals it proposes
+    engine: Literal["fast_downward", "grstaps"] | None = None
 
 
 @router.post("/chat")
@@ -40,6 +43,7 @@ def chat(body: ChatBody, request: Request):
             body.model,
             body.mission_ctx,
             reasoning=body.reasoning,
+            engine=body.engine,
         ):
             yield json.dumps(item, default=str) + "\n"
 

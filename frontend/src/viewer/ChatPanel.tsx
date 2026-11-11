@@ -28,6 +28,8 @@ import {rosterOf} from "./robotFocus";
 import {agentColors} from "./MissionOverlay";
 import {useRobotColor3D} from "./background";
 import {ENGINE_LABEL, refreshEngines, useEngines, type EngineId} from "../stores/engines";
+import {chatEngineNow, useChatEngine, type ChatEngineInfo} from "../stores/chatEngine";
+import {ChatEnginePicker} from "./ChatEnginePicker";
 import type {FastDownwardInfo} from "../lib/fastDownward";
 import {decideMapEdit, MapEditCard, mapEditNote, statusOf, toMapEditItem, type MapEditItem} from "./MapEditCard";
 import {decideSceneEdit, SceneEditCard, sceneEditNote, sceneEditStatus, toSceneEditItem, undoSceneEdit, type SceneEditItem} from "./SceneEditCard";
@@ -366,13 +368,17 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
     const card = a === null ? null : el.querySelector<HTMLElement>(`[data-item="${a}"]`);
     el.scrollTop = card ? el.scrollTop + card.getBoundingClientRect().top - el.getBoundingClientRect().top : el.scrollHeight;
   }, [items]);
-  useEffect(() => {
-    getJSON<{models?: string[]; model?: string | null}>("api/chat/usage")
+  // models, and the planner toggle's engines (re-read when the toggle opens: the base may start GRSTAPS-X later)
+  const loadUsage = () =>
+    getJSON<{models?: string[]; model?: string | null; engines?: ChatEngineInfo[]}>("api/chat/usage")
       .then(u => {
         setModels(u.models ?? []);
         setDefaultModel(u.model ?? null);
+        useChatEngine.getState().setEngines(u.engines ?? []);
       })
       .catch(() => undefined);
+  useEffect(() => {
+    void loadUsage();
   }, []);
   const setModel = (m: string) => {
     setModelRaw(m);
@@ -434,6 +440,8 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
         model: chosenModel,
         mission_ctx: withMission ? (autoFleet ? {...missionContext(), roster: autoRoster(autoFleet.online), auto_send: true} : missionContext()) : undefined,
         reasoning: isReasoningModel(chosenModel ?? defaultModel) ? reasoning : undefined,
+        // the planner toggle: the engine of the goals the chat proposes (undefined: older backend)
+        engine: chatEngineNow(),
       };
       const res = await fetch("api/chat", {method: "POST", headers, body: JSON.stringify(body), signal: ctl.signal});
       if (!res.ok || !res.body) {
@@ -705,6 +713,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
             ))}
           </select>
         )}
+        <ChatEnginePicker onOpen={() => void loadUsage()} />
         <label className="row gap-xs small chat-autosend" title="Plans the chat makes are sent at once to the robots that are online (fleetlink up, executor status, not E-stopped); sending takes a Spot's lease">
           <input type="checkbox" checked={autoOn} onChange={e => setAutoSend(e.target.checked)} data-testid="auto-send-toggle" />
           Auto-send to online robots
@@ -1122,7 +1131,7 @@ function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"
           {it.kind === "pddl" && engines.length > 1 && (
             <>
               {" "}
-              <Badge tone={engine === "grstaps" ? "info" : "off"} title={b.engine ? "the chat chose this planner" : "the planner chosen in the mission panel"}>
+              <Badge tone={engine === "grstaps" ? "info" : "off"} title={b.engine ? "this goal's planner (the chat's planner toggle, or the assistant's choice): the goal is sent with it" : "the planner chosen in the mission panel"}>
                 {ENGINE_LABEL[engine]}
               </Badge>
             </>

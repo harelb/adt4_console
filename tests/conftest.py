@@ -165,3 +165,16 @@ def client(settings, planner_plugins):
     c, services = make_client(settings)
     with c:
         yield c
+
+
+def _has_goal_prompts() -> bool:
+    from adt4_console.chat import load_goal_prompts
+
+    return load_goal_prompts()[0] is not None
+
+
+# PDDL goals in the chat need heracles_agents (its goal rules; no embedded copy)
+needs_heracles_agents = pytest.mark.skipif(
+    not _has_goal_prompts(),
+    reason="heracles_agents is not importable: PDDL chat goals are off",
+)

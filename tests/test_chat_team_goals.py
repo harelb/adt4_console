@@ -1,6 +1,6 @@
 """Team goals (plan repair v5): one PDDL goal covers the whole team, the planner
 (multi-robot Fast Downward / GRSTAPS-X) allocates the work, and the console
-sends it once. Ported from heracles_agents' chatdsg_repair prompt; the live
+sends it once. The rules are heracles_agents' (heracles_agents.prompts); the live
 transcript of 2026-11-11 (two per-robot goals, the second preempting the
 first) is the regression case."""
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import types
 
-from adt4_console.chat import TEAM_GOALS, ChatService, goal_atoms
+from adt4_console.chat import ChatService, goal_atoms
 from adt4_console.ros_bridge import (
     COMMANDED_GOAL_TYPE,
     RosBridge,
@@ -16,6 +16,7 @@ from adt4_console.ros_bridge import (
     is_team_goal,
     normalize_constraints,
 )
+from tests.conftest import needs_heracles_agents
 from tests.test_chat_roster import chat
 from tests.test_goal_tracker import make, plan
 
@@ -25,27 +26,29 @@ BOTH = [{"predicate": "use-robots", "symbols": ["euclid", "hamilton"]}]
 
 
 # ------------------------------------------------------------------ prompt
+# The goal rules themselves are heracles_agents' (test_chat_goal_prompts.py);
+# without it PDDL goals are off, so these tests need it.
+@needs_heracles_agents
 def test_prompt_has_the_team_goal_rules():
+    text = chat()._system(None, "euclid")
     for line in (
-        "One goal covers the whole team",
-        "goal replaces the whole team's current plan",
-        "Never propose one goal per robot",
+        "One goal per request covers the whole team",
+        "a new goal replaces the whole team's current plan",
+        "Never send one goal per robot",
         "the goal MUST name that robot",
-        'not even "the nearest robot"',
-        "never split the targets between robots yourself",
+        "not the nearest robot",
+        "Never split the targets between robots yourself",
         "{predicate: 'use-robots', symbols: ['euclid', 'hamilton']}",
         '"only X"',
         "(object-in-place o t)",
-        "re-send the tasks of the last goal they still want done",
+        "re-send the tasks of the last goal that are still wanted",
         "engine='grstaps'",
     ):
-        assert line in TEAM_GOALS, line
-    # the live transcript, as examples
-    assert "Visit all the chairs with both euclid and hamilton" in TEAM_GOALS
-    assert "NOT two goals, one per robot" in TEAM_GOALS
-    assert "split the 4 among both" in TEAM_GOALS
-    assert "(or (and (holding hamilton o1) (holding euclid o20)) (and (holding hamilton o20) (holding euclid o1)))" in TEAM_GOALS
-    assert "(and (holding hamilton o1) (holding euclid o20))" in TEAM_GOALS
+        assert line in text, line
+    assert "Visit all the chairs with both euclid and hamilton" in text
+    assert "NOT two goals, one per robot" in text
+    assert "Split the 4 cones among both" in text
+    assert "(or (and (holding hamilton o1)" in text and "(holding euclid o20))" in text
     # the old, wrong advice is gone from the tool
     desc = ChatService._T_PROPOSE_GOAL["description"]
     assert "whichever robot is closer" not in desc
@@ -55,9 +58,10 @@ def test_prompt_has_the_team_goal_rules():
     assert "use-robots" in enum
 
 
+@needs_heracles_agents
 def test_system_prompt_includes_team_rules_with_and_without_neo4j():
     c = chat()
-    assert "One goal covers the whole team" in c._system(None, "euclid")
+    assert "One goal per request covers the whole team" in c._system(None, "euclid")
 
 
 # --------------------------------------------------------------- proposals
@@ -65,6 +69,7 @@ def _turn(c):
     c._ctx.pddl_goals = []  # what ChatService.stream does per turn
 
 
+@needs_heracles_agents
 def test_both_robots_is_one_team_card():
     c = chat()
     _turn(c)
@@ -79,6 +84,7 @@ def test_both_robots_is_one_team_card():
     assert out["proposed"] and out["team"] == ["euclid", "hamilton"]
 
 
+@needs_heracles_agents
 def test_team_card_goes_through_a_team_robot_not_the_selected_one():
     c = chat()
     _turn(c)
@@ -87,6 +93,7 @@ def test_team_card_goes_through_a_team_robot_not_the_selected_one():
     assert card["robot"] == "euclid"  # gauss is not allowed to act
 
 
+@needs_heracles_agents
 def test_robot_free_goal_without_use_robots_lists_the_fleet():
     c = chat()
     _turn(c)
@@ -95,6 +102,7 @@ def test_robot_free_goal_without_use_robots_lists_the_fleet():
     assert {"euclid", "hamilton"} <= set(card["team"]) and card["robot"] == "euclid"
 
 
+@needs_heracles_agents
 def test_single_named_robot_is_not_a_team_card():
     c = chat()
     _turn(c)
@@ -103,6 +111,7 @@ def test_single_named_robot_is_not_a_team_card():
     assert "team" not in card and card["robot"] == "hamilton"
 
 
+@needs_heracles_agents
 def test_second_per_robot_goal_in_one_reply_is_refused():
     """The live failure: one goal per robot, the second send preempting the first."""
     c = chat()
@@ -122,6 +131,7 @@ def test_second_per_robot_goal_in_one_reply_is_refused():
     assert events == [] and "(holding hamilton o1)" in out["error"]
 
 
+@needs_heracles_agents
 def test_combined_goal_replaces_the_earlier_proposal():
     c = chat()
     _turn(c)
@@ -132,6 +142,7 @@ def test_combined_goal_replaces_the_earlier_proposal():
     assert "replaces" in out["note"]
 
 
+@needs_heracles_agents
 def test_a_new_turn_starts_clean():
     c = chat()
     _turn(c)

@@ -7,7 +7,7 @@ import pytest
 
 from adt4_console.chat import UsageLedger, price_for
 
-from .conftest import make_client
+from .conftest import make_client, needs_heracles_agents
 from .synthetic import build_run
 
 
@@ -58,6 +58,7 @@ def test_price_lookup_uses_family_prefix():
     assert price_for("mystery-model") == (5.00, 15.00)  # conservative default
 
 
+@needs_heracles_agents
 def test_openai_tool_loop_proposes_goal_and_meters_spend(llm_svc):
     client, svc = llm_svc
     fake = _client(

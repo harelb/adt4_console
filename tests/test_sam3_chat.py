@@ -8,7 +8,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from .conftest import make_client
+from .conftest import make_client, needs_heracles_agents
 from .synthetic import build_run
 
 IMG = "data:image/jpeg;base64,/9j/AAAA"
@@ -309,6 +309,7 @@ class FakeMessages:
         )
 
 
+@needs_heracles_agents
 def test_anthropic_path_uses_run_tool(svc_client, sam3):
     pytest.importorskip("anthropic")
     client, svc = svc_client

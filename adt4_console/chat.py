@@ -139,66 +139,69 @@ TOOL_CONTENT_CHARS = 6000  # a tool result as kept in the transcript
 WRITE_TTL_S = 3600.0  # an unapproved write proposal expires
 
 
-# Team goals, ported from heracles_agents' tuned plan-repair prompt
-# (examples/chatdsg_repair/agent_prompt.yaml + pddl_domain_description_with_constraints
-# + pddl_in_context_examples_with_constraints): the planner (multi-robot Fast
-# Downward or GRSTAPS-X) allocates the work, the chat does not.
-TEAM_GOALS = """\
-PDDL GOALS ARE TEAM GOALS (plan repair):
-- One goal covers the whole team: the planner plans for every robot at once, and a new \
-goal replaces the whole team's current plan. So for one request call propose_goal ONCE \
-with ONE goal for all the robots. Never propose one goal per robot: the second one sent \
-preempts the first (e.g. (holding hamilton o1) sent, then (holding euclid o20) sent \
-separately, cancels hamilton's pick). Put every robot's tasks in one (and ...).
-- If the operator says WHICH robot does a task, the goal MUST name that robot: the -by \
-predicates (visited-object-by, visited-place-by, inspected-by, visited-region-by, \
-explored-region-by, and object-placed-by to move an object) or at-place / at-object / \
-holding. Robot name FIRST, then the target: (visited-object-by hamilton o21).
-- If the operator does NOT name a robot for a task, use the robot-free forms -- \
-(visited-object o), (visited-place t), (object-in-place o t) to move, (visited-region r), \
-(explored-region r) -- and let the planner allocate it (to look at / inspect an object with \
-no robot named, use (visited-object o); inspected-by needs a robot). Never pick the \
-robot yourself for unnamed work, not even "the nearest robot", and never split the \
-targets between robots yourself.
-- "both robots", "euclid and hamilton", "with A and B" (no per-task assignment): ONE goal \
-with the robot-free forms plus a use-robots constraint naming exactly those robots, \
-{predicate: 'use-robots', symbols: ['euclid', 'hamilton']}: only they act, and the \
-planner splits the work. "only X" / "just X": use-robots naming X. Leave use-robots out \
-when the operator does not limit the robots. use-robots needs Fast Downward: GRSTAPS-X \
-ignores it, so with engine='grstaps' bind robots with the -by forms instead.
-- Moving an object with no robot named: (object-in-place o t), never holding and never \
-object-placed-by. A robot named only for another part of the request does not make the \
-move its own: "hamilton looks at o58, and o12 should end up at t1253" is \
-(and (visited-object-by hamilton o58) (object-in-place o12 t1253)).
-- Picking up needs a robot: the domain has no robot-free holding. "each of hamilton and \
-euclid pick up a different cone": ONE goal. With Fast Downward and two robots / two \
-cones, let the planner choose who takes which with an or of both pairings: \
-(or (and (holding hamilton o1) (holding euclid o20)) (and (holding hamilton o20) (holding euclid o1))). \
-With more robots or objects, or engine='grstaps' (no or / holding), give each robot its \
-nearest cone (all different) and send them together: (and (holding hamilton o1) (holding euclid o20)).
-- A new goal replaces the old one. When the operator adds a task, re-send the tasks of the \
-last goal they still want done together with the new one, keeping each task's robot and \
-the constraints still wanted (use-robots, forbidden-*). Check "Goals sent from this \
-console" below for the last goal.
-- Engine: Fast Downward (default) plans every robot at once and allocates the tasks. \
-engine='grstaps' (GRSTAPS-X, only when the robots run it) suits larger allocation \
-problems (many targets, several robots) and orderings (before), but takes no or / at-* / \
-holding / use-robots.
-Examples (O(n) symbols shown to the operator; in goals lower case, no parentheses):
-- "Visit all the chairs with both euclid and hamilton" (chairs O2 O8 O11 O15 O19 O23 O27): \
-ONE goal (and (visited-object o2) (visited-object o8) (visited-object o11) (visited-object o15) \
-(visited-object o19) (visited-object o23) (visited-object o27)), constraints \
-[{predicate: 'use-robots', symbols: ['euclid', 'hamilton']}]. NOT two goals, one per robot, \
-and NOT visited-object-by for every chair.
-- "split the 4 among both": the same kind of ONE goal over those 4 with use-robots \
-euclid + hamilton; the planner does the split. Do not divide them yourself.
-- "Hamilton, go to O21. Gauss, inspect O26": (and (visited-object-by hamilton o21) \
-(inspected-by gauss o26)).
-- then "also have hamilton visit O30": (and (visited-object-by hamilton o21) \
-(inspected-by gauss o26) (visited-object-by hamilton o30)).
-- "Move O120 to place t11": (object-in-place o120 t11). "Have euclid move O58 to t1253": \
-(object-placed-by euclid o58 t1253).
+# The chat's planning knowledge -- the team goal rules (who does what), the PDDL
+# domain with its constraints, the in-context examples, and the scene graph and
+# Cypher descriptions -- is heracles_agents' (heracles_agents.prompts), the same
+# text its plan-repair chat (examples/chatdsg_repair) uses, so the two cannot
+# drift apart. The console keeps only its own mechanics (CONSOLE_GOAL_NOTES).
+# Without heracles_agents, PDDL goals are off: there is no embedded copy.
+# heracles_agents' tool and parameter names -> the console's
+GOAL_PROMPT_NAMES = {
+    "send_pddl_goal_with_constraints": "propose_goal",
+    "run_cypher_query": "run_cypher",
+    "pddl_goal_string": "pddl_goal",
+    "constraints_json": "constraints",
+}
+GOAL_ENGINES = ("fast_downward", "grstaps")
+CONSOLE_GOAL_NOTES = """\
+PDDL GOALS IN THIS CONSOLE:
+- propose_goal with kind='pddl' is this console's send tool. It does not send: the operator \
+sees a card and approves it. So call it once per request, with the whole goal, and do not ask \
+for a confirmation in text first.
+- Before a card is made, the goal is checked against the map. "NOT PROPOSED: ..." means it \
+names a robot, object, region or id the map does not have (or it is a second goal in one \
+reply): fix the goal and call propose_goal again; ask the operator only when you cannot \
+fix it yourself (e.g. a robot name that is not in the fleet). Never resend it unchanged.
+- constraints are objects {predicate, symbols}: {predicate: 'use-robots', symbols: \
+['euclid', 'hamilton']}, {predicate: 'forbidden-poi', symbols: ['o14']}, {predicate: \
+'forbidden-edge', symbols: ['t1', 't2']} (the rules above write [["use-robots", ...]] / \
+(use-robots euclid hamilton) for the same thing).
+- The selected robot is the UI's choice, not the operator's assignment: work the operator \
+gives no robot stays robot-free even when a robot is selected, and the selected robot's \
+position is no reason to give it a task. The console sends the goal through the selected \
+robot; the goal manager plans the whole team either way.
+- engine: Fast Downward (default) plans every robot at once and allocates the tasks. \
+engine='grstaps' (GRSTAPS-X, only when the robots run it) suits larger allocation problems \
+(many targets, several robots) and orderings (before), but takes no or / at-* / holding / \
+use-robots. The rules above are for <engine>, <engine_why>; propose PDDL goals with \
+engine='<engine>' unless the operator asks for the other engine.
+- "Goals sent from this console" below lists the last goals: when the operator adds a task, \
+re-send the tasks of the last one that are still wanted.
 """
+
+
+def load_goal_prompts():
+    """``(heracles_agents.prompts, scene_graph_edit.goal_problems, None)``, or
+    ``(None, None, why)`` when heracles_agents is not importable."""
+    try:
+        from heracles_agents import prompts
+        from heracles_agents.scene_graph_edit import goal_problems
+    except Exception as e:  # noqa: BLE001 — any import failure turns PDDL goals off
+        return (
+            None,
+            None,
+            f"heracles_agents is not importable ({type(e).__name__}: {e})",
+        )
+    return prompts, goal_problems, None
+
+
+def goal_constraints_json(constraints) -> str:
+    """Console constraints -> heracles_agents' constraints_json ([[predicate, *symbols]])."""
+    from .ros_bridge import normalize_constraints
+
+    return json.dumps(
+        [[c["predicate"], *c["symbols"]] for c in normalize_constraints(constraints)]
+    )
 
 
 def price_for(model: str) -> tuple[float, float]:
@@ -344,6 +347,17 @@ class ChatService:
             getattr(settings, "llm_usage_path", "~/.adt4_console/llm_usage.json"),
             getattr(settings, "llm_budget_usd", 10.0),
         )
+        # heracles_agents' goal rules and goal check; without it PDDL goals are off
+        self.goal_prompts, self.goal_check, self.goal_prompts_error = (
+            load_goal_prompts()
+        )
+        if self.goal_prompts_error:
+            log.error(
+                "PDDL goals are OFF in the chat: %s. The chat's goal rules come only from "
+                "heracles_agents (heracles_agents.prompts): build heracles_agents in this "
+                "workspace and restart the console.",
+                self.goal_prompts_error,
+            )
 
     # ---------------------------------------------------------------- helpers
     def _default_src(self, src: str | None) -> str | None:
@@ -423,6 +437,8 @@ class ChatService:
             "model": self.model(),
             "models": self.models(),
             "reasoning_levels": list(REASONING_LEVELS),
+            # the chat's planner toggle: the engines and whether the base runs each
+            "engines": self.chat_engines(),
             "budget_usd": self.ledger.budget_usd,
             **self.ledger.data,
         }
@@ -457,6 +473,7 @@ class ChatService:
         model: str | None = None,
         mission_ctx: dict | None = None,
         reasoning: str | None = None,
+        engine: str | None = None,
     ):
         """One chat turn.  ``history``: the transcript items of earlier turns
         (the client keeps them; each turn ends with a ``transcript`` event
@@ -476,6 +493,8 @@ class ChatService:
         self._ctx.value = mission_ctx if self.missions is not None else None
         # GPT-5 / 6 reasoning effort from the picker (REASONING_LEVELS; None / "fast": the lowest)
         self._ctx.reasoning = reasoning if reasoning in REASONING_LEVELS else None
+        # the chat's planner toggle: the engine of the PDDL goals proposed this turn
+        self._ctx.engine = engine if engine in GOAL_ENGINES else None
         history = clean_history(history)
         self._ctx.pddl_goals = []  # PDDL goals proposed this turn (one team goal per request)
         self._ctx.history = (
@@ -671,26 +690,25 @@ class ChatService:
         "description": "Propose a goal for the operator to approve and send. kind='pddl' "
         "(preferred) sends pddl_goal ONCE to the plan-repair goal manager, which plans the WHOLE "
         "TEAM at once: a new goal replaces every robot's plan, so call this once per request "
-        "with one goal holding every robot's tasks (never one goal per robot). E.g. "
-        "'(and (visited-object o12) (visited-object o7))' (lower case, no parentheses in "
-        "symbols; robot-free tasks: the planner picks the robot); name who does what only when "
-        "the operator says so, with the -by forms, e.g. "
-        "'(and (visited-object-by hamilton o12) (inspected-by euclid o7))'; limit the team with "
-        "{predicate: 'use-robots', symbols: ['euclid', 'hamilton']} (\"both robots\", \"only "
-        "euclid\"; Fast Downward only); (at-place r t40) ends robot r there; (object-in-place o4 t598) "
-        "moves o4 to place t598 (a Spot with an arm picks it up, or drags it when it is heavy: bags, "
-        "sandbags, boxes, trash cans; a husky has no arm and never picks or drags -- check the fleet "
-        "roster for each robot's platform); (holding euclid o1) just picks o1 up with euclid (no "
-        "destination: ask for a place only when the operator wants the object moved or put "
-        "down); optional constraints "
-        "keep the planner away from places or edges: "
-        "{predicate: 'forbidden-poi', symbols: ['o14']} or {predicate: 'forbidden-edge', "
+        "with one goal holding every robot's tasks (never one goal per robot). Who does what "
+        "follows TEAM GOALS in the system prompt: robot-free forms such as "
+        "'(and (visited-object o12) (visited-object o7))' (lower case, no parentheses in symbols) "
+        "unless the operator names the robot, then the -by forms; use-robots limits the team "
+        "(Fast Downward only). (object-in-place o4 t598) moves o4 to place t598 (a Spot with an "
+        "arm picks it up, or drags it when it is heavy: bags, sandbags, boxes, trash cans; a husky "
+        "has no arm and never picks or drags -- check the fleet roster for each robot's platform); "
+        "(holding euclid o1) just picks o1 up with euclid (no destination: ask for a place only "
+        "when the operator wants the object moved or put down). Constraints: "
+        "{predicate: 'use-robots', symbols: ['euclid', 'hamilton']}, "
+        "{predicate: 'forbidden-poi', symbols: ['o14']}, {predicate: 'forbidden-edge', "
         "symbols: ['p1', 'p2']}. engine='grstaps' (GRSTAPS-X, when the robots run it) also takes "
         "{predicate: 'before', symbols: ['o4', 'o8']} (o4 done before o8), joint inspections "
         "(safe o4), relocation (object-in-place o4 t598) and map regions -- (visited-region r3) is one "
         "visit in r3's core, (explored-region r3) covers r3 at waypoints about 8 m apart, with -by "
-        "forms -- and returns a timed schedule; it does not take or / at-* / holding, nor a drawn "
-        "mission area (area1: those are planned in the mission planner). kind='goto' / 'tsp' visit node symbols (points) in order / in "
+        "forms -- and returns a timed schedule; it does not take or / at-* / holding / use-robots, "
+        "nor a drawn mission area (area1: those are planned in the mission planner). The goal is "
+        "checked against the map first: an unknown robot, object, region or id comes back as "
+        "NOT PROPOSED; fix the goal. kind='goto' / 'tsp' visit node symbols (points) in order / in "
         "the best order. kind='language' passes a command to the robot's language planner: use it "
         "only for what PDDL cannot express (visit, inspect, pick up / holding, place and drag are "
         "PDDL).",
@@ -713,7 +731,12 @@ class ChatService:
                         "properties": {
                             "predicate": {
                                 "type": "string",
-                                "enum": ["forbidden-poi", "forbidden-edge", "before", "use-robots"],
+                                "enum": [
+                                    "forbidden-poi",
+                                    "forbidden-edge",
+                                    "before",
+                                    "use-robots",
+                                ],
                             },
                             "symbols": {"type": "array", "items": {"type": "string"}},
                         },
@@ -838,14 +861,98 @@ class ChatService:
             return None
 
     # ---------------------------------------------------------------- shared
-    def _system(self, src, robot) -> str:
-        csrc = self._cypher_src(src)
+    def chat_engines(self) -> list[dict]:
+        """The chat's planner toggle: Fast Downward always; GRSTAPS-X only when the
+        base runs it (goal_manager forwards to it, or a GRSTAPS-X plugin is up)."""
+        from .ros_bridge import NO_GRSTAPS
+
+        fd = {
+            "id": "fast_downward",
+            "label": "Fast Downward",
+            "available": True,
+            "reason": None,
+        }
+        ros = self.ros
+        if ros is None or not getattr(ros, "available", False):
+            why = "ROS is not running on this console, so it cannot see a GRSTAPS-X planner"
+        else:
+            try:
+                running = (
+                    ros.goal_manager_engine() == "grstaps"
+                    or ros.find_plugin("grstaps") is not None
+                )
+            except Exception:  # noqa: BLE001 — a ROS graph query; unknown = not offered
+                running = False
+            why = None if running else NO_GRSTAPS
+        gr = {
+            "id": "grstaps",
+            "label": "GRSTAPS-X",
+            "available": why is None,
+            "reason": why,
+        }
+        return [fd, gr]
+
+    def _chosen_engine(self) -> str | None:
+        """The engine the operator picked in the chat's planner toggle this turn."""
+        return getattr(self._ctx, "engine", None)
+
+    def _goal_engine(self) -> str:
+        """The engine whose goal rules go in the prompt: the chat's planner toggle,
+        else the one the goal manager runs; Fast Downward when unknown."""
+        chosen = self._chosen_engine()
+        if chosen in GOAL_ENGINES:
+            return chosen
+        ros = self.ros
+        if ros is None or not getattr(ros, "available", False):
+            return "fast_downward"
+        try:
+            engine = ros.goal_manager_engine()
+        except Exception:  # noqa: BLE001 — a ROS graph query; unknown is fine
+            engine = None
+        return engine if engine in GOAL_ENGINES else "fast_downward"
+
+    def _goal_text(self, cypher: bool) -> str:
+        """The PDDL goal rules, domain and examples (heracles_agents.prompts) and the
+        console's own goal mechanics."""
+        if self.goal_prompts is None:
+            return (
+                f"PDDL GOALS ARE OFF in this console: {self.goal_prompts_error}. Do not "
+                "propose kind='pddl' goals; tell the operator that PDDL goals need "
+                "heracles_agents installed with the console. goto / tsp / language goals work."
+            )
+        engine = self._goal_engine()
+        text = self.goal_prompts.repair_goal_prompt(engine, names=GOAL_PROMPT_NAMES)
+        why = (
+            "the planner the operator selected in the chat"
+            if self._chosen_engine() in GOAL_ENGINES
+            else "the engine the goal manager runs now"
+        )
+        notes = CONSOLE_GOAL_NOTES.replace("<engine_why>", why).replace(
+            "<engine>", engine
+        )
+        if not cypher:
+            notes += ("- No Neo4j database is connected: look ids up with find_objects; the "
+                      "Cypher queries above do not apply.\n")  # fmt: skip
+        return text + "\n\n" + notes
+
+    def _selected_text(self, robot) -> str:
+        """The selected robot, worded so it is not taken as a PDDL task assignment."""
+        if not robot:
+            return "Selected robot: none."
         pos = self._robot_pos(robot)
         where = (
-            f" Robot {robot} is at point({{x: {pos[0]:.2f}, y: {pos[1]:.2f}, z: {pos[2]:.2f}}})."
+            f" It is at point({{x: {pos[0]:.2f}, y: {pos[1]:.2f}, z: {pos[2]:.2f}}})."
             if pos
             else ""
         )
+        return (
+            f"Selected robot: {robot} (the UI's selection: the default for goto / tsp / language "
+            "goals and what 'the robot' or 'it' means; not a robot assignment for PDDL goals)."
+            + where
+        )
+
+    def _system(self, src, robot) -> str:
+        csrc = self._cypher_src(src)
         if csrc is None:
             return (
                 "You are the operator assistant of a multi-robot mapping console. Answer "
@@ -854,9 +961,9 @@ class ChatService:
                 "search_robot_images (the operator approves candidates). When the operator wants "
                 "a robot to go somewhere, call propose_goal (the operator approves goals in the "
                 "UI; never claim the robot is moving). "
-                f"Selected graph source: {src or 'none'}. Selected robot: {robot or 'none'}.{where}"
+                f"Selected graph source: {src or 'none'}. {self._selected_text(robot)}"
                 + "\n\n"
-                + TEAM_GOALS
+                + self._goal_text(cypher=False)
                 + self._roster_text(robot)
                 + (
                     "\n\n" + self._mission_prompt(src)
@@ -864,16 +971,23 @@ class ChatService:
                     else ""
                 )
             )
+        described = []
+        if self.goal_prompts is not None:
+            # heracles_agents' scene graph and Cypher descriptions, then the console's maps
+            described = [
+                self.goal_prompts.scene_graph_description("hierarchical"),
+                self.goal_prompts.cypher_interface_description(),
+            ]
         return "\n\n".join(
             [
                 cypher_tools.SYSTEM,
-                cypher_tools.SCENE_GRAPH,
-                cypher_tools.INTERFACE,
-                TEAM_GOALS,
+                *described,
+                cypher_tools.MAP_NOTES,
+                self._goal_text(cypher=True),
                 self._schema.text(csrc),
-                f"Database: {csrc.id}. Selected robot: {robot or 'none'}.{where}"
+                f"Database: {csrc.id}. {self._selected_text(robot)}"
                 + self._roster_text(robot),
-            ]
+            ]  # fmt: skip
             + [self._edit_note()]
             + ([self._mission_prompt(src)] if self._mission_ctx() is not None else [])
         )
@@ -979,13 +1093,15 @@ class ChatService:
                 body = {"goal": args.get("pddl_goal", "")}
                 if args.get("constraints"):
                     body["constraints"] = list(args["constraints"])
-                if args.get("engine"):
-                    body["engine"] = args["engine"]
+                # the model's engine, else the chat's planner toggle
+                engine = args.get("engine") or self._chosen_engine()
+                if engine:
+                    body["engine"] = engine
             else:
                 body = {"points": list(args.get("points") or [])}
             target = str(args.get("robot") or "").strip() or robot
             if kind == "pddl":
-                return self._propose_team_goal(body, target)
+                return self._propose_team_goal(body, target, src)
             goal = {"type": "goal", "kind": kind, "body": body, "robot": target}
             return [goal], {
                 "proposed": True,
@@ -1012,15 +1128,52 @@ class ChatService:
                                              getattr(self._ctx, "history", None))  # fmt: skip
         return [], {"error": f"unknown tool {name}"}
 
-    def _propose_team_goal(self, body, target):
+    def _goal_problems(self, goal: str, constraints, src) -> str:
+        """heracles_agents' goal check (scene_graph_edit.goal_problems) on the
+        planner's map: unknown robots, objects, places and regions, and constraint ids
+        the map lacks. "" when the goal is fine or cannot be checked here."""
+        if self.goal_check is None:
+            return ""
+        csrc = self._cypher_src(src)
+        if csrc is None:
+            return ""  # no Neo4j map to check against
+        try:
+            constraints_json = goal_constraints_json(constraints)
+        except ValueError as e:
+            return f"bad constraint: {e}."
+        from .sget import _Conf
+
+        try:
+            return str(
+                self.goal_check(goal, constraints_json, _Conf(csrc.uri, *csrc.creds))
+                or ""
+            )
+        except Exception as e:  # noqa: BLE001 — the map is unreachable: do not block the goal
+            log.warning("goal check skipped (%s): %s", csrc.id, e)
+            return ""
+
+    def _propose_team_goal(self, body, target, src=None):
         """A PDDL proposal: one team goal. It is sent once, through ``via`` (a robot
         it names, else the selected robot; goal_manager plans the whole team), and
-        the card lists the team it may use. A second PDDL goal in the same reply
-        would preempt the first when both are sent, so it is refused unless it
-        keeps every task of the first (then it replaces that proposal)."""
+        the card lists the team it may use. A goal heracles_agents' goal check finds
+        wrong on the map is not proposed: the error goes back to the model. A second
+        PDDL goal in the same reply would preempt the first when both are sent, so it
+        is refused unless it keeps every task of the first (then it replaces that
+        proposal)."""
         from .ros_bridge import TEAM_TASK, goal_named_robots, is_team_goal, use_robots
 
         goal = str(body.get("goal") or "")
+        if self.goal_prompts is None:
+            return [], {
+                "error": f"NOT PROPOSED: PDDL goals are off in this console ({self.goal_prompts_error}). "
+                "Tell the operator; goto / tsp / language goals still work."
+            }
+        problems = self._goal_problems(goal, body.get("constraints"), src)
+        if problems:
+            return [], {
+                "error": f"NOT PROPOSED: {problems} Fix the goal and call propose_goal again; "
+                "do not resend it unchanged. Ask the operator only when you cannot fix it."
+            }
         tasks = goal_atoms(goal)
         earlier = getattr(self._ctx, "pddl_goals", None)
         replaces = False
