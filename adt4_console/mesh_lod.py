@@ -1,6 +1,6 @@
 """Mesh tiles for the browser: levels of detail, packed and pre-gzipped (API.md §7).
 
-A graph source's mesh is split into ``tile_mesh`` tiles (fleetlink codec). For
+A graph source's mesh is split into ``tile_mesh`` tiles (codec.py). For
 the browser every tile is also served at coarser levels of detail (vertex
 clustering over all tiles at once, ``codec.decimate_tiles``: crack-free, same
 tile keys) and in the packed encoding (``codec.pack_tile``), gzipped once here
@@ -41,7 +41,7 @@ DISK_KEEP = 6  # cached meshes kept on disk (newest first)
 
 
 def _codec():
-    from fleetlink import codec
+    from . import codec
 
     return codec
 

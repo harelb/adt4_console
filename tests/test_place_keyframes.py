@@ -290,8 +290,7 @@ def test_index_cached_per_version(pclient):
 
 def test_neo4j_poses_from_agent_rows(place_run):
     """Neo4j sources resolve keyframe anchors with the Agent rows (center + rotation)."""
-    from fleetlink import codec
-
+    from adt4_console import codec
     from adt4_console.graph_service import Loaded, Neo4jSource, open_image_store
 
     run, fids = place_run

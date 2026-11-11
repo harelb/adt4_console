@@ -43,7 +43,8 @@ def main():
     args = ap.parse_args()
 
     import spark_dsg as dsg
-    from fleetlink import codec
+
+    from adt4_console import codec
 
     src = f"live:{args.robot}"
     snap = msgpack.unpackb(

@@ -7,10 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest run",
-    "fixtures": "PYTHONPATH=../../fleetlink python3 scripts/make_fixtures.py",
+    "fixtures": "PYTHONPATH=.. python3 scripts/make_fixtures.py",
     "mock": "node scripts/mock-server.mjs",
     "test:browser": "node tests/browser-smoke.mjs",
-    "fixtures:heavy": "HEAVY=1 PYTHONPATH=../../fleetlink python3 scripts/make_fixtures.py"
+    "fixtures:heavy": "HEAVY=1 PYTHONPATH=.. python3 scripts/make_fixtures.py"
   },
   "dependencies": {
     "@msgpack/msgpack": "3.1.2",

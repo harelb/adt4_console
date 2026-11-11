@@ -4,9 +4,8 @@ import gzip
 
 import msgpack
 import numpy as np
-from fleetlink import codec
 
-from adt4_console import mesh_lod
+from adt4_console import codec, mesh_lod
 
 
 def _mesh(n=40, step=0.1):

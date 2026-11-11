@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Generate wire-format fixtures for the frontend from the real fleetlink codec.
+"""Generate wire-format fixtures for the frontend from the console's codec (adt4_console/codec.py).
 
-Run (from adt4_console/frontend):
+Run (from frontend/, with numpy and msgpack):
 
-    PYTHONPATH=../../fleetlink python3 \
-        scripts/make_fixtures.py
+    PYTHONPATH=.. python3 scripts/make_fixtures.py
 
 Writes:
   tests/fixtures/graph_small.msgpack   + graph_small.json   (expected decoded values)
@@ -25,8 +24,9 @@ import random
 
 import msgpack
 import numpy as np
-from fleetlink import codec
-from fleetlink.codec import GraphDelta, GraphState, NodeRecord
+
+from adt4_console import codec
+from adt4_console.codec import GraphDelta, GraphState, NodeRecord
 
 HERE = pathlib.Path(__file__).resolve().parent
 FIX = HERE.parent / "tests" / "fixtures"

@@ -1,8 +1,8 @@
 import msgpack
 import numpy as np
 import pytest
-from fleetlink import codec
 
+from adt4_console import codec
 from adt4_console.plyio import _load_fast, load_ply
 from adt4_console.ros_bridge import goal_topic, load_plugins
 from adt4_console.routes.plan import omniplanner_points

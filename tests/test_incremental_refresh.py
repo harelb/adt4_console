@@ -31,8 +31,7 @@ class FakeHub:
 
 
 def test_version_frame_carries_the_delta_and_its_base(settings):
-    from fleetlink.codec import GraphDelta, NodeRecord
-
+    from adt4_console.codec import GraphDelta, NodeRecord
     from adt4_console.graph_service import GraphService, Neo4jSource
 
     hub = FakeHub()

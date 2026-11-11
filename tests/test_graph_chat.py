@@ -3,7 +3,8 @@ import json
 import msgpack
 import numpy as np
 import pytest
-from fleetlink import codec
+
+from adt4_console import codec
 
 from .conftest import make_client
 from .synthetic import JPEG, OBJECTS, build_run

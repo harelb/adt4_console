@@ -1,4 +1,4 @@
-"""Scene-graph sources (``file:``, ``neo4j:``, ``live:``) served in the fleetlink codec format.
+"""Scene-graph sources (``file:``, ``neo4j:``, ``live:``) served in the browser wire format (codec.py).
 
 Every source yields the same products — msgpack snapshot, mesh-tile manifest,
 tiles, node detail, images, trajectory — cached per source *version*:
@@ -41,7 +41,7 @@ class NotFound(Exception):
 
 
 def _codec():
-    from fleetlink import codec
+    from . import codec
 
     return codec
 

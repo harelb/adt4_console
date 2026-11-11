@@ -10,8 +10,8 @@ labels, labelspace and the region -> place parent edges.
 import msgpack
 import numpy as np
 import pytest
-from fleetlink import codec
 
+from adt4_console import codec
 from adt4_console.graph_service import FileSource, graph_stats
 
 dsg = pytest.importorskip("spark_dsg")

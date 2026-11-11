@@ -163,9 +163,9 @@ def test_index_cached_per_version(aclient):
 
 def test_live_records_without_rotations(tmp_path):
     """Live sources only know node positions: headings come from the frames' odometry."""
-    from fleetlink import codec
     from hydra_image_store import FrameKind, ImageStore, make_node_id
 
+    from adt4_console import codec
     from adt4_console.agent_images import AgentFrameIndex
 
     store_dir = tmp_path / "s"
@@ -196,8 +196,7 @@ def test_live_records_without_rotations(tmp_path):
 
 
 def test_neo4j_agent_and_subkeyframe_rows(tmp_path):
-    from fleetlink import codec
-
+    from adt4_console import codec
     from adt4_console.graph_service import Loaded, Neo4jSource
 
     img = tmp_path / "s.jpg"
