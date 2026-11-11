@@ -170,10 +170,12 @@ fix it yourself (e.g. a robot name that is not in the fleet). Never resend it un
 gives no robot stays robot-free even when a robot is selected, and the selected robot's \
 position is no reason to give it a task. The console sends the goal through the selected \
 robot; the goal manager plans the whole team either way.
-- engine: Fast Downward (default) plans every robot at once and allocates the tasks. \
-engine='grstaps' (GRSTAPS-X, only when the robots run it) suits larger allocation problems \
-(many targets, several robots) and orderings (before), but takes no or / at-* / holding / \
-use-robots. The rules above are for <engine>, <engine_why>; propose PDDL goals with \
+- engine: Fast Downward (default) plans every robot at once and allocates the tasks; it \
+takes or, at-place / at-object (that robot ends there), holding and use-robots. With \
+engine='grstaps' (GRSTAPS-X, only when the robots run it), the goal suits larger allocation \
+problems (many targets, several robots) and orderings (before), but GRSTAPS-X takes no or / \
+at-* / holding / use-robots: those need Fast Downward (engine='fast_downward', the planner \
+toggle). The rules above are for <engine>, <engine_why>; propose PDDL goals with \
 engine='<engine>' unless the operator asks for the other engine.
 - "Goals sent from this console" below lists the last goals: when the operator adds a task, \
 re-send the tasks of the last one that are still wanted.
@@ -698,15 +700,18 @@ class ChatService:
         "arm picks it up, or drags it when it is heavy: bags, sandbags, boxes, trash cans; a husky "
         "has no arm and never picks or drags -- check the fleet roster for each robot's platform); "
         "(holding euclid o1) just picks o1 up with euclid (no destination: ask for a place only "
-        "when the operator wants the object moved or put down). Constraints: "
+        "when the operator wants the object moved or put down); (at-place euclid t40) / "
+        "(at-object euclid o20): that robot ends there (Fast Downward). Constraints: "
         "{predicate: 'use-robots', symbols: ['euclid', 'hamilton']}, "
         "{predicate: 'forbidden-poi', symbols: ['o14']}, {predicate: 'forbidden-edge', "
-        "symbols: ['p1', 'p2']}. engine='grstaps' (GRSTAPS-X, when the robots run it) also takes "
+        "symbols: ['p1', 'p2']}. With engine='grstaps' (GRSTAPS-X, when the robots run it) the "
+        "goal may also use "
         "{predicate: 'before', symbols: ['o4', 'o8']} (o4 done before o8), joint inspections "
         "(safe o4), relocation (object-in-place o4 t598) and map regions -- (visited-region r3) is one "
         "visit in r3's core, (explored-region r3) covers r3 at waypoints about 8 m apart, with -by "
-        "forms -- and returns a timed schedule; it does not take or / at-* / holding / use-robots, "
-        "nor a drawn mission area (area1: those are planned in the mission planner). The goal is "
+        "forms -- and GRSTAPS-X returns a timed schedule; GRSTAPS-X takes no or / at-* / holding / "
+        "use-robots (use engine='fast_downward' for those), nor a drawn mission area (area1: "
+        "those are planned in the mission planner). The goal is "
         "checked against the map first: an unknown robot, object, region or id comes back as "
         "NOT PROPOSED; fix the goal. kind='goto' / 'tsp' visit node symbols (points) in order / in "
         "the best order. kind='language' passes a command to the robot's language planner: use it "
