@@ -139,6 +139,68 @@ TOOL_CONTENT_CHARS = 6000  # a tool result as kept in the transcript
 WRITE_TTL_S = 3600.0  # an unapproved write proposal expires
 
 
+# Team goals, ported from heracles_agents' tuned plan-repair prompt
+# (examples/chatdsg_repair/agent_prompt.yaml + pddl_domain_description_with_constraints
+# + pddl_in_context_examples_with_constraints): the planner (multi-robot Fast
+# Downward or GRSTAPS-X) allocates the work, the chat does not.
+TEAM_GOALS = """\
+PDDL GOALS ARE TEAM GOALS (plan repair):
+- One goal covers the whole team: the planner plans for every robot at once, and a new \
+goal replaces the whole team's current plan. So for one request call propose_goal ONCE \
+with ONE goal for all the robots. Never propose one goal per robot: the second one sent \
+preempts the first (e.g. (holding hamilton o1) sent, then (holding euclid o20) sent \
+separately, cancels hamilton's pick). Put every robot's tasks in one (and ...).
+- If the operator says WHICH robot does a task, the goal MUST name that robot: the -by \
+predicates (visited-object-by, visited-place-by, inspected-by, visited-region-by, \
+explored-region-by, and object-placed-by to move an object) or at-place / at-object / \
+holding. Robot name FIRST, then the target: (visited-object-by hamilton o21).
+- If the operator does NOT name a robot for a task, use the robot-free forms -- \
+(visited-object o), (visited-place t), (object-in-place o t) to move, (visited-region r), \
+(explored-region r) -- and let the planner allocate it (to look at / inspect an object with \
+no robot named, use (visited-object o); inspected-by needs a robot). Never pick the \
+robot yourself for unnamed work, not even "the nearest robot", and never split the \
+targets between robots yourself.
+- "both robots", "euclid and hamilton", "with A and B" (no per-task assignment): ONE goal \
+with the robot-free forms plus a use-robots constraint naming exactly those robots, \
+{predicate: 'use-robots', symbols: ['euclid', 'hamilton']}: only they act, and the \
+planner splits the work. "only X" / "just X": use-robots naming X. Leave use-robots out \
+when the operator does not limit the robots. use-robots needs Fast Downward: GRSTAPS-X \
+ignores it, so with engine='grstaps' bind robots with the -by forms instead.
+- Moving an object with no robot named: (object-in-place o t), never holding and never \
+object-placed-by. A robot named only for another part of the request does not make the \
+move its own: "hamilton looks at o58, and o12 should end up at t1253" is \
+(and (visited-object-by hamilton o58) (object-in-place o12 t1253)).
+- Picking up needs a robot: the domain has no robot-free holding. "each of hamilton and \
+euclid pick up a different cone": ONE goal. With Fast Downward and two robots / two \
+cones, let the planner choose who takes which with an or of both pairings: \
+(or (and (holding hamilton o1) (holding euclid o20)) (and (holding hamilton o20) (holding euclid o1))). \
+With more robots or objects, or engine='grstaps' (no or / holding), give each robot its \
+nearest cone (all different) and send them together: (and (holding hamilton o1) (holding euclid o20)).
+- A new goal replaces the old one. When the operator adds a task, re-send the tasks of the \
+last goal they still want done together with the new one, keeping each task's robot and \
+the constraints still wanted (use-robots, forbidden-*). Check "Goals sent from this \
+console" below for the last goal.
+- Engine: Fast Downward (default) plans every robot at once and allocates the tasks. \
+engine='grstaps' (GRSTAPS-X, only when the robots run it) suits larger allocation \
+problems (many targets, several robots) and orderings (before), but takes no or / at-* / \
+holding / use-robots.
+Examples (O(n) symbols shown to the operator; in goals lower case, no parentheses):
+- "Visit all the chairs with both euclid and hamilton" (chairs O2 O8 O11 O15 O19 O23 O27): \
+ONE goal (and (visited-object o2) (visited-object o8) (visited-object o11) (visited-object o15) \
+(visited-object o19) (visited-object o23) (visited-object o27)), constraints \
+[{predicate: 'use-robots', symbols: ['euclid', 'hamilton']}]. NOT two goals, one per robot, \
+and NOT visited-object-by for every chair.
+- "split the 4 among both": the same kind of ONE goal over those 4 with use-robots \
+euclid + hamilton; the planner does the split. Do not divide them yourself.
+- "Hamilton, go to O21. Gauss, inspect O26": (and (visited-object-by hamilton o21) \
+(inspected-by gauss o26)).
+- then "also have hamilton visit O30": (and (visited-object-by hamilton o21) \
+(inspected-by gauss o26) (visited-object-by hamilton o30)).
+- "Move O120 to place t11": (object-in-place o120 t11). "Have euclid move O58 to t1253": \
+(object-placed-by euclid o58 t1253).
+"""
+
+
 def price_for(model: str) -> tuple[float, float]:
     """Longest matching price-table prefix (dated snapshots share their family)."""
     best = None
@@ -415,6 +477,7 @@ class ChatService:
         # GPT-5 / 6 reasoning effort from the picker (REASONING_LEVELS; None / "fast": the lowest)
         self._ctx.reasoning = reasoning if reasoning in REASONING_LEVELS else None
         history = clean_history(history)
+        self._ctx.pddl_goals = []  # PDDL goals proposed this turn (one team goal per request)
         self._ctx.history = (
             history  # propose_mission: the request the thread started with
         )
@@ -605,12 +668,16 @@ class ChatService:
     }
     _T_PROPOSE_GOAL = {
         "name": "propose_goal",
-        "description": "Propose a robot goal for the operator to approve and send. kind='pddl' "
-        "(preferred) sends pddl_goal through the plan-repair goal manager, e.g. "
+        "description": "Propose a goal for the operator to approve and send. kind='pddl' "
+        "(preferred) sends pddl_goal ONCE to the plan-repair goal manager, which plans the WHOLE "
+        "TEAM at once: a new goal replaces every robot's plan, so call this once per request "
+        "with one goal holding every robot's tasks (never one goal per robot). E.g. "
         "'(and (visited-object o12) (visited-object o7))' (lower case, no parentheses in "
-        "symbols); with several robots, name who does what with the -by forms, e.g. "
-        "'(and (visited-object-by hamilton o12) (inspected-by euclid o7))' (unnamed tasks go to "
-        "whichever robot is closer); (at-place r t40) ends robot r there; (object-in-place o4 t598) "
+        "symbols; robot-free tasks: the planner picks the robot); name who does what only when "
+        "the operator says so, with the -by forms, e.g. "
+        "'(and (visited-object-by hamilton o12) (inspected-by euclid o7))'; limit the team with "
+        "{predicate: 'use-robots', symbols: ['euclid', 'hamilton']} (\"both robots\", \"only "
+        "euclid\"; Fast Downward only); (at-place r t40) ends robot r there; (object-in-place o4 t598) "
         "moves o4 to place t598 (a Spot with an arm picks it up, or drags it when it is heavy: bags, "
         "sandbags, boxes, trash cans; a husky has no arm and never picks or drags -- check the fleet "
         "roster for each robot's platform); (holding euclid o1) just picks o1 up with euclid (no "
@@ -633,7 +700,9 @@ class ChatService:
                 "kind": {"type": "string", "enum": ["pddl", "goto", "tsp", "language"]},
                 "robot": {
                     "type": "string",
-                    "description": "the robot to send; default: the selected robot",
+                    "description": "goto / tsp / language: the robot to send; default: the selected "
+                    "robot. Leave it out for pddl (a team goal: the robots are in the goal and "
+                    "use-robots)",
                 },
                 "pddl_goal": {"type": "string"},
                 "engine": {"type": "string", "enum": ["fast_downward", "grstaps"]},
@@ -644,7 +713,7 @@ class ChatService:
                         "properties": {
                             "predicate": {
                                 "type": "string",
-                                "enum": ["forbidden-poi", "forbidden-edge", "before"],
+                                "enum": ["forbidden-poi", "forbidden-edge", "before", "use-robots"],
                             },
                             "symbols": {"type": "array", "items": {"type": "string"}},
                         },
@@ -786,6 +855,8 @@ class ChatService:
                 "a robot to go somewhere, call propose_goal (the operator approves goals in the "
                 "UI; never claim the robot is moving). "
                 f"Selected graph source: {src or 'none'}. Selected robot: {robot or 'none'}.{where}"
+                + "\n\n"
+                + TEAM_GOALS
                 + self._roster_text(robot)
                 + (
                     "\n\n" + self._mission_prompt(src)
@@ -798,6 +869,7 @@ class ChatService:
                 cypher_tools.SYSTEM,
                 cypher_tools.SCENE_GRAPH,
                 cypher_tools.INTERFACE,
+                TEAM_GOALS,
                 self._schema.text(csrc),
                 f"Database: {csrc.id}. Selected robot: {robot or 'none'}.{where}"
                 + self._roster_text(robot),
@@ -912,6 +984,8 @@ class ChatService:
             else:
                 body = {"points": list(args.get("points") or [])}
             target = str(args.get("robot") or "").strip() or robot
+            if kind == "pddl":
+                return self._propose_team_goal(body, target)
             goal = {"type": "goal", "kind": kind, "body": body, "robot": target}
             return [goal], {
                 "proposed": True,
@@ -937,6 +1011,52 @@ class ChatService:
             return llm_planner.run_plan_tool(args, self._mission_ctx(), self.missions, src, message,
                                              getattr(self._ctx, "history", None))  # fmt: skip
         return [], {"error": f"unknown tool {name}"}
+
+    def _propose_team_goal(self, body, target):
+        """A PDDL proposal: one team goal. It is sent once, through ``via`` (a robot
+        it names, else the selected robot; goal_manager plans the whole team), and
+        the card lists the team it may use. A second PDDL goal in the same reply
+        would preempt the first when both are sent, so it is refused unless it
+        keeps every task of the first (then it replaces that proposal)."""
+        from .ros_bridge import TEAM_TASK, goal_named_robots, is_team_goal, use_robots
+
+        goal = str(body.get("goal") or "")
+        tasks = goal_atoms(goal)
+        earlier = getattr(self._ctx, "pddl_goals", None)
+        replaces = False
+        if earlier:
+            missing = sorted(goal_atoms(earlier[-1]) - tasks)
+            if missing:
+                return [], {
+                    "error": "NOT PROPOSED: this reply already proposed the goal "
+                    f"{earlier[-1]!r}. One goal covers the whole team and a second send replaces the "
+                    "first, so never propose one goal per robot. Call propose_goal once more with ONE "
+                    "goal that holds every task (both robots' tasks in one (and ...); use-robots for "
+                    f"'both robots'); it replaces the earlier proposal. Missing now: {' '.join(missing)}"
+                }
+            replaces = True
+        if earlier is not None:
+            earlier.append(goal)
+        named = goal_named_robots(goal)
+        allowed = use_robots(body.get("constraints"))
+        team = list(dict.fromkeys(allowed + named))
+        unnamed = bool(TEAM_TASK.search(goal)) and not allowed
+        if unnamed:
+            # robot-free tasks without use-robots: any robot of the fleet may get them
+            for r in fleet_roster(self.ros, self.live):
+                if r["robot"] not in team:
+                    team.append(r["robot"])
+        if team and target not in team:
+            target = (allowed or named or team)[0]
+        card = {"type": "goal", "kind": "pddl", "body": body, "robot": target}
+        if is_team_goal(goal, body.get("constraints")):
+            card["team"] = team
+        if replaces:
+            card["replaces"] = True
+        note = "The operator approves and sends it once, to the whole team."
+        if replaces:
+            note += " It replaces the goal proposed earlier in this reply."
+        return [card], {"proposed": True, "note": note, "team": team, "sent_through": target}
 
     def _show_images(self, symbols, src):
         """``images`` event (URLs the chat renders) + per-node counts for the model."""
@@ -1434,6 +1554,18 @@ def fleet_roster(ros, live) -> list[dict]:
         out.append({"robot": r, "platform": platform, "label": label, "can": can,
                     "online": online, "arm": platform == "spot"})  # fmt: skip
     return out
+
+
+_ATOM = re.compile(r"\(\s*([a-z][a-z0-9_-]*)((?:\s+[a-z0-9_?-]+)+)\s*\)")
+
+
+def goal_atoms(goal: str) -> set[str]:
+    """The ground predicates of a PDDL goal, normalized ("(visited-object o2)")."""
+    return {
+        f"({m.group(1)} {' '.join(m.group(2).split())})"
+        for m in _ATOM.finditer((goal or "").lower())
+        if m.group(1) not in ("and", "or", "not")
+    }
 
 
 def _clip(text: str, n: int = TOOL_CONTENT_CHARS) -> str:

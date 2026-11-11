@@ -449,8 +449,10 @@ def context_text(ctx: dict | None, bounds=None, regions=None) -> str:
         parts.append(
             "Auto-send is ON: the roster is exactly the robots that are online now, each starting at "
             "its live pose. A plan you make (plan_ground_mission, or a pddl propose_goal) is sent to "
-            "the robots at once, so plan only what the operator asked, name each robot with the -by "
-            "forms, and say in one line what will be sent."
+            "the robots at once, so plan only what the operator asked, as ONE goal for the whole team "
+            "(a second goal replaces the first): name a robot with the -by forms only where the "
+            "operator assigned it (unnamed work stays robot-free for the planner to allocate), and "
+            "say in one line what will be sent."
         )
     if roster:
         parts.append("Agent roster: " + json.dumps(roster, separators=(",", ":")))

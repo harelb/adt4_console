@@ -134,8 +134,11 @@ class RobotTrack:
 
 
 class Goal:
-    def __init__(self, gid, robot, robots, kind, via, summary, t, platforms):
+    def __init__(self, gid, robot, robots, kind, via, summary, t, platforms, team=False):
         self.id = gid
+        # a team goal: the planner allocates it across the fleet, so any robot's
+        # next plan belongs to it, not only the robots it names
+        self.team = team
         self.t = t
         self.robot = robot
         self.kind = kind
@@ -183,6 +186,7 @@ class Goal:
             "kind": self.kind,
             "via": self.via,
             "summary": self.summary,
+            "team": self.team,
             "planner": self.planner,
             "planner_error": self.planner_error,
             "planner_t": self.planner_t,
@@ -215,13 +219,15 @@ class GoalTracker:
             return [g.view() for g in list(self._goals.values())[-n:]]
 
     # ------------------------------------------------------------- feeding
-    def goal_sent(self, robot, robots=None, kind="", via=None, summary="", t=None, platforms=None, direct=False) -> str:
+    def goal_sent(self, robot, robots=None, kind="", via=None, summary="", t=None, platforms=None, direct=False,
+                  team=False) -> str:
         """Register a goal before it is published; ``direct``: the console
-        publishes the plan itself (no planner, no plan_status)."""
+        publishes the plan itself (no planner, no plan_status); ``team``: the
+        planner allocates it across the fleet (any robot's plan joins it)."""
         t = self.clock() if t is None else t
         with self._lock:
             gid = f"g{int(t)}-{next(self._ids)}"
-            g = Goal(gid, robot, list(dict.fromkeys(robots or [robot])), kind, via, summary, t, platforms or {})
+            g = Goal(gid, robot, list(dict.fromkeys(robots or [robot])), kind, via, summary, t, platforms or {}, team)
             if direct:
                 g.planner = "direct"
             self._goals[gid] = g
@@ -303,6 +309,12 @@ class GoalTracker:
             rt = g.robots.get(robot)
             if g.planner in ("sent", "direct") and rt is not None and rt.plan_id is None:
                 return g
+        # a team goal still planning: the planner may give the work to any robot
+        newest = live[-1] if live else None
+        if newest is not None and newest.team and newest.planner == "sent":
+            rt = newest.robots.get(robot)
+            if rt is None or rt.plan_id is None:
+                return newest
         for g in reversed(live):
             if g.planner == "sent" and robot not in g.robots and g.planner_t is not None and t - g.planner_t < JOINT_PLAN_S:
                 return g

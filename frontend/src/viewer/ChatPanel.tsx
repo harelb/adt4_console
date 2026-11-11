@@ -20,7 +20,7 @@ import {GoalImages} from "./GoalImages";
 import {GoalStatus} from "./GoalStatus";
 import {NOTABLE, trackNote, useGoalTracks} from "../lib/goalTrack";
 import {DirectRouteButtons} from "./DirectRoute";
-import {autoRoster, onlineRobots, planAutoSend, type AutoRobot, type Fleet, type Skipped} from "../lib/autoSend";
+import {autoRoster, onlineRobots, planAutoSend, sendLabel, type AutoRobot, type Fleet, type Skipped} from "../lib/autoSend";
 import {setAutoSend, useAutoSend} from "../stores/autoSend";
 import {useRobots} from "../stores/robots";
 import {useFleet} from "../stores/fleet";
@@ -38,7 +38,7 @@ export type ChatItem =
   | {type: "user"; text: string; note?: boolean}
   | {type: "text"; text: string}
   | {type: "tool"; name: string; args: unknown; result: unknown}
-  | {type: "goal"; kind: string; body: Record<string, unknown>; robot?: string | null; sent?: {tone: SendTone; text: string}; track?: string}
+  | {type: "goal"; kind: string; body: Record<string, unknown>; robot?: string | null; team?: string[] | null; replaces?: boolean; superseded?: boolean; sent?: {tone: SendTone; text: string}; track?: string}
   | {type: "error"; text: string}
   | MissionCardItem
   | CypherWrite
@@ -163,7 +163,14 @@ export function toChatItem(o: Record<string, unknown>): ChatItem | null {
     case "tool":
       return {type: "tool", name: String(o.name), args: o.args, result: o.result};
     case "goal":
-      return {type: "goal", kind: String(o.kind), body: (o.body as Record<string, unknown>) ?? {}, robot: typeof o.robot === "string" ? o.robot : null};
+      return {
+        type: "goal",
+        kind: String(o.kind),
+        body: (o.body as Record<string, unknown>) ?? {},
+        robot: typeof o.robot === "string" ? o.robot : null,
+        team: Array.isArray(o.team) ? o.team.map(String) : null,
+        replaces: o.replaces === true,
+      };
     case "error":
       return {type: "error", text: String(o.text ?? "error")};
     case "mission":
@@ -407,6 +414,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
     abort.current = ctl;
     let gotTranscript = false;
     const toSend: AutoQueued[] = [];
+    let lastGoal: ChatItem | null = null;
     try {
       const headers: Record<string, string> = {"Content-Type": "application/json"};
       const t = getToken();
@@ -448,6 +456,13 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           return;
         }
         const it = toChatItem(o);
+        if (it?.type === "goal" && it.replaces) {
+          // one team goal per request: the combined goal replaces this reply's earlier one
+          const prev: (ChatItem | null | undefined)[] = [lastGoal, ...toSend.filter(q => q.card).map(q => q.card)];
+          toSend.splice(0, toSend.length, ...toSend.filter(q => !q.card));
+          setItems(cur => cur.map(c => (c.type === "goal" && !c.sent && prev.includes(c) ? {...c, superseded: true} : c)));
+        }
+        if (it?.type === "goal" && it.kind === "pddl") lastGoal = it;
         if (it) push(it);
         if (auto && it) {
           if (it.type === "goal" && it.kind === "pddl" && typeof it.body.goal === "string")
@@ -613,7 +628,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
    *  straight goto), through one robot it names (-by forms cover the others). */
   const autoSendGoal = async (q: AutoQueued) => {
     const {online, skipped} = autoSendRobots(q.engine);
-    const plan = planAutoSend(q.goal, online, skipped);
+    const plan = planAutoSend(q.goal, online, skipped, q.constraints);
     const named = plan.robots.map(n => online.find(r => r.name === n) ?? {name: n, kind: "spot"});
     const card: AutoSendItem = {type: "autosend", goal: q.goal, engine: q.engine, via: plan.via, robots: named, skipped: plan.skipped, blocked: plan.blocked};
     if (!plan.via) {
@@ -652,7 +667,8 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
       // a PDDL goal goes to the engine the card shows (GRSTAPS-X: its plugin or goal_manager)
       const engine = it.kind === "pddl" ? ((it.body as {engine?: string}).engine ?? useEngines.getState().engine) : undefined;
       const r = await sendGoal(robot, it.kind, engine === "grstaps" ? {...it.body, engine} : it.body);
-      patch(idx, c => ({...(c as typeof it), sent: goalSendMessage(`Sent to ${robot}`, r), track: r?.track ?? (c as typeof it).track}));
+      const to = it.team ? `Sent once to ${sendLabel(robot, it.team)} through ${robot}` : `Sent to ${robot}`;
+      patch(idx, c => ({...(c as typeof it), sent: goalSendMessage(to, r), track: r?.track ?? (c as typeof it).track}));
     } catch (e) {
       patch(idx, c => ({...(c as typeof it), sent: {tone: "err", text: `failed: ${errorText(e)}`}}));
     }
@@ -1118,11 +1134,18 @@ function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"
               {pv?.busy ? "planning…" : shown ? "Hide preview" : "Preview"}
             </button>
           )}
-          <button className="btn btn-sm btn-primary" disabled={Boolean(sent && sent.tone !== "err")} onClick={onSend}>
-            Send to {robot ?? "robot"}
+          <button
+            className="btn btn-sm btn-primary"
+            disabled={Boolean(it.superseded) || Boolean(sent && sent.tone !== "err")}
+            onClick={onSend}
+            title={it.team ? "One goal for the whole team: the planner plans every robot at once and allocates the tasks" : undefined}
+            data-testid="goal-send"
+          >
+            Send to {sendLabel(robot, it.team)}
           </button>
         </span>
       </div>
+      {it.superseded && <div className="small tone-warn">replaced by the combined goal below (one goal covers the whole team)</div>}
       {b.goal && <pre className="mono small">{b.goal}</pre>}
       {b.points && <div className="mono small">{b.points.join(" → ")}</div>}
       {b.command && <div className="small">“{b.command}”</div>}

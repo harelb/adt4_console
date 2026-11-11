@@ -79,8 +79,13 @@ CONSTRAINT_PREDICATES = (
     "forbidden-poi",
     "forbidden-edge",
     "before",
+    "use-robots",
 )  # before: GRSTAPS-X only
-CONSTRAINT_ARITY = {"forbidden-poi": 1, "forbidden-edge": 2, "before": 2}
+# use-robots takes one or more robot names (None: at least one)
+CONSTRAINT_ARITY = {"forbidden-poi": 1, "forbidden-edge": 2, "before": 2, "use-robots": None}
+# per goal, never in a robot's standing set: before orders this goal's targets,
+# use-robots limits this goal to the robots it names (omniplanner multi-robot FD)
+PER_GOAL_CONSTRAINTS = ("before", "use-robots")
 
 
 def normalize_constraints(facts) -> list[dict]:
@@ -101,7 +106,9 @@ def normalize_constraints(facts) -> list[dict]:
                 f"unknown constraint predicate {pred!r} (use {', '.join(CONSTRAINT_PREDICATES)})"
             )
         want = CONSTRAINT_ARITY[pred]
-        if len(syms) != want:
+        if want is None and not syms:
+            raise ValueError(f"{pred} takes at least one robot name")
+        if want is not None and len(syms) != want:
             raise ValueError(f"{pred} takes {want} symbol(s), got {len(syms)}")
         syms = [str(x).strip().replace("(", "").replace(")", "").lower() for x in syms]
         if not all(syms):
@@ -477,6 +484,47 @@ def lease_from_guards(msg) -> dict:
 # re-send an unchanged lease view this often (the UI ages it out without one)
 # a PDDL predicate naming the robot that must achieve it: (visited-poi-by hamilton t1)
 GOAL_BY_ROBOT = re.compile(r"-by\s+([A-Za-z_][A-Za-z0-9_]*)")
+# predicates whose first argument is a robot (besides the -by forms)
+GOAL_ROBOT_ARG = re.compile(r"\(\s*(?:holding|at-place|at-object|at-poi|in-region)\s+([A-Za-z_][A-Za-z0-9_]*)")
+# robot-free tasks: any robot may do them, the planner allocates
+TEAM_TASK = re.compile(r"\(\s*(?:visited-(?:place|object|poi|region)|explored-region|safe|object-in-place)\s")
+
+
+def use_robots(constraints) -> list[str]:
+    """The robots a goal's use-robots constraints name, in order."""
+    out: list[str] = []
+    for f in constraints or []:
+        if isinstance(f, dict):
+            pred, syms = f.get("predicate"), f.get("symbols") or []
+        elif isinstance(f, (list, tuple)) and f:
+            pred, syms = f[0], f[1:]
+        else:
+            continue
+        if str(pred).strip().lower() == "use-robots":
+            for x in syms:
+                x = str(x).strip().lower()
+                if x and x not in out:
+                    out.append(x)
+    return out
+
+
+def goal_named_robots(goal: str) -> list[str]:
+    """Robots a PDDL goal names: -by forms, holding / at-* first arguments."""
+    out: list[str] = []
+    text = goal or ""
+    for m in sorted([*GOAL_BY_ROBOT.finditer(text), *GOAL_ROBOT_ARG.finditer(text)], key=lambda m: m.start()):
+        name = m.group(1).lower()
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def is_team_goal(goal: str, constraints=None) -> bool:
+    """A PDDL goal the planner allocates across the fleet: it has a robot-free
+    task, or names several robots / use-robots."""
+    return bool(TEAM_TASK.search(goal or "")) or bool(use_robots(constraints)) or len(goal_named_robots(goal)) > 1
+
+
 LEASE_REPUBLISH_S = 5.0
 TAKE_LEASE_TIMEOUT_S = 20.0
 # phoenix Stop / Resume (/<robot>/toggle_manual_mode); the relay times out at 10 s
@@ -1261,9 +1309,14 @@ class RosBridge:
 
     def goal_robots(self, robot, fields) -> list[str]:
         """The robots a goal commands: ``robot`` plus every robot a PDDL goal names
-        with a ``-by`` predicate (``(visited-poi-by hamilton t1)``)."""
+        (``(visited-poi-by hamilton t1)``, ``(holding euclid o1)``) and the robots
+        its use-robots constraint lets act."""
         out = [robot]
-        for name in GOAL_BY_ROBOT.findall(json.dumps(fields, default=str)):
+        names = list(GOAL_BY_ROBOT.findall(json.dumps(fields, default=str)))
+        goal = (fields.get("goal") or {}).get("pddl_goal") if isinstance(fields.get("goal"), dict) else fields.get("pddl_goal")
+        names += goal_named_robots(goal if isinstance(goal, str) else "")
+        names += use_robots(fields.get("constraints"))
+        for name in names:
             if name not in out:
                 out.append(name)
         return out
@@ -1308,9 +1361,11 @@ class RosBridge:
                     fleetlink[f"fleetlink_{r}"] = self.link_status(r) is not None
                 except Exception:  # noqa: BLE001
                     fleetlink[f"fleetlink_{r}"] = False
+            goal = (fields.get("goal") or {}).get("pddl_goal") if isinstance(fields.get("goal"), dict) else fields.get("pddl_goal")
+            team = kind == "pddl" and is_team_goal(goal if isinstance(goal, str) else "", fields.get("constraints"))
             return self.goals.goal_sent(
                 robot, robots, kind, via=(extra or {}).get("via"), summary=goal_summary(fields),
-                platforms=fleetlink, direct=kind == "direct_path",
+                platforms=fleetlink, direct=kind == "direct_path", team=team,
             )  # fmt: skip
         except Exception:  # noqa: BLE001
             log.exception("goal tracking")
@@ -1371,6 +1426,8 @@ class RosBridge:
             raise ValueError(
                 "before orders one goal's targets: send it with the goal (GRSTAPS-X), not as a standing constraint"
             )
+        if any(f["predicate"] == "use-robots" for f in new):
+            raise ValueError("use-robots names the robots of one goal: send it with the goal, not as a standing constraint")
         with self._lock:
             cur = self._plan[robot].constraints
             for f in new:
@@ -1457,24 +1514,28 @@ class RosBridge:
         """
         if engine == "grstaps":
             return self._send_grstaps(robot, goal, constraints, route)
-        if any(f["predicate"] == "before" for f in normalize_constraints(constraints)):
+        facts = normalize_constraints(constraints)
+        if any(f["predicate"] == "before" for f in facts):
             raise ValueError(
                 "before (ordering) needs GRSTAPS-X: send it with engine grstaps"
             )
+        # use-robots goes with this goal only (the team it may use)
+        per_goal = [f for f in facts if f["predicate"] in PER_GOAL_CONSTRAINTS]
+        standing = [f for f in facts if f["predicate"] not in PER_GOAL_CONSTRAINTS]
         active = (
-            self.add_constraints(robot, constraints)
-            if constraints
+            self.add_constraints(robot, standing)
+            if standing
             else self.constraints(robot)
         )
         gm = self.goal_manager_subscribers() if route != "planner" else 0
         if gm > 0:
             fields = {
                 "goal": {"robot_id": robot, "pddl_goal": goal},
-                "constraints": active,
+                "constraints": active + per_goal,
             }
             return self._send(
                 robot, "pddl", self.commanded_goal_topic(), COMMANDED_GOAL_TYPE, fields,
-                {"via": "goal_manager", "constraints": active},
+                {"via": "goal_manager", "constraints": active + per_goal},
             )  # fmt: skip
         if route == "goal_manager":
             raise LookupError(NO_GOAL_MANAGER_WARNING.split(";")[0])
@@ -1484,10 +1545,10 @@ class RosBridge:
         warning = None
         if route != "planner":
             warning = NO_GOAL_MANAGER_WARNING
-        if active:
+        if active or per_goal:
             warning = (
                 warning + "; " if warning else ""
-            ) + f"{len(active)} constraint(s) NOT applied"
+            ) + f"{len(active) + len(per_goal)} constraint(s) NOT applied"
         return self._send(
             robot, "pddl", goal_topic(self.planner_ns, p), p["msg_type"],
             {"robot_id": robot, "pddl_goal": goal},
@@ -1498,17 +1559,20 @@ class RosBridge:
         """GRSTAPS-X: ``before`` is per goal (an ordering of this goal's targets),
         so it never joins the robot's persistent constraint set."""
         facts = normalize_constraints(constraints)
-        order = [f for f in facts if f["predicate"] == "before"]
-        rest = [f for f in facts if f["predicate"] != "before"]
+        order = [f for f in facts if f["predicate"] in PER_GOAL_CONSTRAINTS]
+        rest = [f for f in facts if f["predicate"] not in PER_GOAL_CONSTRAINTS]
         active = self.add_constraints(robot, rest) if rest else self.constraints(robot)
         fields = {
             "goal": {"robot_id": robot, "pddl_goal": goal},
             "constraints": active + order,
         }
+        # GRSTAPS-X plans every robot with a pose; only -by forms bind a robot
+        note = "GRSTAPS-X does not apply use-robots: it may give tasks to any robot" if use_robots(order) else None
         if route != "planner" and self.goal_manager_subscribers() > 0:
             if self.goal_manager_engine() == "grstaps":
                 return self._send(robot, "pddl", self.commanded_goal_topic(), COMMANDED_GOAL_TYPE, fields,
-                                  {"via": "goal_manager", "engine": "grstaps", "constraints": active + order})  # fmt: skip
+                                  {"via": "goal_manager", "engine": "grstaps", "constraints": active + order,
+                                   "warning": note})  # fmt: skip
             if route == "goal_manager":
                 raise LookupError(
                     "goal_manager forwards to Fast Downward, not GRSTAPS-X"
@@ -1520,6 +1584,8 @@ class RosBridge:
             raise LookupError(NO_GRSTAPS)
         warning = ("sent straight to GRSTAPS-X: goal_manager (plan repair) is not driving it, so a goal "
                    "the running plan already covers is planned again")  # fmt: skip
+        if note:
+            warning += "; " + note
         return self._send(robot, "pddl", goal_topic(self.planner_ns, p), p["msg_type"], fields,
                           {"via": "planner", "engine": "grstaps", "warning": warning,
                            "constraints": active + order, "plugin": p["name"]})  # fmt: skip
