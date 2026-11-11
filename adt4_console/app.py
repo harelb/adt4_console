@@ -30,6 +30,7 @@ from .manipulation_service import (
     ManipulationApprovalService,
     ros_response_publisher,
 )
+from .optional import FeatureUnavailable
 from .ros_bridge import RosBridge, RosUnavailable
 from .settings import Settings
 from .teleop_service import TeleopService
@@ -347,6 +348,22 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
     @app.exception_handler(RosUnavailable)
     async def _ros_unavailable(request: Request, exc: RosUnavailable):
         return JSONResponse({"detail": f"ROS unavailable: {exc}"}, status_code=503)
+
+    @app.exception_handler(FeatureUnavailable)
+    async def _feature_unavailable(request: Request, exc: FeatureUnavailable):
+        return JSONResponse(
+            {"detail": exc.detail, "feature": exc.feature}, status_code=503
+        )
+
+    @app.exception_handler(ImportError)
+    async def _package_missing(request: Request, exc: ImportError):
+        # a route's optional package (optional.FEATURES) is not in this workspace
+        log.warning("%s %s: %s", request.method, request.url.path, exc)
+        name = getattr(exc, "name", None) or str(exc)
+        return JSONResponse(
+            {"detail": f"not available in this workspace (needs {name})"},
+            status_code=503,
+        )
 
     @app.exception_handler(ApprovalError)
     async def _approval_error(request: Request, exc: ApprovalError):

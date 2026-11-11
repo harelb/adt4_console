@@ -283,6 +283,17 @@ class MapLoader:
         from heracles import graph_interface as gi
         from heracles.utils import extract_labelspaces_from_dsg
 
+        from .optional import optional
+
+        # newer heracles APIs; without them that part is skipped (logged once)
+        add_agents = optional(
+            "heracles.graph_interface",
+            "add_agents_from_dsg",
+            "agent poses in loaded maps",
+        )
+        store_mesh_path = optional(
+            "heracles.graph_interface", "store_mesh_path", "the mesh of loaded maps"
+        )
         sid = "graph"
         self._stage(job, sid, "running", 2, "reading the scene graph")
         G = spark_dsg.DynamicSceneGraph.load(str(dsg))
@@ -295,13 +306,15 @@ class MapLoader:
         gi.initialize_db(db)
         object_ls, room_ls = extract_labelspaces_from_dsg(G)
         # heracles.graph_interface.spark_dsg_to_db without an image store, step by step
-        steps = [
-            ("agents", lambda: gi.add_agents_from_dsg(G, db, None)),
+        steps = (
+            [("agents", lambda: add_agents(G, db, None))]
+            if add_agents is not None
+            else []
+        )
+        steps += [
             (
                 "objects",
-                lambda: gi.add_objects_from_dsg(
-                    G, db, None, object_labelspace=object_ls
-                ),
+                lambda: gi.add_objects_from_dsg(G, db, object_labelspace=object_ls),
             ),
             ("places", lambda: gi.add_places_from_dsg(G, db)),
             (
@@ -324,8 +337,8 @@ class MapLoader:
             "MERGE (m:_GraphMetadata {key: 'source'}) SET m.file_path = $p", p=str(dsg)
         )
         mesh = dsg.parent / "mesh.ply"
-        if mesh.is_file():
-            gi.store_mesh_path(db, str(mesh))
+        if mesh.is_file() and store_mesh_path is not None:
+            store_mesh_path(db, str(mesh))
         from .routes.maps import bump_map_counters
 
         bump_map_counters(db)
@@ -334,31 +347,47 @@ class MapLoader:
         return G, db
 
     def _load_images(self, job, t, G, db, image_store):
-        from heracles import graph_interface as gi
         from heracles.utils import extract_labelspaces_from_dsg
 
+        from .optional import optional
+
         sid = "images"
+        mod = "heracles.graph_interface"
+        feature = "image evidence (Observations, keyframe images) in loaded maps"
+        fns = {n: optional(mod, n, feature) for n in (
+            "open_image_store", "add_agents_from_dsg", "add_subkeyframes_from_dsg",
+            "attach_camera_calibs", "link_observations_to_frames", "_store_paths")}  # fmt: skip
+        if any(f is None for f in fns.values()):
+            # where the viewer reads images from; this heracles writes no evidence
+            db.execute("MERGE (m:_GraphMetadata {key: 'image_store'}) SET m.image_store_paths = $paths",
+                       paths=[str(pathlib.Path(image_store).resolve())])  # fmt: skip
+            self._refresh(t, "images linked")
+            self._stage(job, sid, "done", 100,
+                        "image store linked (this heracles writes no observations)")  # fmt: skip
+            return
+        from heracles import graph_interface as gi
+
         self._stage(job, sid, "running", 2, "opening the image store")
-        store = gi.open_image_store(image_store)
+        store = fns["open_image_store"](image_store)
         object_ls, _ = extract_labelspaces_from_dsg(G)
         steps = [
-            ("keyframe images", lambda: gi.add_agents_from_dsg(G, db, store)),
+            ("keyframe images", lambda: fns["add_agents_from_dsg"](G, db, store)),
             (
                 "object observations",
                 lambda: gi.add_objects_from_dsg(
                     G, db, store, object_labelspace=object_ls
                 ),
             ),
-            ("sub-keyframes", lambda: gi.add_subkeyframes_from_dsg(G, db, store)),
-            ("camera calibrations", lambda: gi.attach_camera_calibs(db, store)),
-            ("observation frames", lambda: gi.link_observations_to_frames(db)),
+            ("sub-keyframes", lambda: fns["add_subkeyframes_from_dsg"](G, db, store)),
+            ("camera calibrations", lambda: fns["attach_camera_calibs"](db, store)),
+            ("observation frames", lambda: fns["link_observations_to_frames"](db)),
         ]
         for i, (what, fn) in enumerate(steps):
             self._stage(job, sid, "running", 5 + 90 * i / len(steps), what)
             fn()
             job.check_cancelled()
         db.execute("MERGE (m:_GraphMetadata {key: 'image_store'}) SET m.image_store_paths = $paths",
-                   paths=gi._store_paths(store))  # fmt: skip
+                   paths=fns["_store_paths"](store))  # fmt: skip
         self._refresh(t, "images loaded")
         n = t.query("MATCH (o:Observation) RETURN count(o) AS c")[0]["c"]
         self._stage(job, sid, "done", 100, f"{n} observations")

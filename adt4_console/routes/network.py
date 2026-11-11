@@ -58,7 +58,9 @@ def _fleet_link(topo: dict) -> dict:
     """
     from dcist_launch_system import fleet_helpers as fh
 
-    mode = fh.fleet_link_mode(topo)
+    from .. import fleet_compat
+
+    mode = fleet_compat.fleet_link_mode(topo)
     out = {"fleet_link": mode}
     if mode == "fleetlink":
         out["fleetlink"] = {
@@ -82,8 +84,13 @@ def interfaces(request: Request):
 @router.get("/colors")
 def robot_colors(request: Request):
     """Per-robot display colors (topology ``color`` or the shared palette)."""
-    from dcist_launch_system.robot_colors import robot_colors as colors_for
+    from ..optional import optional
 
+    colors_for = optional(
+        "dcist_launch_system.robot_colors", "robot_colors", "topology robot colors"
+    )
+    if colors_for is None:  # the browser falls back to the same palette rule
+        return {"colors": {}}
     fleet = services(request).fleet
     with fleet.lock:
         return {"colors": colors_for(fleet.topo)}

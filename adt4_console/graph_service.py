@@ -1328,8 +1328,18 @@ class Neo4jSource(Source):
         return records
 
     def read_version(self) -> int:
-        from heracles.graph_interface import read_version
+        """heracles' ``_State.version``; 0 when this heracles has no version
+        counter (changes are then noticed by the node count and map version)."""
+        from .optional import optional
 
+        read_version = optional(
+            "heracles.graph_interface",
+            "read_version",
+            "Neo4j change detection by version",
+        )
+        if read_version is None:
+            self.db()  # still report an unreachable DB
+            return 0
         try:
             return int(read_version(self.db()))
         except GraphUnavailable:
@@ -1634,8 +1644,13 @@ class Neo4jSource(Source):
                 )
 
     def mesh_path(self):
-        from heracles.graph_interface import read_mesh_path
+        from .optional import optional
 
+        read_mesh_path = optional(
+            "heracles.graph_interface", "read_mesh_path", "the mesh of Neo4j maps"
+        )
+        if read_mesh_path is None:
+            return None
         try:
             path, _ = read_mesh_path(self.db())
         except GraphUnavailable:

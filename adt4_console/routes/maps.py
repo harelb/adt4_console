@@ -941,8 +941,13 @@ def ingest(body: IngestBody, request: Request):
 
     def run(job):
         import spark_dsg as dsg
-        from heracles.graph_interface import store_mesh_path
         from heracles.utils import load_dsg_to_db
+
+        from ..optional import call_accepting, optional
+
+        store_mesh_path = optional(
+            "heracles.graph_interface", "store_mesh_path", "the mesh of loaded maps"
+        )
 
         t0 = time.time()
         job.log("info", f"Loading {dsg_path} ...")
@@ -970,14 +975,16 @@ def ingest(body: IngestBody, request: Request):
             "info",
             f"Writing to {target.uri} (image store: {image_store or 'none'}) ...",
         )
-        load_dsg_to_db(target.uri, target.creds, G, image_store=image_store)
+        call_accepting(
+            load_dsg_to_db, target.uri, target.creds, G, image_store=image_store
+        )
         db = target.db()
         target.query(
             "MERGE (m:_GraphMetadata {key: 'source'}) SET m.file_path = $p",
             p=str(dsg_path),
         )
         mesh = dsg_path.parent / "mesh.ply"
-        if mesh.is_file():
+        if mesh.is_file() and store_mesh_path is not None:
             store_mesh_path(db, str(mesh))
             job.log("dim", f"mesh: {mesh}")
         version = bump_map_counters(db)
@@ -1088,8 +1095,13 @@ def reset(body: ResetBody, request: Request):
 
     def run(job):
         import spark_dsg as dsg
-        from heracles.graph_interface import store_mesh_path
         from heracles.utils import load_dsg_to_db
+
+        from ..optional import call_accepting, optional
+
+        store_mesh_path = optional(
+            "heracles.graph_interface", "store_mesh_path", "the mesh of loaded maps"
+        )
 
         from .. import sam3_client
 
@@ -1112,14 +1124,16 @@ def reset(body: ResetBody, request: Request):
         image_store = (
             str(run_dir / "image_store") if (run_dir / "image_store").is_dir() else None
         )
-        load_dsg_to_db(target.uri, target.creds, G, image_store=image_store)
+        call_accepting(
+            load_dsg_to_db, target.uri, target.creds, G, image_store=image_store
+        )
         db = target.db()
         target.query(
             "MERGE (m:_GraphMetadata {key: 'source'}) SET m.file_path = $p",
             p=str(dsg_path),
         )
         mesh = dsg_path.parent / "mesh.ply"
-        if mesh.is_file():
+        if mesh.is_file() and store_mesh_path is not None:
             store_mesh_path(db, str(mesh))
         n_feat = load_semantic_features(target, run_dir)
         if n_feat:

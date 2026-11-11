@@ -13,6 +13,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
+from . import fleet_compat
+
 log = logging.getLogger(__name__)
 
 
@@ -20,6 +22,15 @@ def _helpers():
     from dcist_launch_system import fleet_helpers
 
     return fleet_helpers
+
+
+def _zenohd():
+    """The fleet core's local zenoh router control, or None without it."""
+    from .optional import optional
+
+    return optional(
+        "dcist_launch_system.fleet.zenohd", None, "starting a local zenoh router"
+    )
 
 
 @dataclass
@@ -52,13 +63,15 @@ class FleetDeps:
 
 class FleetService:
     def __init__(self, settings, hub=None, deps: FleetDeps | None = None):
-        from dcist_launch_system.fleet import zenohd
-
         self.settings = settings
         self.hub = hub
         self.deps = deps or FleetDeps()
-        self.topology_path = settings.topology or str(_helpers()._DEFAULT_TOPOLOGY)
-        self.zenohd_state = zenohd.new_state()
+        # the topology is read with dcist_launch_system's loader; None -> its default
+        self.topology_path = settings.topology or str(
+            getattr(_helpers(), "_DEFAULT_TOPOLOGY", "") or ""
+        )
+        zenohd = _zenohd()
+        self.zenohd_state = zenohd.new_state() if zenohd is not None else None
         self.lock = threading.RLock()
         self.status: dict = {"updated": None, "machines": {}}
         self.nodes: dict = {"updated": None, "robots": {}}
@@ -70,7 +83,7 @@ class FleetService:
     # ------------------------------------------------------------------ setup
     def reload(self) -> None:
         try:
-            topo = self.deps.load_topology(self.topology_path) or {}
+            topo = self.deps.load_topology(self.topology_path or None) or {}
         except Exception as e:  # noqa: BLE001
             log.warning("topology %s not loaded: %s", self.topology_path, e)
             topo = {}
@@ -105,8 +118,9 @@ class FleetService:
     def stop(self) -> None:
         self._stop.set()
         self._poke.set()
-        from dcist_launch_system.fleet import zenohd
-
+        zenohd = _zenohd()
+        if zenohd is None or self.zenohd_state is None:
+            return
         try:
             zenohd.cleanup(self.zenohd_state)
         except Exception:  # noqa: BLE001
@@ -135,7 +149,7 @@ class FleetService:
             )
 
     def machines_payload(self) -> dict:
-        status_platform = _helpers().status_platform
+        status_platform = fleet_compat.status_platform
         with self.lock:
             machines = [
                 {
@@ -184,10 +198,11 @@ class FleetService:
             radios = self.topo.get("silvus_radios", {}).get("radios", {})
             topo = self.topo
         silvus_ips = [r["mgmt_ip"] for r in radios.values() if "mgmt_ip" in r]
-        status_platform = _helpers().status_platform
+        status_platform = fleet_compat.status_platform
 
         def fetch(m):
-            return self.deps.get_remote_status(
+            return fleet_compat.call_accepting(
+                self.deps.get_remote_status,
                 m["user"],
                 m["ip"],
                 silvus_ips=silvus_ips or None,

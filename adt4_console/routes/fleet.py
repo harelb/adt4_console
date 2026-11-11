@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from .. import __version__
+from ..optional import features, optional
 from . import services
 
 router = APIRouter(prefix="/api")
@@ -41,13 +42,18 @@ def health(request: Request):
         "fleetlink_state": link["state"],
         "fleetlink_error": link["error"],
         "neo4j": neo4j,
+        # optional features this workspace has (optional.FEATURES); the UI hides
+        # what is off
+        "features": features(),
+        "take_lease": svc.ros.take_lease_available(),
     }
 
 
 @router.get("/config")
 def config(request: Request):
-    from dcist_launch_system.fleet.launch_workflow import list_sessions
-
+    lw = optional(
+        "dcist_launch_system.fleet.launch_workflow", None, "tmux session listing"
+    )
     svc = services(request)
     s = svc.settings
     fleet = svc.fleet
@@ -66,7 +72,7 @@ def config(request: Request):
             for src in svc.graph.sources.values()
             if src.kind == "file"
         ],
-        "sessions": list_sessions(),
+        "sessions": lw.list_sessions() if lw is not None else [],
         "fleet_defaults": fleet.topo.get("fleet_defaults", {}),
         "robots": s.robots or fleet.robots(),
         "topology_path": fleet.topology_path,

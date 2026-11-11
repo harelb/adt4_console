@@ -33,42 +33,52 @@ class LaunchPlanBody(BaseModel):
     preflight: bool = True
 
 
+def _with_link_mode(topo: dict, mode: str | None) -> dict:
+    """``launch_workflow.with_link_mode``; without it (fleet tooling with no
+    fleetlink support) only the router mode exists."""
+    from dcist_launch_system.fleet import launch_workflow as lw
+
+    fn = getattr(lw, "with_link_mode", None)
+    if fn is not None:
+        return fn(topo, mode)
+    if mode not in (None, "router"):
+        raise lw.LaunchError(f"link mode {mode!r} is not supported by this workspace")
+    return topo
+
+
 def _plan(body: LaunchPlanBody, topo: dict | None = None):
-    from dcist_launch_system.fleet.launch_workflow import LaunchPlan
+    import dataclasses
+
+    from dcist_launch_system.fleet.launch_workflow import LaunchError, LaunchPlan
 
     if body.link_network and body.link_network not in (
         (topo or {}).get("networks") or {}
     ):
         raise HTTPException(400, f"unknown link network {body.link_network!r}")
     if body.link_mode:
-        from dcist_launch_system.fleet.launch_workflow import (
-            LaunchError,
-            with_link_mode,
-        )
-
         try:
-            with_link_mode(topo or {}, body.link_mode)
+            _with_link_mode(topo or {}, body.link_mode)
         except LaunchError as e:
             raise HTTPException(400, str(e)) from None
-    return LaunchPlan(**body.model_dump())
+    fields = body.model_dump()
+    if dataclasses.is_dataclass(LaunchPlan):
+        # older fleet tooling plans have fewer options (no link network / mode)
+        known = {f.name for f in dataclasses.fields(LaunchPlan)}
+        fields = {k: v for k, v in fields.items() if k in known}
+    return LaunchPlan(**fields)
 
 
 def link_choices(topo: dict | None, active: str | None) -> dict:
     """Networks a launch can put the robot links on, and the default one."""
-    from dcist_launch_system.fleet_helpers import (
-        FLEET_LINK_MODES,
-        fleet_link_mode,
-        fleetlink_base,
-        link_network,
-    )
+    from .. import fleet_compat as fc
 
     return {
         "link_networks": list(((topo or {}).get("networks") or {}).keys()),
-        "link_network": link_network(topo or {}, None, active),
+        "link_network": fc.link_network(topo or {}, None, active),
         "active_network": active,
-        "link_modes": list(FLEET_LINK_MODES),
-        "link_mode": fleet_link_mode(topo or {}),
-        "fleetlink_base": fleetlink_base(topo or {}),
+        "link_modes": list(fc.link_modes()),
+        "link_mode": fc.fleet_link_mode(topo or {}),
+        "fleetlink_base": fc.fleetlink_base(topo or {}),
     }
 
 
@@ -113,7 +123,7 @@ def launch_preflight(body: LaunchPlanBody, request: Request):
 
     The prior map is verified during the launch itself, after it is copied."""
     from dcist_launch_system.fleet import preflight as pf
-    from dcist_launch_system.fleet.launch_workflow import LaunchDeps, with_link_mode
+    from dcist_launch_system.fleet.launch_workflow import LaunchDeps
 
     svc = services(request)
     fleet = svc.fleet
@@ -130,7 +140,7 @@ def launch_preflight(body: LaunchPlanBody, request: Request):
         machines.append(bs)
     checks = pf.run_checks(
         machines,
-        with_link_mode(topo, plan.link_mode),
+        _with_link_mode(topo, getattr(plan, "link_mode", None)),
         svc.settings.output_root,
         svc.launch_deps or LaunchDeps(),
         reference=bs["name"] if bs else None,

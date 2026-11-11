@@ -517,6 +517,9 @@ class RosBridge:
         self._context = None
         self._guard = None
         self._thread = None
+        # robot -> whether its executor serves ~/take_lease (take_lease_available)
+        self._take_lease: dict[str, bool] = {}
+        self._take_lease_t = 0.0
 
     # ------------------------------------------------------------ lifecycle
     def start(self, robots=None) -> bool:
@@ -677,6 +680,31 @@ class RosBridge:
 
         self.run(go, timeout=1.0)
 
+    def take_lease_available(self) -> dict[str, bool]:
+        """{robot: whether its executor serves ``~/take_lease``} from the local ROS
+        graph (in fleetlink mode the bridge serves the relayed service), cached a
+        few seconds; {} without ROS. The UI offers Take lease only where it is."""
+        if not self.available or self.node is None:
+            return {}
+        now = time.monotonic()
+        if now - self._take_lease_t < 5.0:
+            return dict(self._take_lease)
+        self._take_lease_t = now
+        try:
+            names = {
+                n
+                for n, _ in self.run(
+                    lambda: self.node.get_service_names_and_types(), timeout=1.0
+                )
+            }
+        except Exception:  # noqa: BLE001 — keep the last answer
+            return dict(self._take_lease)
+        self._take_lease = {
+            r: f"/{r}/spot_executor_node/take_lease" in names
+            for r in sorted(self._subscribed)
+        }
+        return dict(self._take_lease)
+
     def has_service(self, name: str) -> bool:
         """Whether any node on the local ROS graph serves ``name``."""
         names = self.run(lambda: self.node.get_service_names_and_types())
@@ -825,10 +853,11 @@ class RosBridge:
         topo = getattr(self.fleet, "topo", None) or {}
         machine = (topo.get("machines") or {}).get(robot)
         try:
-            from dcist_launch_system.fleet_helpers import platform_of
+            from .fleet_compat import platform_of
+
+            return platform_of(machine)
         except ImportError:  # no fleet tooling: treat as the default platform
             return "spot"
-        return platform_of(machine)
 
     def require_spot(self, robot: str, cmd: str) -> None:
         """NotSupported unless ``robot`` is a Spot (stand / sit / lease / pause)."""
@@ -925,23 +954,23 @@ class RosBridge:
                 1,
             )
             return
-        res = import_type("robot_executor_msgs/msg/ActionResultMsg")
-        # omniplanner's adaptor listens on spot_executor/, the executor node is
-        # spot_executor_node — subscribe to both spellings.
-        for ex in ("spot_executor_node", "spot_executor"):
-            n.create_subscription(
-                res,
-                f"/{robot}/{ex}/action_result",
-                lambda m: self._on_result(robot, m),
-                10,
-            )
+        from .optional import available
+
+        if available("action_results"):
+            res = import_type("robot_executor_msgs/msg/ActionResultMsg")
+            # omniplanner's adaptor listens on spot_executor/, the executor node is
+            # spot_executor_node — subscribe to both spellings.
+            for ex in ("spot_executor_node", "spot_executor"):
+                n.create_subscription(
+                    res,
+                    f"/{robot}/{ex}/action_result",
+                    lambda m: self._on_result(robot, m),
+                    10,
+                )
         # lease state for the UI (fleetlink relays this topic up, so it is on the
-        # base graph in both modes)
-        try:
+        # base graph in both modes); without RuntimeGuardsMsg there is none
+        if available("lease_state"):
             guards = import_type("robot_executor_msgs/msg/RuntimeGuardsMsg")
-        except Exception as e:  # noqa: BLE001
-            log.warning("no RuntimeGuardsMsg (%s): lease state unavailable", e)
-        else:
             n.create_subscription(
                 guards,
                 f"/{robot}/spot_executor_node/runtime_guards",
