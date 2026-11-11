@@ -8,7 +8,10 @@ on the hub.  The status is built only from what already reaches the console:
   no request id, so the oldest goal still waiting for that robot takes it) and
   each robot's ``compiled_plan_out`` (the first plan for a robot after the goal
   was sent belongs to it; omniplanner publishes every robot's plan before the
-  status, so plans just before an ``ok`` join the same goal);
+  status, so plans just before an ``ok`` join the same goal). goal_manager
+  plans only the goal sent last, so a plan that comes after a newer goal was
+  sent never completes an earlier goal: that goal's robot is "replaced by a
+  newer goal"; replans of the newest goal itself are followed;
 * delivery: fleetlink's ack of the robot's ``compiled_plan_out`` (fleetlink
   mode only);
 * executor: ``~/action_result`` (per action, with plan_id), ``~/teleop_state``
@@ -255,15 +258,16 @@ class GoalTracker:
         pid = str(plan.get("plan_id") or "")
         actions = [str(a.get("type") or "?") for a in plan.get("actions") or []]
         with self._lock:
-            owner = self._claimant(robot, t)
+            owner = self._claimant(robot, t) or self._goal_manager_owner(robot, t)
             for g in self._live(t):
                 rt = g.robots.get(robot)
                 if g is owner or rt is None or rt.plan_id is None or rt.plan_id == pid or rt.terminal in ("done", "failed"):
                     continue
                 if rt.terminal == "preempted":
                     continue
-                if owner is not None and owner.t > g.t:
-                    rt.terminal, rt.detail = "preempted", f"preempted by a newer goal (plan {pid[:8]})"
+                if (owner is not None and owner.t > g.t) or (owner is None and self._newer_planning(g, t)):
+                    # a plan of a later goal: it must never complete this one
+                    rt.terminal, rt.detail = "preempted", f"replaced by a newer goal (plan {pid[:8]})"
                     rt.event(t, rt.detail)
                     self._emit(g)
                 elif owner is None and rt.terminal is None:
@@ -277,8 +281,13 @@ class GoalTracker:
                 if rt is None:
                     rt = owner.robots[robot] = RobotTrack(robot, False)
                 if rt.plan_id != pid:
+                    old = rt.plan_id
                     self._attach(rt, pid, actions, t)
-                    rt.event(t, f"planned: plan {pid[:8]}, {len(actions)} action{'s' if len(actions) != 1 else ''} ({', '.join(actions) or 'none'})")
+                    what = f"{len(actions)} action{'s' if len(actions) != 1 else ''} ({', '.join(actions) or 'none'})"
+                    if old is None:
+                        rt.event(t, f"planned: plan {pid[:8]}, {what}")
+                    else:
+                        rt.event(t, f"replanned: plan {old[:8]} → {pid[:8]} (plan repair replan of this goal), {what}")
                     if not actions:
                         rt.terminal, rt.detail = "done", "empty plan: nothing to do"
                     if owner.planner == "direct":
@@ -324,6 +333,26 @@ class GoalTracker:
                 if rt is None or rt.plan_id is None:
                     return g
         return None
+
+    def _goal_manager_owner(self, robot, t) -> Goal | None:
+        """goal_manager (plan repair) plans only for the goal it was sent last: it
+        replaces the whole team's plan with every new goal and replans (scene
+        change) only that goal. So a plan no goal claims while the newest live
+        goal went through goal_manager is that goal's: its replan when the goal
+        already has a plan for ``robot``, or work the planner gave ``robot``
+        along with it. Never an earlier goal's."""
+        live = self._live(t)
+        if not live:
+            return None
+        newest = live[-1]
+        if newest.via != "goal_manager" or newest.planner in ("send_failed", "skipped", "failed"):
+            return None
+        return newest
+
+    def _newer_planning(self, g: Goal, t) -> bool:
+        """A goal sent after ``g`` is still planning: a plan that arrives now comes
+        from it (or another sender), not from a replan of ``g``."""
+        return any(o.t > g.t and o is not g and o.planner == "sent" for o in self._live(t))
 
     def on_plan_status(self, st: dict, t=None) -> None:
         """omniplanner ``~/plan_status``: {plugin, robot, ok, error, t}."""

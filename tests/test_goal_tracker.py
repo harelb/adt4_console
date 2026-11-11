@@ -316,3 +316,78 @@ def test_send_failed_and_no_duplicate_pushes():
     tr.on_teleop("euclid", teleop())
     tr.on_teleop("euclid", teleop())
     assert len(pushed) == n
+
+
+# ------------------------------------------- a later goal's plan (2026-11-11)
+# Live: goal A (object-in-place o1 t4) planned d6ed6800 [goto t4, place o1] for
+# euclid; 1.4 s later goal B (object-in-place o20 t4, sent via hamilton) made
+# f49cc7b3 [place o1] for euclid. A's card said "euclid: done -- all 1 actions
+# succeeded": it had followed B's plan as if it were a replan of A.
+def _a_then_b(team_b, via_b, hamilton_first=False):
+    tr, clock, pushed = make()
+    a = tr.goal_sent("euclid", robots=["euclid"], kind="pddl", via="goal_manager", team=True,
+                     summary="(object-in-place o1 t4)")  # fmt: skip
+    clock.step()
+    tr.on_plan("euclid", plan("d6ed6800", "FOLLOW", "PLACE"))
+    tr.on_plan_status({"robot": "euclid", "ok": True})
+    clock.step(0.7)
+    b = tr.goal_sent("hamilton", robots=["hamilton"], kind="pddl", via=via_b, team=team_b,
+                     summary="(object-in-place o20 t4)")  # fmt: skip
+    clock.step(0.7)
+    if hamilton_first:
+        tr.on_plan("hamilton", plan("h0000001", "FOLLOW", "PICK"))
+    tr.on_plan("euclid", plan("f49cc7b3", "PLACE"))
+    if not hamilton_first:
+        tr.on_plan("hamilton", plan("h0000001", "FOLLOW", "PICK"))
+    tr.on_plan_status({"robot": "hamilton", "ok": True})
+    clock.step(3)
+    tr.on_teleop("euclid", teleop())
+    tr.on_result("euclid", result("f49cc7b3", 0, typ="PLACE"))
+    return tr, a, b, pushed
+
+
+def _assert_a_replaced(tr, a, pushed):
+    va = tr.view(a)
+    ea = va["robots"]["euclid"]
+    assert ea["plan_id"] == "d6ed6800" and ea["stage"] == "preempted"
+    assert ea["text"] == "replaced by a newer goal (plan f49cc7b3)"
+    assert va["stage"] != "done" and "done" not in va["text"]
+    assert "done" not in stages(pushed, a)
+
+
+def test_a_later_goals_plan_never_completes_an_earlier_goal():
+    for team_b in (True, False):
+        for via_b in ("goal_manager", None):
+            for hamilton_first in (True, False):
+                tr, a, b, pushed = _a_then_b(team_b, via_b, hamilton_first)
+                _assert_a_replaced(tr, a, pushed)
+                if not team_b and via_b is None:
+                    continue  # straight to a planner, hamilton only: euclid's plan is not B's either
+                eb = tr.view(b)["robots"]["euclid"]
+                assert eb["plan_id"] == "f49cc7b3" and eb["stage"] == "done"
+                assert eb["named"] is False
+
+
+def test_goal_manager_replan_of_the_same_goal_is_followed():
+    tr, clock, _ = make()
+    gid = tr.goal_sent("euclid", robots=["euclid"], kind="pddl", via="goal_manager", team=True)
+    clock.step()
+    tr.on_plan("euclid", plan("p1", "FOLLOW", "PLACE"))
+    tr.on_plan_status({"robot": "euclid", "ok": True})
+    clock.step(30)
+    tr.on_plan("euclid", plan("p9", "PLACE"))  # scene change: goal_manager replans this goal
+    rv = tr.view(gid)["robots"]["euclid"]
+    assert rv["plan_id"] == "p9" and rv["n"] == 1
+    assert any("replanned: plan p1" in e["text"] for e in rv["events"])
+    tr.on_teleop("euclid", teleop())
+    tr.on_result("euclid", result("p9", 0, typ="PLACE"))
+    assert tr.view(gid)["stage"] == "done"
+
+
+def test_after_a_newer_goal_manager_goal_replans_go_to_it_not_the_earlier_goal():
+    tr, a, b, pushed = _a_then_b(True, "goal_manager")
+    tr.clock.step(30)
+    tr.on_plan("euclid", plan("aa000009", "FOLLOW"))  # goal_manager replans B (its running goal)
+    _assert_a_replaced(tr, a, pushed)
+    eb = tr.view(b)["robots"]["euclid"]
+    assert eb["plan_id"] == "aa000009" and eb["stage"] == "planned"
