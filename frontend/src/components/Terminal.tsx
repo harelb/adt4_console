@@ -115,6 +115,12 @@ export function TerminalModal({machine, session, onClose}: {machine: string; ses
         </>
       }
     >
+      {session && (
+        <div className="terminal-warn tone-warn small" role="alert">
+          Live session: every keystroke goes to <span className="mono">{session}</span> on <span className="mono">{machine}</span>. Ctrl-C stops
+          the node in the focused pane. Detach with Ctrl-b d or close this window; the session keeps running.
+        </div>
+      )}
       <div className="terminal-host" ref={host} />
     </Modal>
   );

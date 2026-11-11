@@ -955,12 +955,52 @@ input[type="checkbox"] {
   color: #ff8a8e;
   font-weight: 700;
 }
+/* Fleet machines: every column fits at ~1600 px; narrower, the table scrolls
+   inside .table-wrap (never the page) and long cells truncate with a tooltip */
 .fleet-table td {
   white-space: nowrap;
+  padding: 6px 8px;
+}
+.fleet-table th {
+  padding-left: 8px;
+  padding-right: 8px;
 }
 .fleet-table td:first-child {
   white-space: normal;
-  min-width: 180px;
+  min-width: 150px;
+  max-width: 240px;
+}
+.fleet-table .fleet-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-table td.cell-tmux {
+  white-space: normal;
+  min-width: 150px;
+  max-width: 340px;
+}
+.fleet-table .res-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  max-width: 220px;
+}
+.fleet-table .res-cell > span {
+  white-space: nowrap;
+}
+.fleet-table td.cell-trunc {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fleet-table td.cell-actions {
+  width: 1%;
+  text-align: right;
+}
+.fleet-table .fleet-actions {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
 }
 .actions-col {
   text-align: right;
@@ -2671,6 +2711,12 @@ input[type="checkbox"] {
   .fleet-table td:first-child {
     min-width: 0;
   }
+  .fleet-table td,
+  .fleet-table td:first-child,
+  .fleet-table td.cell-tmux,
+  .fleet-table td.cell-trunc {
+    max-width: none;
+  }
 
   /* viewer: one-row toolbar, panels as bottom sheets (BottomSheet.tsx) */
   .vtoolbar.phone-bar {
@@ -3405,6 +3451,12 @@ input[type="checkbox"] {
 }
 .cell-actions .btn + .btn {
   margin-left: 6px;
+}
+.terminal-warn {
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius);
 }
 .terminal-host {
   height: min(65vh, 640px);
@@ -4943,4 +4995,12 @@ input[type="checkbox"] {
   align-items: center;
   gap: 6px;
   color: var(--muted);
+}
+
+/* Launch: the last launch's choices (prefilled; "Relaunch settings" restores them) */
+.launch-last {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-1);
 }

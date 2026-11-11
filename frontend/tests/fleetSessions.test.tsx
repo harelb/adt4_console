@@ -4,8 +4,30 @@ import {createRoot, type Root} from "react-dom/client";
 import {FleetPage} from "../src/pages/Fleet";
 import {useFleet} from "../src/stores/fleet";
 import {terminalUrl} from "../src/components/Terminal";
+import {shortBattery, shortDisk, shortGpu, shortLoad} from "../src/lib/fleetFormat";
 
 (globalThis as unknown as {IS_REACT_ACT_ENVIRONMENT: boolean}).IS_REACT_ACT_ENVIRONMENT = true;
+
+// jsdom has no canvas: a stand-in xterm for the terminal modal
+vi.mock("@xterm/xterm", () => ({
+  Terminal: class {
+    cols = 80;
+    rows = 24;
+    loadAddon() {}
+    open() {}
+    focus() {}
+    write() {}
+    dispose() {}
+    onData() {
+      return {dispose() {}};
+    }
+    onResize() {
+      return {dispose() {}};
+    }
+  },
+}));
+vi.mock("@xterm/addon-fit", () => ({FitAddon: class {fit() {}}}));
+vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), {status, headers: {"Content-Type": "application/json"}});
 const flush = () => act(async () => void (await new Promise(r => setTimeout(r, 0))));
@@ -87,6 +109,68 @@ describe("Fleet tmux sessions", () => {
     // hamilton only: gauss is offline
     expect(buttons("shell on")).toHaveLength(1);
     expect(buttons("attach to")).toHaveLength(2);
+  });
+
+  it("shows a disabled open button per session while terminals are off", async () => {
+    mount(false);
+    await flush();
+    const open = [...document.querySelectorAll<HTMLButtonElement>("button[aria-label^='open ']")];
+    expect(open.map(b => b.getAttribute("aria-label"))).toEqual(["open adt4_system on hamilton", "open nstf_build on hamilton"]);
+    expect(open.every(b => b.disabled)).toBe(true);
+    expect(open[0].title).toContain("terminals are off");
+  });
+
+  it("opens a tmux session in a read-write terminal with a live-session warning", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    mount(true);
+    await flush();
+    const open = document.querySelector<HTMLButtonElement>("button[aria-label='open adt4_system on hamilton']")!;
+    expect(open.disabled).toBe(false);
+    act(() => open.click());
+    const modal = document.querySelector(".modal")!;
+    expect(modal.textContent).toContain("tmux");
+    expect(modal.querySelector("[role=alert]")!.textContent).toContain("every keystroke goes to adt4_system on hamilton");
+  });
+
+  it("fits the machines table: compact columns, a Stop & Save button in every robot row", async () => {
+    const st = {
+      updated: Date.now() / 1000,
+      machines: {
+        hamilton: {tmux_sessions: "adt4_system", load: "0.52/0.40/0.33", mem: "3.2Gi/15Gi", gpu: "12% 1200/8000M", disk: "120G / 500G (76% used)", battery: "99% (Not charging)", radio: "N/A"},
+      },
+    };
+    mount(false);
+    useFleet.setState({status: st as never});
+    await flush();
+    const heads = [...document.querySelectorAll(".fleet-table thead th")].map(t => t.textContent);
+    expect(heads).toEqual(["machine", "link", "tmux", "resources", "disk free", "battery", "radio", ""]);
+    for (const r of MACHINES.machines.filter(m => m.role === "robot")) {
+      const row = document.querySelector(`[data-testid="machine-${r.name}"]`)!;
+      const stop = [...row.querySelectorAll<HTMLButtonElement>(".cell-actions button")].filter(b => b.textContent === "Stop & Save");
+      expect(stop).toHaveLength(1);
+      expect(stop[0].className).toContain("btn-xs");
+    }
+    const row = document.querySelector('[data-testid="machine-hamilton"]')!;
+    const battery = row.querySelector('td[data-label="battery"]')!;
+    expect(battery.textContent).toBe("99%");
+    expect(battery.querySelector("[title]")!.getAttribute("title")).toBe("99% (Not charging)");
+    expect(row.querySelector('td[data-label="disk free"]')!.textContent).toBe("120G");
+    expect(row.querySelector('td[data-label="resources"]')!.textContent).toBe("load 0.52mem 3.2Gi/15Gigpu 12%");
+  });
+
+  it("formats status strings compactly", () => {
+    expect(shortBattery("40% (Charging)")).toBe("40% ⚡");
+    expect(shortBattery("87.6%")).toBe("88%");
+    expect(shortBattery("N/A")).toBeNull();
+    expect(shortDisk("120G / 500G (76% used)")).toBe("120G");
+    expect(shortLoad("1.5/1.2/0.9")).toBe("1.5");
+    expect(shortGpu("12% 1200/8000M")).toBe("12%");
   });
 
   it("builds the terminal websocket URL", () => {

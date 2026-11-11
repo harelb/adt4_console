@@ -74,7 +74,7 @@ components `console` / `console_neo4j`). Open `http://<base station>:8090/`.
 | `--no-ros`, `--no-fleetlink`, `--no-llm` | turn subsystems off |
 | `--llm-provider`, `--llm-model`, `--llm-budget-usd` | chat LLM; hard spend cap, kept in `~/.adt4_console/llm_usage.json` |
 | `--sam3-url URL` | SAM3 query server for robot-image search |
-| `--terminal` | browser terminals (ssh) on fleet machines; pair with `--token` |
+| `--terminal` / `--no-terminal` | browser terminals (ssh, or attach to a tmux session) on fleet machines, on by default; pair with `--token` off a closed network |
 | `--geo-anchor`, `--tiles-dir`, `--tiles-live` | map-to-UTM anchors and satellite tiles (`scripts/geo/`) |
 | `--map-edits auto\|staged\|immediate` | when map edits are staged |
 
@@ -94,7 +94,7 @@ again with the new token.
 |---|---|
 | `ADT4_CONSOLE_PORT` | default `--port` |
 | `ADT4_CONSOLE_TOKEN` | default `--token` |
-| `ADT4_CONSOLE_TERMINAL` | default `--terminal` (`1` / `true`) |
+| `ADT4_CONSOLE_TERMINAL` | `0` / `false` = default `--no-terminal` |
 | `HERACLES_NEO4J_USERNAME`, `HERACLES_NEO4J_PASSWORD` | Neo4j credentials for every `--neo4j` source (ADT4 sets them from `ADT4_NEO4J_USERNAME/PASSWORD`) |
 | `ADT4_OPENAI_API_KEY`, `HERACLES_OPENAI_API_KEY`, `OPENAI_API_KEY` | chat with OpenAI (first one set) |
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` | chat with Anthropic |
