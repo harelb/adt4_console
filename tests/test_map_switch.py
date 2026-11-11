@@ -2,6 +2,7 @@
 planning works once the graph stage is done, and runs with and without an image
 store both load. Needs the scratch Neo4j on :7697 (wiped freely)."""
 
+import os
 import pathlib
 import time
 
@@ -12,7 +13,10 @@ from .test_omni_planner import (
     grid_run,  # noqa: F401 -- the grid with a named MESH_PLACES layer
 )
 
-IMAGED = pathlib.Path("~/adt4_output/imgstore_noarch_20261028")
+# a run with an image store (no archived images); skipped when unset
+IMAGED = pathlib.Path(
+    os.path.expanduser(os.environ.get("ADT4_CONSOLE_TEST_IMAGED_RUN", "/nonexistent"))
+)
 
 pytestmark = pytest.mark.skipif(
     not port_open("localhost", 7697), reason="neo4j test instance on :7697 not running"

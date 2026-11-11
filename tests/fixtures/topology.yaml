@@ -1,0 +1,103 @@
+---
+# A fleet topology for the tests, in the layout of Awesome-DCIST-T4's
+# network_diagnostics/config/topology.yaml. Addresses are documentation ranges
+# (RFC 5737); machine names are made up.
+networks:
+  mit_wifi:
+    subnet: 198.51.100.0/24
+  penn_wifi:
+    subnet: 203.0.113.0/24
+  silvus:
+    subnet: 192.0.2.0/24
+machines:
+  euclid:
+    role: robot
+    color: "#e6194b"
+    platform_id: smaug
+    platform_type: spot
+    desc: Spot one
+    addresses:
+      mit_wifi: 198.51.100.11
+      penn_wifi: 203.0.113.11
+      silvus: 192.0.2.11
+  hamilton:
+    role: robot
+    color: "#42d4f4"
+    addresses:
+      mit_wifi: 198.51.100.12
+      silvus: 192.0.2.12
+      penn_wifi: 203.0.113.12
+    platform_id: topaz
+    platform_type: spot
+    desc: Spot two
+  gauss:
+    role: robot
+    color: "#ffe119"
+    platform_id: samoyed
+    platform_type: phoenix
+    desc: Husky one
+    addresses:
+      mit_wifi: 198.51.100.13
+      silvus: 192.0.2.13
+  lewis:
+    role: robot
+    color: "#3cb44b"
+    platform_id: samoyed
+    platform_type: phoenix
+    desc: Husky two
+    addresses:
+      mit_wifi: 198.51.100.14
+      penn_wifi: 203.0.113.14
+      silvus: 192.0.2.14
+  apollo:
+    role: robot
+    color: "#f032e6"
+    platform_id: apollo
+    platform_type: spot
+    desc: Spot three
+    addresses:
+      silvus: 192.0.2.15
+  bonsai:
+    role: base_station
+    desc: dev computer
+    addresses:
+      penn_wifi: 203.0.113.2
+  willow:
+    role: base_station
+    addresses:
+      mit_wifi: 198.51.100.4
+      silvus: 192.0.2.4
+    desc: base station
+silvus_radios:
+  mgmt_subnet: 198.18.0.0/16
+  api_endpoint: /cgi-bin/streamscape_api
+  radios:
+    radio_1001:
+      mgmt_ip: 198.18.1.1
+      node_id: 1001
+    radio_1002:
+      mgmt_ip: 198.18.1.2
+      node_id: 1002
+  udp_telemetry:
+    listen_port: 5100
+zenoh:
+  port: 7447
+  connect_network: silvus  # robot <-> base links (a launch can pick another network)
+  fleetlink_port: 7450
+  fleetlink_networks: [silvus]
+ssh:
+  base_station_user: rrg
+  robot_user: swarm
+fleet_defaults:
+  spot_platforms: [smaug, topaz]
+  sessions:
+    mapping:
+      spot: spot-default
+      phoenix: phoenix-default
+    relocalize:
+      spot: spot_relocalize-relocalize
+      phoenix: phoenix_relocalize-relocalize
+  base_station_session: base_station_web_repair-default
+  output_root: ~/adt4_output
+  fleet_link: fleetlink  # router | fleetlink
+  fleetlink_base: willow

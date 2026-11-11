@@ -140,7 +140,7 @@ def test_topology_edit_delete_save_preserves_file(client, topology_copy):
     assert r.status_code == 200
     m = r.json()["machine"]
     assert m["addresses"]["mit_wifi"] == "198.51.100.2"
-    assert m["addresses"]["penn_wifi"] == "203.0.113.234"  # untouched network kept
+    assert m["addresses"]["penn_wifi"] == "203.0.113.11"  # untouched network kept
     assert m["platform_type"] == "spot"  # extra key kept
     fleet = {x["name"]: x for x in client.get("/api/fleet").json()["machines"]}
     assert fleet["euclid"]["ip"] == "198.51.100.2"

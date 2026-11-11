@@ -18,8 +18,8 @@ from .conftest import TOPOLOGY, make_client
 from .test_launch_topology import FakeSSH
 from .test_maps_listing import make_store
 
-# hamilton's address on the network the fake fleet detects (mit_wifi), from the real
-# topology so an address change there does not break these tests
+# hamilton's address on the network the fake fleet detects (mit_wifi), from the
+# test topology
 HAMILTON_IP = YAML(typ="safe").load(TOPOLOGY.read_text())["machines"]["hamilton"][
     "addresses"
 ]["mit_wifi"]

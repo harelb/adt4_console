@@ -196,12 +196,11 @@ def test_live_source_reads_mirror_store(tmp_path):
     assert off.image_store() is None
 
 
-def test_file_source_indexes_a_run_with_only_raw_logs(settings, tmp_path):
+def test_file_source_indexes_a_run_with_only_raw_logs(settings, tmp_path, monkeypatch):
     """Hydra/Khronos write keyframe zips + track logs (no store): the file source opens
     the run with ImageStore.open(run), which indexes it once, and shows its images."""
     import os
     import pathlib
-    import sys
 
     os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
     his = pytest.importorskip("hydra_image_store")
@@ -211,7 +210,8 @@ def test_file_source_indexes_a_run_with_only_raw_logs(settings, tmp_path):
     tests = pathlib.Path(his.__file__).resolve().parents[2] / "tests"
     if not (tests / "raw_logs.py").is_file():
         pytest.skip("hydra_image_store test writers not found")
-    sys.path.insert(0, str(tests))
+    # hydra_image_store's own test writers (its source tree)
+    monkeypatch.syspath_prepend(str(tests))
     import raw_logs as R
 
     run = R.build_run(tmp_path / "raw_run")

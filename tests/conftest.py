@@ -1,3 +1,5 @@
+import importlib.abc
+import os
 import pathlib
 import shutil
 import socket
@@ -5,20 +7,52 @@ import sys
 
 import pytest
 
-PKG = pathlib.Path(__file__).resolve().parents[1]
-REPO = PKG.parent
-for p in (PKG, REPO / "fleetlink", REPO / "dcist_launch_system" / "src"):
-    if str(p) not in sys.path:
-        sys.path.insert(0, str(p))
+
+def _hide_packages(names: str) -> None:
+    """Make packages (``pkg`` / ``pkg.mod``) or message classes
+    (``pkg.msg.Name``) unimportable, to test the console without optional
+    packages: ``ADT4_CONSOLE_TEST_HIDE=fleetlink,robot_executor_msgs.msg.RuntimeGuardsMsg``."""
+    hidden = [n.strip() for n in names.split(",") if n.strip()]
+    attrs = [n for n in hidden if n.rsplit(".", 1)[-1][:1].isupper()]
+    mods = [n for n in hidden if n not in attrs]
+
+    class _Hide(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if any(fullname == m or fullname.startswith(m + ".") for m in mods):
+                raise ModuleNotFoundError(
+                    f"No module named {fullname!r}", name=fullname
+                )
+            return None
+
+    sys.meta_path.insert(0, _Hide())
+    for a in attrs:
+        mod, name = a.rsplit(".", 1)
+        try:
+            delattr(__import__(mod, fromlist=[name]), name)
+        except (ImportError, AttributeError):
+            pass
+
+
+if os.environ.get("ADT4_CONSOLE_TEST_HIDE"):
+    _hide_packages(os.environ["ADT4_CONSOLE_TEST_HIDE"])
 
 from adt4_console.app import build_services, create_app  # noqa: E402
 from adt4_console.fleet_service import FleetDeps  # noqa: E402
 from adt4_console.settings import Settings  # noqa: E402
 
-TOPOLOGY = REPO / "network_diagnostics" / "config" / "topology.yaml"
-PENN = pathlib.Path("~/data/pennovation_2025/courtyard-alleyways/output")
-NEO4J_URI = "neo4j://localhost:7697"
-NEO4J_AUTH = ("neo4j", "neo4j_pw")
+HERE = pathlib.Path(__file__).resolve().parent
+# a topology in Awesome-DCIST-T4's layout, with documentation addresses
+TOPOLOGY = HERE / "fixtures" / "topology.yaml"
+# integration tests: a real run directory and a Neo4j test instance (skipped
+# when absent)
+PENN = pathlib.Path(
+    os.path.expanduser(os.environ.get("ADT4_CONSOLE_TEST_RUN", "/nonexistent"))
+)
+NEO4J_URI = os.environ.get("ADT4_CONSOLE_TEST_NEO4J", "neo4j://localhost:7697")
+NEO4J_AUTH = (
+    os.environ.get("HERACLES_NEO4J_USERNAME", "neo4j"),
+    os.environ.get("HERACLES_NEO4J_PASSWORD", "neo4j_pw"),
+)
 
 
 def port_open(host: str, port: int) -> bool:
