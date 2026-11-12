@@ -132,6 +132,30 @@ def _lb(tmp_path, state=None, **kw):
     return lb
 
 
+def test_console_log_waits_for_the_base_dir(tmp_path, monkeypatch):
+    # a console started without $ADT4_RUN_DIR (cli attaches before the logbook knows
+    # its base dir): console.log follows once the logbook sets it, and moves with it
+    import logging
+
+    monkeypatch.delenv("ADT4_RUN_DIR", raising=False)
+    eventlog.reset()
+    eventlog.enable(True)
+    try:
+        assert eventlog.attach_console_log() is None
+        lb = _lb(tmp_path)
+        lb.start()
+        first = tmp_path / "out" / "console" / "console.log"
+        assert first.is_file()
+        lb.new_session(dict(RELOC_PLAN))
+        logging.getLogger("adt4_console.test").warning("after the launch")
+        moved = tmp_path / "out" / "exp1" / "console.log"
+        assert "after the launch" in moved.read_text()
+        lb.stop()
+    finally:
+        eventlog.detach_console_log()
+        eventlog.reset()
+
+
 RELOC_PLAN = {"experiment": "exp1", "robots": ["euclid", "hamilton"], "mode": "relocalize", "prior_path": "/p",
               "base_station": "willow"}  # fmt: skip
 
