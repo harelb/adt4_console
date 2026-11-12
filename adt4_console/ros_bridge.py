@@ -1746,15 +1746,12 @@ class RosBridge:
             "goal": {"robot_id": robot, "pddl_goal": goal},
             "constraints": active + order,
         }
-        # GRSTAPS-X plans every robot with a pose; only -by forms bind a robot
-        note = "GRSTAPS-X does not apply use-robots: it may give tasks to any robot" if use_robots(order) else None
         gm_engine = None
         if route != "planner" and self.goal_manager_subscribers() > 0:
             gm_engine = self.goal_manager_engine()
             if gm_engine == "grstaps":
                 return self._send(robot, "pddl", self.commanded_goal_topic(), COMMANDED_GOAL_TYPE, fields,
-                                  {"via": "goal_manager", "engine": "grstaps", "constraints": active + order,
-                                   "warning": note})  # fmt: skip
+                                  {"via": "goal_manager", "engine": "grstaps", "constraints": active + order})  # fmt: skip
             if route == "goal_manager":
                 raise LookupError(
                     "goal_manager forwards to Fast Downward, not GRSTAPS-X"
@@ -1770,8 +1767,6 @@ class RosBridge:
         else:
             warning = ("sent straight to GRSTAPS-X: goal_manager (plan repair) is not driving it, so a goal "
                        "the running plan already covers is planned again")  # fmt: skip
-        if note:
-            warning += "; " + note
         return self._send(robot, "pddl", p.get("topic") or goal_topic(self.planner_ns, p), p["msg_type"], fields,
                           {"via": "planner", "engine": "grstaps", "warning": warning,
                            "constraints": active + order, "plugin": p["name"]})  # fmt: skip

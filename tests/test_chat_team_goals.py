@@ -235,12 +235,23 @@ def test_combined_pick_goal_names_both_robots(monkeypatch):
     assert rb.goal_robots("hamilton", sent[0][2]) == ["hamilton", "euclid"]
 
 
-def test_grstaps_warns_that_use_robots_is_not_applied(monkeypatch):
+def test_grstaps_takes_use_robots_without_a_warning(monkeypatch):
+    """GRSTAPS-X applies use-robots (omniplanner c07d67a: the robots it leaves out
+    get empty plans), so the goal carries it and nothing says otherwise."""
     rb, sent = _bridge(monkeypatch)
     monkeypatch.setattr(rb, "goal_manager_engine", lambda: "grstaps")
     r = rb.send_pddl_goal("euclid", ALL_CHAIRS, constraints=BOTH, engine="grstaps")
     assert len(sent) == 1 and sent[0][2]["constraints"] == BOTH
-    assert "does not apply use-robots" in r["warning"]
+    assert r["via"] == "goal_manager"
+    assert "use-robots" not in (r.get("warning") or "")
+    # straight to the GRSTAPS-X plugin (no goal_manager): the same
+    rb, sent = _bridge(monkeypatch, gm_subs=0)
+    monkeypatch.setattr(rb, "grstaps_plugin", lambda: {"name": "grstaps_planner", "topic": "/willow/g",
+                                                       "msg_type": "omniplanner_msgs/msg/ConstrainedPddlGoalMsg"})
+    r = rb.send_pddl_goal("euclid", ALL_CHAIRS, constraints=BOTH, engine="grstaps")
+    assert len(sent) == 1 and sent[0][2]["constraints"] == BOTH
+    assert r["via"] == "planner" and "sent straight to GRSTAPS-X" in r["warning"]
+    assert "use-robots" not in r["warning"]
 
 
 # ---------------------------------------------------------------- tracker

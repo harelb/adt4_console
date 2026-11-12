@@ -42,14 +42,18 @@ def _system(engine):
 def test_propose_goal_description_supports_at_on_fast_downward():
     assert "(at-place euclid t40) / (at-object euclid o20): that robot ends there (Fast Downward)" in DESC
     assert "With engine='grstaps' (GRSTAPS-X" in DESC
-    assert "GRSTAPS-X takes no or / at-* / holding / use-robots (use engine='fast_downward' for those)" in DESC
+    # GRSTAPS-X takes holding and use-robots (omniplanner c07d67a), still no or / at-*
+    assert "GRSTAPS-X takes no or / at-* (use engine='fast_downward' for those)" in DESC
+    assert "GRSTAPS-X also takes use-robots and holding" in DESC
+    assert "use-robots limits the team (Fast Downward only)" not in DESC
     assert "it does not take or / at-*" not in DESC
     _no_unattributed_at_limit(DESC)
 
 
 def test_console_goal_notes_name_fast_downward_for_at():
     assert "at-place / at-object (that robot ends there)" in CONSOLE_GOAL_NOTES
-    assert "but GRSTAPS-X takes no or / at-* / holding / use-robots: those need Fast Downward" in CONSOLE_GOAL_NOTES
+    assert "GRSTAPS-X takes no or / at-*: those need Fast Downward" in CONSOLE_GOAL_NOTES
+    assert "holding / use-robots: those need" not in CONSOLE_GOAL_NOTES
     assert "but takes no or / at-*" not in CONSOLE_GOAL_NOTES
     _no_unattributed_at_limit(CONSOLE_GOAL_NOTES)
 
@@ -103,3 +107,19 @@ def test_at_object_goal_on_fast_downward_makes_a_card_for_euclid():
     assert card["body"]["engine"] == "fast_downward"
     assert "team" not in card  # one named robot
     assert out["proposed"] and out["sent_through"] == "euclid"
+
+
+def test_console_text_offers_grstaps_holding_and_use_robots_with_their_limits():
+    """GRSTAPS-X now takes holding and use-robots (omniplanner c07d67a); the
+    console states its holding limits, as heracles_agents' GRSTAPS-X rules do."""
+    notes = " ".join(CONSOLE_GOAL_NOTES.split())
+    assert "and takes holding and use-robots too" in notes
+    for limit in ("the robot that holds does nothing else in that plan",
+                  "one holding goal per robot", "object cannot be both held and placed",
+                  "no husky, and no robot without an arm"):  # fmt: skip
+        assert limit in notes, limit
+    assert '"each robot picks up a different cone" names a specific robot for each cone' in notes
+    desc = " ".join(DESC.split())
+    assert "the holder does nothing else in that plan" in desc
+    assert "no husky or robot without an arm" in desc
+
