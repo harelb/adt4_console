@@ -126,6 +126,12 @@ def parse_args(argv=None):
         help="map edits: staged + published with a confirm while a launch is active "
         "(auto, default), always staged, or always applied immediately",
     )
+    p.add_argument(
+        "--no-mission-log",
+        action="store_true",
+        help="do not write mission event logs / console.log / sessions / missions "
+        "($ADT4_RUN_DIR, else <output-root>/<experiment>__base)",
+    )
     p.add_argument("--log-level", default="info")
     return p.parse_args(argv)
 
@@ -189,6 +195,8 @@ def settings_from_args(args):
         sam3_url=args.sam3_url,
         launch_state_path="~/.adt4_console/active_launch.json",
         launch_memory_path="~/.adt4_console/launch_memory.json",
+        mission_log=not args.no_mission_log,
+        logbook_state_path="~/.adt4_console/logbook.json",
         geo_anchors=_pairs(args.geo_anchor, "--geo-anchor"),
         tiles_dir=args.tiles_dir,
         tiles_live=args.tiles_live,
@@ -241,6 +249,12 @@ def main(argv=None):
     from .app import create_app
 
     app = create_app(settings)
+    if settings.mission_log:
+        from . import eventlog
+
+        path = eventlog.attach_console_log()
+        if path is not None:
+            logging.getLogger(__name__).info("console log: %s", path)
     uvicorn.run(app, host=settings.host, port=settings.port, log_level=args.log_level)
 
 

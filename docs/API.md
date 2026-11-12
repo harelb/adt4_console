@@ -1616,6 +1616,45 @@ The card shows the reason, the changes, the original and proposed goals, and the
 robot" checkbox). Below it is a feed of the last 6 batches (source chip awcd / sget / console,
 kind, symbol, class, map version).
 
+## 21. Mission logging: sessions, relocalization gate, missions (`eventlog.py`, `logbook.py`, `eventtap.py`, `routes/logbook.py`)
+
+Events are JSONL with one envelope (`v, t_wall, t_mono, t_ros, machine, robot, run_id,
+session_id, mission_id, goal_id, plan_id, source, type, seq, payload`) in
+`$ADT4_RUN_DIR/events/<source>.jsonl` (else the base experiment dir
+`<output_root>/<experiment>__base/events/`), written from one queue thread, fsynced every
+2 s, rotated at 200 MB (`<source>.<n>.jsonl`), redacted by key (api keys, passwords,
+tokens, authorization; never the env); strings over 64 KB go to `blobs/` as
+`{"$file": ...}`.  `console.log` (rotating) sits next to `events/`.  `--no-mission-log`
+turns all of it off.
+
+Sources and types: `chat` (`chat.user/assistant/tool_call/tool_result/error/card`,
+`goal.proposed`, `llm.call` with provider, model, resp_model, latency_ms, in/out/reasoning
+tokens, cost_usd, ok, error; prompt bodies only with `ADT4_LOG_LLM_PROMPTS=1`),
+`goal_tracker` (`goal.stage`, `goal.outcome`), `console` (`goal.sent/approved/rejected/images`,
+`op.*` operator REST actions, `session.*`, `mission.*`, `reloc.*`, `link.stats` 5 s,
+`clock.offset` 30 s + mission start/end, `robot.pose` 1 Hz, `reloc.state`, `awcd.changes`,
+`console.restart`), `sam3` (`sam3.query/candidates/commit/discard`).
+Goal sends carry `X-ADT4-Goal-Origin: auto | operator | plan_panel` (who approved).
+
+A console Launch starts a **session** (`s<YYYYmmdd-HHMMSS>_<4hex>`; every `run-adt4`
+command is prefixed `export ADT4_SESSION_ID=<id> &&`), written to
+`sessions/<id>/{session.json,reloc.json}`.  Robots launched to relocalize go
+`unlocalized -> relocalizing -> relocalized | failed` (or `overridden` with a reason);
+mapping-mode robots are `not_required`.  A **mission** (`m<...>`, `missions/<id>/mission.json`,
+`reloc.json`, `images/goals/<goal_id>/`, `images/sam3/`) starts on Start mission or on the
+first `goal.sent` while none is open, only when every session robot passes the gate; it
+ends on End mission or when the session stops.  The current mission is published latched
+on `/global/mission/current` (`std_msgs/String`, JSON `{mission_id, state: open|closed,
+session_id}`).
+
+| Method | Path | |
+|---|---|---|
+| GET | `/api/logbook` | session, per-robot reloc state + live evidence, gate, open mission (hub `logbook/state`) |
+| POST | `/api/logbook/mission/start` `{name?, operator?}` | 409 + reasons while the gate is closed or a mission is open |
+| POST | `/api/logbook/mission/end` | 409 when none is open |
+| POST | `/api/logbook/reloc/{robot}/{start,confirm,fail,override}` `{operator?, method?, note?, reason?}` | 409 on a wrong transition, 400 override without reason, 404 robot not in the session |
+| POST | `/api/logbook/session/stop` | ends the session (and its mission: `session_stop`) |
+
 ## Deviations
 
 ### fleetlink (§8)
