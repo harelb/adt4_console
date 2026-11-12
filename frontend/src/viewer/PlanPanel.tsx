@@ -2,7 +2,7 @@ import {useEffect, useState} from "react";
 import {PlanExecStatus, usePlanExec} from "./PlanExecStatus";
 import {useViewer} from "../stores/viewer";
 import {useRobots} from "../stores/robots";
-import {errorText, getJSON, postJSON, useApi} from "../lib/api";
+import {errorText, getJSON, postJSON, sendJSON, useApi} from "../lib/api";
 import {fmtTime} from "../lib/fuzzy";
 import type {GoalSendResult, PlanRobot, RobotPlan} from "../types";
 import {Badge, Empty, ErrorBox, Loading, Segmented, Spinner} from "../components/ui";
@@ -44,8 +44,13 @@ export function executorMessage(label: string, r: unknown): {tone: SendTone; tex
 
 /** POST a goal; PDDL goals go through plan repair v3's goal_manager when it
  *  runs (``via``), else straight to omniplanner with a ``warning`` (API.md §9). */
-export async function sendGoal(robot: string, kind: string, body: unknown) {
-  return postJSON<GoalSendResult>(`api/robots/${encodeURIComponent(robot)}/goal/${kind}`, body);
+export type GoalOrigin = "auto" | "operator" | "plan_panel";
+
+/** ``origin``: who approved the send, for the mission log's goal.approved
+ *  (``X-ADT4-Goal-Origin``): the chat's auto-send, the operator on a goal card,
+ *  or the Plan panel. */
+export async function sendGoal(robot: string, kind: string, body: unknown, origin: GoalOrigin = "auto") {
+  return sendJSON<GoalSendResult>("POST", `api/robots/${encodeURIComponent(robot)}/goal/${kind}`, body, {"X-ADT4-Goal-Origin": origin});
 }
 
 export function PlanPanel() {
@@ -207,12 +212,12 @@ export function PlanPanel() {
             <button
               className="btn btn-primary"
               disabled={!gotoDraft.length || !!busy || (!kinds.has("goto") && kinds.size > 0)}
-              onClick={() => run("Goto", () => sendGoal(planRobot!, "goto", {points: gotoDraft.map(g => g.sym)}))}
+              onClick={() => run("Goto", () => sendGoal(planRobot!, "goto", {points: gotoDraft.map(g => g.sym)}, "plan_panel"))}
             >
               {busy === "Goto" && <Spinner />} Send goto
             </button>
             {kinds.has("tsp") && (
-              <button className="btn" disabled={!gotoDraft.length || !!busy} onClick={() => run("TSP", () => sendGoal(planRobot!, "tsp", {points: gotoDraft.map(g => g.sym)}))}>
+              <button className="btn" disabled={!gotoDraft.length || !!busy} onClick={() => run("TSP", () => sendGoal(planRobot!, "tsp", {points: gotoDraft.map(g => g.sym)}, "plan_panel"))}>
                 Send as TSP
               </button>
             )}
@@ -255,7 +260,7 @@ export function PlanPanel() {
           <button
             className="btn btn-primary"
             disabled={!pddlDraft.trim() || !!busy || (!pddlPlugins.length && !sendGrstaps)}
-            onClick={() => run("PDDL", () => sendGoal(planRobot!, "pddl", sendGrstaps ? {goal: pddlDraft.trim(), engine: "grstaps"} : {plugin: pddlPlugin, goal: pddlDraft.trim()}))}
+            onClick={() => run("PDDL", () => sendGoal(planRobot!, "pddl", sendGrstaps ? {goal: pddlDraft.trim(), engine: "grstaps"} : {plugin: pddlPlugin, goal: pddlDraft.trim()}, "plan_panel"))}
           >
             {busy === "PDDL" && <Spinner />} Send PDDL goal
           </button>
@@ -280,7 +285,7 @@ export function PlanPanel() {
             onChange={e => setLang(e.target.value)}
             aria-label="Language goal"
           />
-          <button className="btn btn-primary" disabled={!lang.trim() || !!busy} onClick={() => run("Language", () => sendGoal(planRobot!, "language", {command: lang.trim(), domain_type: langDomain}))}>
+          <button className="btn btn-primary" disabled={!lang.trim() || !!busy} onClick={() => run("Language", () => sendGoal(planRobot!, "language", {command: lang.trim(), domain_type: langDomain}, "plan_panel"))}>
             {busy === "Language" && <Spinner />} Send command
           </button>
         </div>

@@ -30,6 +30,8 @@ import json
 import threading
 import time
 
+from . import eventlog
+
 # a goal is matched to plans / statuses for this long after it was sent
 MATCH_WINDOW_S = 600.0
 # plans this close before an ok plan_status (or after the first plan) are one goal
@@ -42,6 +44,8 @@ MAX_GOALS = 100
 MAX_EVENTS = 40
 
 TERMINAL = ("done", "failed", "preempted")
+# a goal's overall stages that end it (goal.outcome)
+OUTCOME_STAGES = ("done", "failed", "preempted", "plan_failed")
 FAIL_WORDS = ("FAIL", "ABORT", "ERROR", "REJECT", "CANCEL")
 
 
@@ -210,6 +214,8 @@ class GoalTracker:
         self._lease: dict[str, dict] = {}
         self._teleop: dict[str, dict] = {}
         self._sent: dict[str, str] = {}  # gid -> last published json
+        # gid -> {"": overall stage, robot: stage} as last logged (goal.stage events)
+        self._stages: dict[str, dict] = {}
 
     # ------------------------------------------------------------- queries
     def view(self, gid: str) -> dict | None:
@@ -237,6 +243,7 @@ class GoalTracker:
             while len(self._goals) > MAX_GOALS:
                 old = self._goals.popitem(last=False)[0]
                 self._sent.pop(old, None)
+                self._stages.pop(old, None)
             self._emit(g)
             return gid
 
@@ -524,6 +531,10 @@ class GoalTracker:
 
     # ------------------------------------------------------------- output
     def _emit(self, g: Goal) -> None:
+        try:
+            self._log_stages(g)
+        except Exception:  # noqa: BLE001 — logging never breaks tracking
+            pass
         if self._publish is None:
             return
         v = g.view()
@@ -535,6 +546,35 @@ class GoalTracker:
             self._publish(g.id, v)
         except Exception:  # noqa: BLE001
             pass
+
+    def _log_stages(self, g: Goal) -> None:
+        """``goal.stage`` on every transition of the goal (robot "") or of one of
+        its robots, ``goal.outcome`` when one ends (mission logging plan §3)."""
+        seen = self._stages.setdefault(g.id, {})
+        now = self.clock()
+        stage, text = g.overall()
+        cur = {"": (stage, text)}
+        for r, rt in g.robots.items():
+            if rt.plan_id is not None or rt.named:
+                v = g._robot_view(rt)  # noqa: SLF001
+                cur[r] = (v["stage"], v["text"])
+        for r, (st, txt) in cur.items():
+            old = seen.get(r)
+            if old == st:
+                continue
+            seen[r] = st
+            rt = g.robots.get(r)
+            eventlog.emit("goal_tracker", "goal.stage", {
+                "goal_id": g.id, "robot": r or None, "from": old, "to": st, "detail": txt[:300],
+                "kind": g.kind, "goal_robot": g.robot, "plan_id": rt.plan_id if rt else None,
+                "done": rt.done_count() if rt else None, "n": rt.n if rt else None,
+            }, goal_id=g.id, plan_id=rt.plan_id if rt else None, robot=r or g.robot)  # fmt: skip
+            ended = st in OUTCOME_STAGES or (r and st == "no_plan")
+            if ended and (old not in OUTCOME_STAGES):
+                eventlog.emit("goal_tracker", "goal.outcome", {
+                    "goal_id": g.id, "robot": r or None, "result": st, "detail": txt[:300], "t_sent": g.t,
+                    "t_done": now, "duration_s": round(now - g.t, 2), "kind": g.kind, "summary": g.summary[:300],
+                }, goal_id=g.id, plan_id=rt.plan_id if rt else None, robot=r or g.robot)  # fmt: skip
 
     def summary_lines(self, n: int = 5) -> list[str]:
         """One line per recent goal (for the chat model's context)."""

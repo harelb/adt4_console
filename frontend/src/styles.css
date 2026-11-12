@@ -5033,3 +5033,33 @@ input[type="checkbox"] {
   border-radius: 8px;
   background: var(--bg-1);
 }
+
+/* session, relocalization phase and mission controls (Live tab; mission logging) */
+.session-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg);
+}
+.reloc-phase,
+.mission-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.reloc-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.reloc-row .input,
+.mission-controls .input {
+  min-width: 0;
+  flex: 1 1 140px;
+}

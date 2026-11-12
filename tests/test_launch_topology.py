@@ -1,5 +1,6 @@
 import time
 
+import pytest
 from ruamel.yaml import YAML
 
 from .conftest import make_client, needs_fleet_core, needs_robot_colors
@@ -74,6 +75,17 @@ def test_launch_kill_session_confirm_then_launch(settings):
 
 
 @needs_fleet_core
+def _has_run_dirs() -> bool:
+    try:
+        import dcist_launch_system.fleet.run_dirs  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(
+    _has_run_dirs(), reason="per-run dirs: an existing experiment is kept"
+)
 def test_launch_large_overwrite_needs_typed_confirm(settings):
     ssh = FakeSSH(
         [
@@ -91,6 +103,28 @@ def test_launch_large_overwrite_needs_typed_confirm(settings):
         job = svc.jobs.wait(job_id).to_dict()
     assert job["state"] == "failed"
     assert not ssh.ran("rm -rf") and not ssh.ran("run-adt4")
+
+
+@pytest.mark.skipif(not _has_run_dirs(), reason="fleet tooling without per-run dirs")
+def test_launch_keeps_an_existing_experiment(settings):
+    # run-adt4 adds runs/<run_id> under it: no overwrite prompt, nothing deleted
+    ssh = FakeSSH(
+        [
+            ("echo OK", (0, "OK", "")),
+            ("tmux has-session", (1, "", "")),
+            ("echo EXISTS", (0, "EXISTS", "")),
+            ("du -sb", (0, str(3 * 1024**3), "")),
+        ]
+    )
+    client, svc = make_client(settings, launch_deps=_launch_deps(ssh))
+    with client:
+        job_id = client.post("/api/launch", json={**PLAN, "preflight": False}).json()[
+            "job_id"
+        ]
+        job = svc.jobs.wait(job_id).to_dict()
+    assert job["state"] == "succeeded", [line["text"] for line in job["log"]]
+    assert not ssh.ran("rm -rf") and ssh.ran("run-adt4")
+    assert any("earlier runs are kept" in line["text"] for line in job["log"])
 
 
 @needs_fleet_core

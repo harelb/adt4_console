@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from . import cypher_tools, sam3_client
+from . import cypher_tools, eventlog, sam3_client
 
 log = logging.getLogger(__name__)
 
@@ -345,6 +345,7 @@ class ChatTurn:
     # PDDL goals proposed in this turn (one team goal per request)
     pddl_goals: list = field(default_factory=list)
     history: list | None = None  # propose_mission: the request the thread started with
+    turn_id: str | None = None  # the event log's id of this turn (chat.* / llm.call events)
 
 
 class ChatService:
@@ -484,7 +485,44 @@ class ChatService:
         return self._client
 
     # ------------------------------------------------------------------ entry
-    def stream(
+    def stream(self, message: str, robot: str | None = None, src: str | None = None, history: list | None = None,
+               model: str | None = None, mission_ctx: dict | None = None, reasoning: str | None = None,
+               engine: str | None = None):  # fmt: skip
+        """One chat turn (:meth:`_stream`), logged: ``chat.user``, the turn's cards
+        (``goal.proposed``, ``chat.card``), errors and ``chat.assistant``."""
+        turn_id = f"t{int(time.time() * 1000)}"
+        t0 = time.monotonic()
+        eventlog.emit("chat", "chat.user", {"turn_id": turn_id, "text": message, "robot": robot, "src": src,
+                                            "model": model or self.model(), "provider": self.provider(),
+                                            "reasoning": reasoning, "engine": engine,
+                                            "mission_planner": mission_ctx is not None,
+                                            "history_items": len(history or [])}, robot=robot)  # fmt: skip
+        texts: list[str] = []
+        try:
+            for ev in self._stream(message, robot, src, history, model, mission_ctx, reasoning, engine, turn_id):
+                try:
+                    self._log_stream_event(ev, turn_id, robot, texts)
+                except Exception:  # noqa: BLE001
+                    log.exception("chat event log")
+                yield ev
+        finally:
+            eventlog.emit("chat", "chat.assistant", {"turn_id": turn_id, "text": "".join(texts),
+                                                     "duration_ms": round(1000 * (time.monotonic() - t0))},
+                          robot=robot)  # fmt: skip
+
+    @staticmethod
+    def _log_stream_event(ev: dict, turn_id: str, robot, texts: list) -> None:
+        t = ev.get("type") if isinstance(ev, dict) else None
+        if t == "text":
+            texts.append(str(ev.get("text") or ""))
+        elif t == "goal":
+            eventlog.emit("chat", "goal.proposed", {"turn_id": turn_id, "card": ev}, robot=ev.get("robot") or robot)
+        elif t == "error":
+            eventlog.emit("chat", "chat.error", {"turn_id": turn_id, "text": ev.get("text")}, robot=robot)
+        elif t not in (None, "tool", "done", "transcript", "object_candidate"):
+            eventlog.emit("chat", "chat.card", {"turn_id": turn_id, "card_type": t, "card": ev}, robot=robot)
+
+    def _stream(
         self,
         message: str,
         robot: str | None = None,
@@ -494,6 +532,7 @@ class ChatService:
         mission_ctx: dict | None = None,
         reasoning: str | None = None,
         engine: str | None = None,
+        turn_id: str | None = None,
     ):
         """One chat turn.  ``history``: the transcript items of earlier turns
         (the client keeps them; each turn ends with a ``transcript`` event
@@ -518,6 +557,7 @@ class ChatService:
             # the chat's planner toggle: the engine of the PDDL goals proposed this turn
             engine=engine if engine in GOAL_ENGINES else None,
             history=history,
+            turn_id=turn_id,
         )
         try:
             client = self.llm_client()
@@ -1189,6 +1229,52 @@ class ChatService:
                                              turn.history)  # fmt: skip
         return [], {"error": f"unknown tool {name}"}
 
+    def _logged_tool(self, call, message, robot, src, origin, turn):
+        """:meth:`_run_tool` with ``chat.tool_call`` / ``chat.tool_result`` events."""
+        tid = turn.turn_id if turn is not None else None
+        eventlog.emit("chat", "chat.tool_call", {"turn_id": tid, "id": call.get("id"), "name": call["name"],
+                                                 "args": call.get("args")}, robot=robot)  # fmt: skip
+        t0 = time.monotonic()
+        ok, summary = False, None
+        try:
+            events, out = self._run_tool(call["name"], call["args"], message, robot, src, origin, turn)
+            ok = not (isinstance(out, dict) and out.get("error"))
+            summary = _clip(json.dumps(out, default=str), 600)
+            return events, out
+        except Exception as e:
+            summary = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            eventlog.emit("chat", "chat.tool_result", {"turn_id": tid, "id": call.get("id"), "name": call["name"],
+                                                       "ok": ok, "summary": summary,
+                                                       "latency_ms": round(1000 * (time.monotonic() - t0))},
+                          robot=robot)  # fmt: skip
+
+    def _llm_call(self, provider: str, turn, fn, **kwargs):
+        """``fn(**kwargs)`` (one LLM request) with an ``llm.call`` event: latency,
+        tokens, cost, ok / error.  No prompt bodies unless ADT4_LOG_LLM_PROMPTS=1
+        (then the request and response go to a blob file)."""
+        t0 = time.monotonic()
+        model = str(kwargs.get("model") or "")
+        tid = turn.turn_id if turn is not None else None
+        ev = {"turn_id": tid, "provider": provider, "model": model, "ttft_ms": None, "api": getattr(fn, "__qualname__", None)}
+        try:
+            resp = fn(**kwargs)
+        except Exception as e:
+            ev.update(ok=False, error=f"{type(e).__name__}: {e}"[:500], latency_ms=round(1000 * (time.monotonic() - t0)))
+            eventlog.emit("chat", "llm.call", ev)
+            raise
+        ev.update(ok=True, error=None, latency_ms=round(1000 * (time.monotonic() - t0)), **llm_usage(resp, model))
+        if os.environ.get("ADT4_LOG_LLM_PROMPTS", "") == "1":
+            try:
+                dump = getattr(resp, "model_dump", None)
+                body = json.dumps({"request": kwargs, "response": dump() if callable(dump) else str(resp)}, default=str)
+                ev["io"] = eventlog.get("chat").put_file("llm.json", body.encode(), subdir="llm")
+            except Exception:  # noqa: BLE001
+                log.exception("LLM prompt log")
+        eventlog.emit("chat", "llm.call", ev)
+        return resp
+
     def _goal_problems(self, goal: str, constraints, src) -> str:
         """heracles_agents' goal check (scene_graph_edit.goal_problems) on the
         planner's map: unknown robots, objects, places and regions, and constraint ids
@@ -1512,7 +1598,7 @@ class ChatService:
                 if last:
                     kwargs["tool_choice"] = {"type": "none"}
                 try:
-                    resp = client.beta.messages.create(**kwargs)
+                    resp = self._llm_call("anthropic", turn, client.beta.messages.create, **kwargs)
                 except anthropic.APIStatusError as e:
                     yield {
                         "type": "error",
@@ -1553,8 +1639,8 @@ class ChatService:
                 if not calls:
                     return
                 for c in calls:
-                    events, out = self._run_tool(
-                        c["name"], c["args"], message, robot, src, origin, turn
+                    events, out = self._logged_tool(
+                        c, message, robot, src, origin, turn
                     )
                     yield from events
                     items.append({"role": "tool", "id": c["id"], "name": c["name"],
@@ -1612,8 +1698,8 @@ class ChatService:
                     if is_reasoning_model(model) and (
                         uses_responses_api(model) or effort != "fast"
                     ):
-                        resp = _ResponsesReply(client.responses.create(
-                            model=model, instructions=sys_text, input=to_responses(list(history) + items),
+                        resp = _ResponsesReply(self._llm_call(
+                            "openai", turn, client.responses.create, model=model, instructions=sys_text, input=to_responses(list(history) + items),
                             tools=[{"type": "function", **t["function"]} for t in tools],
                             tool_choice="none" if last else "auto",
                             max_output_tokens=budget * (8 if effort in ("medium", "high") else 4),
@@ -1628,7 +1714,8 @@ class ChatService:
                             }
                         else:
                             knobs = {"temperature": 0.2, "max_tokens": budget}
-                        resp = client.chat.completions.create(
+                        resp = self._llm_call(
+                            "openai", turn, client.chat.completions.create,
                             model=model,
                             messages=[{"role": "system", "content": sys_text}]
                             + to_openai(list(history) + items),
@@ -1676,8 +1763,8 @@ class ChatService:
                 if not calls:
                     return
                 for c in calls:
-                    events, out = self._run_tool(
-                        c["name"], c["args"], message, robot, src, origin, turn
+                    events, out = self._logged_tool(
+                        c, message, robot, src, origin, turn
                     )
                     yield from events
                     items.append({"role": "tool", "id": c["id"], "name": c["name"],
@@ -1836,6 +1923,39 @@ def goal_atoms(goal: str) -> set[str]:
         for m in _ATOM.finditer((goal or "").lower())
         if m.group(1) not in ("and", "or", "not")
     }
+
+
+def _int(v) -> int | None:
+    try:
+        return int(v) if v is not None and not isinstance(v, bool) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def llm_usage(resp, model: str) -> dict:
+    """resp_model, in/out/reasoning tokens and cost of one OpenAI (chat
+    completions / responses) or Anthropic reply."""
+    u = getattr(resp, "usage", None)
+    rm = getattr(resp, "model", None)
+    rm = rm if isinstance(rm, str) else None
+    in_tok = _int(getattr(u, "prompt_tokens", None)) if u is not None else None
+    if in_tok is None and u is not None:
+        in_tok = _int(getattr(u, "input_tokens", None))
+    out_tok = _int(getattr(u, "completion_tokens", None)) if u is not None else None
+    if out_tok is None and u is not None:
+        out_tok = _int(getattr(u, "output_tokens", None))
+    reasoning = None
+    for det in ("completion_tokens_details", "output_tokens_details"):
+        d = getattr(u, det, None) if u is not None else None
+        if d is not None:
+            reasoning = _int(getattr(d, "reasoning_tokens", None))
+            if reasoning is not None:
+                break
+    cost = None
+    if in_tok is not None and out_tok is not None:
+        pin, pout = price_for(rm or model)
+        cost = round((in_tok * pin + out_tok * pout) / 1e6, 6)
+    return {"resp_model": rm, "in_tok": in_tok, "out_tok": out_tok, "reasoning_tok": reasoning, "cost_usd": cost}
 
 
 def _clip(text: str, n: int = TOOL_CONTENT_CHARS) -> str:
