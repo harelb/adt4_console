@@ -32,12 +32,46 @@ export function sessionsFor(all: string[], platform: string): string[] {
   return own.length ? own : all;
 }
 
-/** The session a platform's picker shows: the user's pick, else the single-session
- * pick when it belongs to that platform, else the mode's preset. */
-export function platformSession(platform: string, picked: Record<string, string>, session: string, presets: Record<string, string> | undefined): string {
-  if (picked[platform]) return picked[platform];
+/** The platform a robot session is made for, by its experiment name
+ * (`<experiment>-<config>`): spot* -> spot, phoenix* -> phoenix; undefined for
+ * any other session (base station, hand-made). Same rule as the backend
+ * (launch_workflow.session_platform). */
+export function sessionPlatform(s: string | null | undefined): string | undefined {
+  const exp = (s ?? "").split("-")[0];
+  return ["spot", "phoenix"].find(p => exp.startsWith(p));
+}
+
+/** `s` fits a robot of `platform`: made for it, or for no platform. */
+export const sessionFitsPlatform = (s: string | null | undefined, platform: string): boolean => {
+  const own = sessionPlatform(s);
+  return !own || own === platform;
+};
+
+/** `s` for a robot of `platform`: itself when it fits, else the other platform's
+ * same session (spot_relocalize-X <-> phoenix_relocalize-X) when it exists in
+ * `all`; undefined without one. */
+export function platformEquivalent(s: string | null | undefined, platform: string, all: string[] | undefined): string | undefined {
+  if (!s) return undefined;
+  const own = sessionPlatform(s);
+  if (!own || own === platform) return s;
+  const swapped = platform + s.slice(own.length);
+  return all?.includes(swapped) ? swapped : undefined;
+}
+
+/** The session a platform's picker shows: the user's pick for that platform, else
+ * the single-session pick mapped to the platform (a phoenix robot never gets a
+ * spot_* session: 2026-11-11), else the mode's preset. */
+export function platformSession(platform: string, picked: Record<string, string>, session: string, presets: Record<string, string> | undefined, all?: string[]): string {
+  if (picked[platform] && sessionFitsPlatform(picked[platform], platform)) return picked[platform];
   if (session && session.startsWith(platform)) return session;
+  const mapped = sessionPlatform(session) ? platformEquivalent(session, platform, all) : undefined;
+  if (mapped) return mapped;
   return presets?.[platform] ?? "";
+}
+
+/** Per-platform picks whose session is made for that platform. */
+export function picksForPlatforms(picks: Record<string, string> | null | undefined): Record<string, string> {
+  return Object.fromEntries(Object.entries(picks ?? {}).filter(([p, s]) => s && sessionFitsPlatform(s, p)));
 }
 
 /** session -> "mapping" | "relocalize" (GET api/launch/defaults → session_modes,

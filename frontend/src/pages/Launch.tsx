@@ -2,13 +2,13 @@ import {useEffect, useMemo, useRef, useState} from "react";
 import {useSearchParams} from "react-router";
 import {parseLaunchPreset} from "../lib/launchLink";
 import {defaultExperiment, isLaunchMode, lastPriorValue, nextExperimentName, type LastLaunch} from "../lib/launchMemory";
-import {picksForMode, platformLabel, platformOf, platformSession, platformsOf, sessionForMode, sessionMismatch, sessionModeOf, sessionsFor, sessionsForMode, type SessionModes} from "../lib/launchSessions";
+import {picksForMode, picksForPlatforms, platformLabel, platformOf, platformSession, platformsOf, sessionFitsPlatform, sessionForMode, sessionMismatch, sessionModeOf, sessionPlatform, sessionsFor, sessionsForMode, type SessionModes} from "../lib/launchSessions";
 import {preferBaseCopy, priorAvailability} from "../lib/runCopies";
 import {useFleet} from "../stores/fleet";
 import {trackJob} from "../stores/jobs";
 import {errorText, postJSON, useApi} from "../lib/api";
 import {groupChecks, preflightLabel, preflightTone} from "../lib/preflight";
-import type {ConsoleConfig, LaunchDefaults, LaunchPlan, MapEntry, MapsResponse, PreflightResult} from "../types";
+import type {ActiveLaunch, ConsoleConfig, LaunchDefaults, LaunchPlan, MapEntry, MapsResponse, PreflightResult} from "../types";
 import {Badge, Card, Dot, Empty, ErrorBox, Field, FuzzyPicker, Loading, PageHeader, Segmented, Spinner, Toggle} from "../components/ui";
 import {fmtAgo} from "../lib/fuzzy";
 import {jobIdOf} from "./Fleet";
@@ -28,6 +28,7 @@ export function LaunchPage() {
   const defaults = useApi<LaunchDefaults>(`api/launch/defaults?mode=${mode}`);
   const config = useApi<ConsoleConfig>("api/config");
   const maps = useApi<MapsResponse>("api/maps");
+  const active = useApi<ActiveLaunch>("api/launch/active");
   const machines = useFleet(s => s.machines);
 
   const [robots, setRobots] = useState<string[]>([]);
@@ -38,6 +39,12 @@ export function LaunchPage() {
   const [showAllSessions, setShowAllSessions] = useState(false);
   // launch only the base station's session (no robots)
   const [baseOnly, setBaseOnly] = useState(false);
+  // (re)launch only the selected robots; the base station's session keeps running
+  const [robotsOnly, setRobotsOnly] = useState(false);
+  // robots only: Stop & save each robot before it is relaunched
+  const [saveFirst, setSaveFirst] = useState(false);
+  // per-robot Restart: the robot being confirmed, and the experiment it relaunches into
+  const [restart, setRestart] = useState<{robot: string; experiment: string; saveFirst: boolean} | null>(null);
   const [baseStation, setBaseStation] = useState<string>("");
   const [bsSession, setBsSession] = useState("");
   const [experiment, setExperiment] = useState(defaultExperiment("mapping"));
@@ -78,8 +85,9 @@ export function LaunchPage() {
     const modes = d?.session_modes;
     if (l.robots?.length) setRobots(l.robots);
     if (l.session) setSession(sessionForMode(l.session, m, modes, d?.session ?? ""));
-    setPlatformPicks(picksForMode(l.sessions, m, modes));
+    setPlatformPicks(picksForPlatforms(picksForMode(l.sessions, m, modes)));
     setBaseOnly(!!l.base_only);
+    setRobotsOnly(false);
     setBaseStation(l.base_station ?? "");
     setBsSession(l.bs_session ?? "");
     setLinkNet(l.link_network ?? "");
@@ -149,7 +157,15 @@ export function LaunchPage() {
   const platformOfRobot = (r: string) => platformOf(r, robotPlatforms, allMachines.find(m => m.name === r)?.platform_type);
   const selPlatforms = platformsOf(robots, platformOfRobot);
   const perPlatform = selPlatforms.length > 1;
-  const sessionOf = (p: string) => platformSession(p, platformPicks, session, presets);
+  const sessionOf = (p: string) => platformSession(p, platformPicks, session, presets, sessions);
+  // one platform selected: its picker (labelled "Robot session") shows that platform's session
+  const singlePlatform = selPlatforms.length === 1 ? selPlatforms[0] : null;
+  const robotSession = singlePlatform ? sessionOf(singlePlatform) : session;
+  const pickRobotSession = (v: string) => {
+    setSession(v);
+    if (singlePlatform) setPlatformPicks(cur => ({...cur, [singlePlatform]: v}));
+  };
+  const activeExperiment = active.data?.active?.experiment || last?.experiment || "";
 
   const priorOptions = useMemo<PriorOption[]>(() => {
     const out: PriorOption[] = [];
@@ -162,13 +178,16 @@ export function LaunchPage() {
 
   const plan = (): LaunchPlan => {
     const [src, path] = prior ? prior.split("\u0000") : [null, ""];
-    const sessions = perPlatform && !baseOnly ? Object.fromEntries(selPlatforms.map(p => [p, sessionOf(p)])) : {};
+    // every selected platform's session, so the backend never maps a single session
+    const sessions = !baseOnly && selPlatforms.length ? Object.fromEntries(selPlatforms.map(p => [p, sessionOf(p)])) : {};
     return {
       robots: baseOnly ? [] : robots,
       // old backends: one session (the first robot's platform's)
-      session: baseOnly ? "" : perPlatform ? sessions[selPlatforms[0]] : session,
+      session: baseOnly ? "" : selPlatforms.length ? sessions[selPlatforms[0]] : session,
       sessions,
       base_only: baseOnly,
+      robots_only: !baseOnly && robotsOnly,
+      save_first: !baseOnly && robotsOnly && saveFirst,
       experiment: experiment.trim(),
       mode,
       prior_path: path ?? "",
@@ -189,9 +208,13 @@ export function LaunchPage() {
     if (!robots.length) problems.push("Select at least one robot (or Robots: none for the base station only)");
     if (perPlatform) {
       for (const p of selPlatforms) if (!sessionOf(p)) problems.push(`Pick a ${platformLabel(p)} session`);
-    } else if (!session) problems.push("Pick a robot session");
-    for (const s of perPlatform ? selPlatforms.map(sessionOf) : [session]) {
+    } else if (!robotSession) problems.push("Pick a robot session");
+    for (const s of selPlatforms.length ? selPlatforms.map(sessionOf) : [session]) {
       if (sessionMismatch(s, mode, sessionModes)) problems.push(`${s} is a ${sessionModeOf(s, sessionModes)} session: pick a ${mode} session`);
+    }
+    for (const p of selPlatforms) {
+      const s = sessionOf(p);
+      if (s && !sessionFitsPlatform(s, p)) problems.push(`${s} is a ${platformLabel(sessionPlatform(s) ?? "")} session: ${robots.filter(r => platformOfRobot(r) === p).join(", ")} ${robots.filter(r => platformOfRobot(r) === p).length > 1 ? "are" : "is"} ${platformLabel(p)}`);
     }
     if (!modesReady) problems.push(`Loading the ${mode} presets`);
   }
@@ -229,7 +252,43 @@ export function LaunchPage() {
     try {
       const r = await postJSON("api/launch", plan());
       const id = jobIdOf(r);
-      if (id) trackJob(id, baseOnly ? `Launch ${experiment} (base station only)` : `Launch ${experiment}`);
+      if (id) trackJob(id, baseOnly ? `Launch ${experiment} (base station only)` : robotsOnly ? `Relaunch ${robots.join(", ")} (robots only)` : `Launch ${experiment}`);
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // per-robot Restart: this form's session (the robot's platform's), mode, prior and
+  // record flag, robots only (the base station keeps running)
+  const restartPlan = (t: {robot: string; experiment: string; saveFirst: boolean}): LaunchPlan => {
+    const p = platformOfRobot(t.robot);
+    const s = sessionOf(p);
+    return {...plan(), robots: [t.robot], session: s, sessions: {[p]: s}, base_only: false, robots_only: true, save_first: t.saveFirst, experiment: t.experiment.trim()};
+  };
+  const restartProblems = (t: {robot: string; experiment: string}): string[] => {
+    const p = platformOfRobot(t.robot);
+    const s = sessionOf(p);
+    const out: string[] = [];
+    if (!s) out.push(`Pick a ${platformLabel(p)} session`);
+    else if (!sessionFitsPlatform(s, p)) out.push(`${s} is not a ${platformLabel(p)} session`);
+    else if (sessionMismatch(s, mode, sessionModes)) out.push(`${s} is a ${sessionModeOf(s, sessionModes)} session: pick a ${mode} session`);
+    if (!t.experiment.trim()) out.push("Name the experiment");
+    else if (!/^[\w.-]+$/.test(t.experiment.trim())) out.push("Experiment name: letters, digits, . _ - only");
+    if (mode === "relocalize" && !prior) out.push("Relocalize needs a prior map");
+    if (!modesReady) out.push(`Loading the ${mode} presets`);
+    return out;
+  };
+  const doRestart = async () => {
+    if (!restart) return;
+    setBusy("launch");
+    setErr(null);
+    try {
+      const r = await postJSON("api/launch", restartPlan(restart));
+      const id = jobIdOf(r);
+      if (id) trackJob(id, `Restart ${restart.robot} (robots only)`);
+      setRestart(null);
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -280,21 +339,35 @@ export function LaunchPage() {
       {defaults.loading && !defaults.data && <Loading label="Loading presets" />}
       <div className="launch-grid">
         <Card title="Robots">
-          <Field label="Robots" hint={baseOnly ? "Only the base station's adt4_system session is (re)started; robots already running are left alone." : undefined}>
-            <Segmented<"robots" | "none">
+          <Field
+            label="Robots"
+            hint={
+              baseOnly
+                ? "Only the base station's adt4_system session is (re)started; robots already running are left alone."
+                : robotsOnly
+                  ? "Only the selected robots are (re)launched: their running session is stopped cleanly (Ctrl-C, recordings close) and an existing output dir is moved aside. The base station's session, planner and fleetlink are not touched."
+                  : undefined
+            }
+          >
+            <Segmented<"robots" | "robots_only" | "none">
               ariaLabel="Robots"
-              value={baseOnly ? "none" : "robots"}
+              value={baseOnly ? "none" : robotsOnly ? "robots_only" : "robots"}
               onChange={v => {
                 setBaseOnly(v === "none");
+                setRobotsOnly(v === "robots_only");
                 setDry(null);
                 setChecks(null);
               }}
               options={[
                 {value: "robots", label: "Selected robots"},
+                {value: "robots_only", label: "Robots only (base keeps running)"},
                 {value: "none", label: "None (base station only)"},
               ]}
             />
           </Field>
+          {robotsOnly && !baseOnly && (
+            <Toggle checked={saveFirst} onChange={setSaveFirst} label="Stop & save first (hydra and ROMAN save their maps before the restart)" />
+          )}
           {!baseOnly && robotMachines.length === 0 && <Empty title="No robots in topology" />}
           {!baseOnly && (
           <>
@@ -307,6 +380,19 @@ export function LaunchPage() {
                 <span className="muted small mono">{m.ip}</span>
                 <span className="muted small">{platformLabel(platformOfRobot(m.name))}</span>
                 {!m.online && <Badge tone="err">offline</Badge>}
+                <button
+                  type="button"
+                  className="btn btn-xs"
+                  disabled={!!busy}
+                  title={`Stop ${m.name}'s stack and relaunch it alone with its ${platformLabel(platformOfRobot(m.name))} session; the base station keeps running`}
+                  onClick={e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setRestart({robot: m.name, experiment: activeExperiment || experiment, saveFirst: false});
+                  }}
+                >
+                  Restart
+                </button>
               </label>
             ))}
           </div>
@@ -331,12 +417,12 @@ export function LaunchPage() {
               </Field>
             ))
           ) : (
-            <Field label="Robot session" hint={<SessionModeTag session={session} mode={mode} modes={sessionModes} />}>
+            <Field label="Robot session" hint={<SessionModeTag session={robotSession} mode={mode} modes={sessionModes} />}>
               <FuzzyPicker
                 ariaLabel="Robot session"
-                value={session}
-                options={sessionsForMode(sessions, mode, sessionModes, showAllSessions, session)}
-                onChange={setSession}
+                value={robotSession}
+                options={sessionsForMode(singlePlatform && !showAllSessions ? sessionsFor(sessions, singlePlatform) : sessions, mode, sessionModes, showAllSessions, robotSession)}
+                onChange={pickRobotSession}
                 placeholder="type to filter sessions"
               />
             </Field>
@@ -455,8 +541,10 @@ export function LaunchPage() {
             ) : (
             <span>
               <strong>{mode}</strong> on <span className="mono">{robots.join(", ")}</span> with{" "}
-              <span className="mono">{perPlatform ? selPlatforms.map(p => `${platformLabel(p)}: ${sessionOf(p)}`).join(", ") : session}</span>
-              {baseStation && (
+              <span className="mono">{perPlatform ? selPlatforms.map(p => `${platformLabel(p)}: ${sessionOf(p)}`).join(", ") : robotSession}</span>
+              {robotsOnly ? (
+                <> (robots only: {baseStation ? <span className="mono">{baseStation}</span> : "the base station"} keeps running)</>
+              ) : baseStation && (
                 <>
                   {" "}
                   + <span className="mono">{baseStation}</span>
@@ -473,9 +561,39 @@ export function LaunchPage() {
           {busy === "dry" && <Spinner />} Dry run
         </button>
         <button className="btn btn-primary btn-lg" onClick={doLaunch} disabled={!!busy || problems.length > 0}>
-          {busy === "launch" && <Spinner />} {baseOnly ? "Launch base station" : "Launch"}
+          {busy === "launch" && <Spinner />} {baseOnly ? "Launch base station" : robotsOnly ? "Relaunch robots" : "Launch"}
         </button>
       </div>
+      {restart && (
+        <Card
+          title={`Restart ${restart.robot}`}
+          actions={
+            <button className="btn btn-sm" onClick={() => setRestart(null)}>
+              Cancel
+            </button>
+          }
+        >
+          <div data-testid="restart-panel">
+            <p className="small">
+              Stops <span className="mono">{restart.robot}</span>'s <span className="mono">adt4_system</span> session (Ctrl-C every pane, so recordings close their bags) and relaunches it with{" "}
+              <span className="mono">{sessionOf(platformOfRobot(restart.robot)) || "?"}</span> ({platformLabel(platformOfRobot(restart.robot))}, {mode}
+              {prior ? `, prior ${prior.split("\u0000")[1]?.split("/").pop()}` : ""}
+              {record ? ", recording" : ""}). The base station{baseStation ? ` ${baseStation}` : ""}, its planner and fleetlink keep running. An existing output dir on the robot is moved aside, never deleted.
+            </p>
+            <Field label="Experiment" hint="The running launch's experiment by default, so the robot's output sits next to the base station's.">
+              <input className="input mono" aria-label="Restart experiment" value={restart.experiment} onChange={e => setRestart({...restart, experiment: e.target.value})} />
+            </Field>
+            <Toggle checked={restart.saveFirst} onChange={v => setRestart({...restart, saveFirst: v})} label="Stop & save first (hydra and ROMAN save their maps)" />
+            {!baseStation && <p className="tone-warn small">No base station picked: robots need the base station for planning.</p>}
+            {restartProblems(restart).length > 0 && <p className="tone-warn small">{restartProblems(restart)[0]}</p>}
+            <div className="row gap">
+              <button className="btn btn-primary" disabled={!!busy || restartProblems(restart).length > 0} onClick={doRestart}>
+                {busy === "launch" && <Spinner />} Restart {restart.robot}
+              </button>
+            </div>
+          </div>
+        </Card>
+      )}
       {err && <ErrorBox error={err} compact />}
       {checks && <PreflightPanel result={checks} order={[...(baseOnly ? [] : robots), baseStation].filter(Boolean)} onClear={() => setChecks(null)} />}
       {dry && (
