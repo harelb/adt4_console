@@ -43,7 +43,8 @@ const ALL_NAV: NavItem[] = [
   {to: "/launch", label: "Launch", icon: "launch", feature: "fleet_core"},
   {to: "/maps", label: "Maps", icon: "maps", feature: "fleet_core"},
   {to: "/viewer", label: "Robot viewer", short: "Viewer", icon: "viewer"},
-  {to: "/mission", label: "Mission planner", short: "Mission", icon: "mission"},
+  {to: "/mission", label: "Plan", short: "Plan", icon: "mission"},
+  {to: "/missions", label: "Missions", icon: "jobs"},
   {to: "/network", label: "Network", icon: "network", feature: "fleet_core"},
   {to: "/config", label: "Config", icon: "config"},
 ];

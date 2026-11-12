@@ -11,6 +11,7 @@ import {ManipulationApprovalHost} from "./viewer/ManipulationApproval";
 import {TokenDialogHost} from "./components/TokenDialog";
 
 const ViewerPage = lazy(() => import("./viewer/ViewerPage"));
+const MissionsPage = lazy(() => import("./pages/Missions"));
 
 const router = createHashRouter([
   {
@@ -34,6 +35,14 @@ const router = createHashRouter([
         element: (
           <Suspense fallback={<Loading label="Loading mission planner" />}>
             <ViewerPage mode="mission" />
+          </Suspense>
+        ),
+      },
+      {
+        path: "missions/:id?",
+        element: (
+          <Suspense fallback={<Loading label="Loading missions" />}>
+            <MissionsPage />
           </Suspense>
         ),
       },

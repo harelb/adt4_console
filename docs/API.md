@@ -1656,6 +1656,40 @@ session_id}`).
 | POST | `/api/logbook/reloc/{robot}/{start,confirm,fail,override}` `{operator?, method?, note?, reason?}` | 409 on a wrong transition, 400 override without reason, 404 robot not in the session |
 | POST | `/api/logbook/session/stop` | ends the session (and its mission: `session_stop`) |
 
+### Recorded missions (`mission_log/`, `routes/mission_records.py`; Missions page `#/missions`)
+
+After `mission.end` the console snapshots the base DSG (`/<planner_ns>/dsg_saver/save_dsg`
+-> `missions/<id>/dsg_end.json`) and, unless `--no-mission-collect`, starts the collect job
+(`mission_log.collector`): the base's runs and console events are sliced into `base/`,
+each session robot's runs are sliced on the robot (`adt4-mission-slice`, sent over ssh)
+and pulled into `<robot>/` with rsync `--bwlimit` (`--collect-bwlimit-kbps`, 2000),
+deferred while a robot executes a goal (30 min at most), retried every 5 min while a
+robot is unreachable (`pending`); then the live C7 copies (`<robot>/events.live.jsonl`),
+`plans/<plan_id>.json`, the Neo4j `_SceneChange` / `_MapState` export
+(`scene_changes.jsonl`, `map_state.json`; read-only Cypher), `mission.json` run ids,
+`manifest.json`, `index.sqlite` and `report.json` (`adt4-mission check`). Bags, image
+stores and ROS logs are referenced, not copied, unless "Collect full". The robots'
+live C7 events (fleetlink `events`) land in `<event root>/events/live/<robot>.jsonl` as
+they arrive; a robot acknowledging a mission (C1 `mission`) is logged as `mission.ack`.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/logbook/missions` | `{sessions: [{session_id, experiment, robots, reloc, launch, missions: [summary]}], current}` |
+| GET | `/api/logbook/missions/{id}` | `{summary, mission, session, reloc, manifest, report, collect, map_state, has_dsg}` |
+| GET | `/api/logbook/missions/{id}/events?t0&t1&machine&source&type&goal&robot&q&limit&offset` | by base time (robot clocks mapped with the base's `clock.offset`), `type` takes `prefix.*`; `{events, total, t_range, facets}` |
+| GET | `/api/logbook/missions/{id}/goals` | per goal: card, stage history, outcome, per robot plan_id / solve_s / planned vs driven m / time to reach / repairs / leases / stalls, images |
+| GET | `/api/logbook/missions/{id}/chat` | chat turns, tool calls, `llm.call` |
+| GET | `/api/logbook/missions/{id}/stats` (`stats.csv`) | goals table, robots, LLM totals, link and clock series |
+| GET | `/api/logbook/missions/{id}/replay` | poses per robot, plans (paths), scene changes, reloc, goal stages, map (dsg_end.json or the prior) |
+| GET | `/api/logbook/missions/{id}/file?path=` | a file inside the mission folder |
+| POST | `/api/logbook/missions/{id}/check` | runs the check, returns `report.json` |
+| POST | `/api/logbook/missions/{id}/collect` `{full?}` | collect now / re-collect |
+| POST | `/api/logbook/missions/{id}/export` `{bags?}` | `.tar.zst` under `<base dir>/exports/` (409 while the check found a secret); GET `.../export/{file}` downloads it |
+
+Goals and plans are joined by the goal tracker's `plan_id` (omniplanner messages carry
+no goal id). CLI: `adt4-mission check|list|manifest|index|assemble|export`,
+`adt4-mission-slice`.
+
 ## Deviations
 
 ### fleetlink (§8)
