@@ -304,8 +304,9 @@ def check_bags(M: Mission, R: Report):
             st = WARN if silent else PASS
             items.append({"machine": m, "status": st, "bag": b.get("path"), "messages": b.get("message_count"),
                           "silent_required": silent, "silent_optional": len(opt_silent)})  # fmt: skip
-        elif opened and any((b.get("t_first_file") or 0) - off <= M.t0 + BAG_TOL_S
-                            and (b.get("t_last_write") or 0) - off >= M.t1 - BAG_TOL_S for _, b in opened):  # fmt: skip
+        elif opened and any((b.get("t_first_file") or 0) - off <= M.t0 + BAG_TOL_S for _, b in opened):
+            # still recording since before the mission (mcap flushes its chunks
+            # lazily: the file's mtime says little until the bag is closed)
             st = WARN
             items.append({"machine": m, "status": WARN, "why": "still recording (no metadata.yaml yet): re-collect "
                                                                 "after Stop & save to check the topics"})  # fmt: skip
@@ -526,10 +527,12 @@ def resolve_ref(mdir: pathlib.Path, machine: str, ref: str) -> pathlib.Path | No
 
 
 def check_images(M: Mission, R: Report):
-    n, missing, bad = 0, [], []
+    """``$file`` refs of this mission's events exist (FAIL); a goal image the
+    console could not find in the store at send time is a WARN (nothing to copy)."""
+    n, missing, bad, unavailable = 0, [], [], []
     for m, recs in M.by_machine.items():
         for r in recs:
-            if r["_src"] == "live":
+            if r["_src"] == "live" or not M.in_mission(m, r, pad=1.0):
                 continue
             refs = []
             _refs(r.get("payload"), refs)
@@ -537,7 +540,7 @@ def check_images(M: Mission, R: Report):
             if r.get("type") == "goal.images":
                 for x in p.get("refs") or []:
                     if x.get("error") and "$file" not in x:
-                        missing.append((m, r, x.get("src") or x.get("sym")))
+                        unavailable.append((m, r, x.get("src") or x.get("sym")))
             for ref in refs:
                 n += 1
                 path = resolve_ref(M.dir, m, str(ref["$file"]))
@@ -547,11 +550,11 @@ def check_images(M: Mission, R: Report):
                     continue
                 if ref.get("sha256") and _sha(path) != ref["sha256"]:
                     bad.append((m, r, ref["$file"]))
-    st = FAIL if (missing or bad) else PASS
-    first = (missing or bad or [(None, None, None)])[0][1]
+    st = FAIL if (missing or bad) else WARN if unavailable else PASS
+    first = (missing or bad or unavailable or [(None, None, None)])[0][1]
     R.add("images", "Images referenced by events exist (and match their sha)", st,
-          f"{n} refs; {len(missing)} missing, {len(bad)} sha mismatch", first=first,
-          items=[{"machine": m, "ref": f} for m, _, f in missing + bad])  # fmt: skip
+          f"{n} refs; {len(missing)} missing, {len(bad)} sha mismatch, {len(unavailable)} not in the store at send",
+          first=first, items=[{"machine": m, "ref": f} for m, _, f in missing + bad + unavailable])  # fmt: skip
 
 
 def check_clock(M: Mission, R: Report):

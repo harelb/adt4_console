@@ -326,7 +326,8 @@ class Collector:
         dest = mdir / robot
         kw = {}
         try:
-            if "bwlimit_kbps" in inspect.signature(self.rsync).parameters:
+            ps = inspect.signature(self.rsync).parameters
+            if "bwlimit_kbps" in ps or any(x.kind is inspect.Parameter.VAR_KEYWORD for x in ps.values()):
                 kw["bwlimit_kbps"] = self.bwlimit_kbps
         except (TypeError, ValueError):
             pass
