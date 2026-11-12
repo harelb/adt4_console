@@ -677,3 +677,62 @@ export interface LaunchDefaults {
   mode?: string;
   [k: string]: unknown;
 }
+
+// ---- Planner state view (API: GET api/plan/planner_state) ----
+/** goal_manager's ~/robot_plan_states entry for one robot. */
+export interface RobotPlanStateEntry {
+  status: "running" | "done" | "failed" | "stalled" | "preempted" | string;
+  plan_id?: string;
+  done?: number;
+  total?: number | null;
+  conjuncts?: string[];
+  remaining?: string[];
+}
+
+export interface PlanErrorEntry {
+  t: number | null;
+  text: string;
+  source: string;
+  robot?: string;
+}
+
+export interface PlannerRobotState {
+  robot: string;
+  /** objects the map (Neo4j HOLDS, published as heracles.holding) says it holds */
+  holding: string[];
+  /** last pose the state updater wrote (Robot.position), map frame */
+  position: number[] | null;
+  /** in omniplanner's last plan_robots (null: not known) */
+  in_plan: boolean | null;
+  plan_state: RobotPlanStateEntry | null;
+  constraints: ConstraintFact[];
+  last_error: PlanErrorEntry | null;
+}
+
+export interface HoldingCorrection {
+  t: number;
+  author: string;
+  request: string;
+  ok: boolean;
+  before: Record<string, string[]>;
+  after: Record<string, string[]>;
+  steps: {robot: string; object: string; action: "hold" | "release"; ok: boolean; error?: string; service: string}[];
+}
+
+export interface PlannerStateSnapshot {
+  t: number;
+  ros: boolean;
+  map: {source: string | null; error: string | null; version: number | null; epoch: string | null; rebuilding: boolean; rebuild_failed: string};
+  planner: {
+    map_version: number | null;
+    map_epoch: string | null;
+    plan_robots: string[] | null;
+    plan_robots_t: number | null;
+    robot_plan_states_t: number | null;
+    goal_manager: boolean;
+  };
+  robots: PlannerRobotState[];
+  last_error: PlanErrorEntry | null;
+  corrections: HoldingCorrection[];
+  holding_source: string;
+}

@@ -5033,3 +5033,88 @@ input[type="checkbox"] {
   border-radius: 8px;
   background: var(--bg-1);
 }
+
+/* ---------- Planner state (what the planner believes) ---------- */
+.planner-state {
+  margin-top: 8px;
+  min-width: 0;
+}
+.planner-state.compact {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin: 4px 0;
+}
+.planner-state.compact > summary {
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.planner-state.compact[open] > summary {
+  white-space: normal;
+}
+.planner-state-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.planner-state .ps-title {
+  margin: 6px 0 0;
+}
+.ps-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+.ps-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  padding: 2px 4px;
+}
+.ps-table td {
+  padding: 3px 4px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.ps-table tr.ps-sub td {
+  border-bottom: 1px solid var(--line);
+  padding-top: 0;
+}
+.ps-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.ps-pos,
+.ps-err {
+  font-size: 11px;
+}
+.ps-fact {
+  display: inline-block;
+  margin-right: 4px;
+}
+.ps-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 0;
+}
+.ps-editor .ps-obj {
+  width: 90px;
+}
+.ps-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--warn-bg);
+}
