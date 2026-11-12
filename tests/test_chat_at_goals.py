@@ -123,3 +123,65 @@ def test_console_text_offers_grstaps_holding_and_use_robots_with_their_limits():
     assert "the holder does nothing else in that plan" in desc
     assert "no husky or robot without an arm" in desc
 
+
+@needs_heracles_agents
+def test_grstaps_system_presents_holding_and_use_robots_and_at_or_as_fast_downward_only():
+    _, text = _system("grstaps")
+    flat = " ".join(text.split())
+    # GRSTAPS-X goals: holding and use-robots (heracles_agents' GRSTAPS-X rules + the console notes)
+    assert "and takes holding and use-robots too" in flat
+    assert "(holding ?r ?o): Robot ?r picks object ?o up" in flat
+    assert '- "Hamilton, pick up O1": (holding hamilton o1)' in text
+    assert "plus a use-robots constraint naming exactly" in flat
+    assert "a -by or holding robot left out of use-robots is an error" in flat
+    assert "no use-robots constraint" not in flat and "does not apply use-robots" not in flat
+    unsupported = flat.split("This planner does NOT support these")[1].split("To find")[0]
+    assert "holding" not in unsupported
+    # or / at-* stay Fast Downward only
+    assert "GRSTAPS-X takes no or / at-*: those need Fast Downward" in flat
+    assert '- "or".' in unsupported and "- at-place / at-object" in unsupported
+    assert "(at-object euclid o20)" not in text
+    # propose_goal's description says the same
+    desc = " ".join(DESC.split())
+    assert "use-robots limits the team." in desc
+    assert "GRSTAPS-X also takes use-robots and holding" in desc
+    assert "GRSTAPS-X takes no or / at-* (use engine='fast_downward' for those)" in desc
+
+
+@needs_heracles_agents
+def test_fast_downward_system_is_unchanged_apart_from_the_engine_bullet():
+    """The GRSTAPS-X holding / use-robots change (842a522) only rewrote the engine
+    bullet of the Fast Downward system prompt (fixture: 1e02705, bullet removed)."""
+    import json
+    import os
+
+    with open(os.path.join(os.path.dirname(__file__), "fixtures", "fd_system_1e02705.json"), encoding="utf-8") as f:
+        before = json.load(f)["text"]
+    _, text = _system("fast_downward")
+    lines = text.splitlines(keepends=True)
+    bullets = [line for line in lines if line.startswith("- engine: ")]
+    assert len(bullets) == 1
+    assert "".join(line for line in lines if not line.startswith("- engine: ")) == before
+
+
+@needs_heracles_agents
+def test_holding_goal_on_grstaps_makes_a_card_for_hamilton():
+    c, _ = _system("grstaps")
+    checked = []
+
+    def goal_problems(goal, constraints_json, conf):
+        checked.append(goal)
+        return ""  # the map has hamilton and o1
+
+    c.goal_check = goal_problems
+    c._cypher_src = lambda src: types.SimpleNamespace(id="map", uri="bolt://x", creds=("u", "p"))
+    c.turn.pddl_goals = []
+    events, out = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(holding hamilton o1)"},
+                              "hamilton, pick up O1", "euclid", "map", None, turn=c.turn)  # fmt: skip
+    assert checked == ["(holding hamilton o1)"]
+    [card] = events
+    assert card["type"] == "goal" and card["kind"] == "pddl" and card["robot"] == "hamilton"
+    assert card["body"]["goal"] == "(holding hamilton o1)"
+    assert card["body"]["engine"] == "grstaps"
+    assert "team" not in card
+    assert out["proposed"] and out["sent_through"] == "hamilton"
