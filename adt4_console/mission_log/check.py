@@ -304,9 +304,12 @@ def check_bags(M: Mission, R: Report):
             st = WARN if silent else PASS
             items.append({"machine": m, "status": st, "bag": b.get("path"), "messages": b.get("message_count"),
                           "silent_required": silent, "silent_optional": len(opt_silent)})  # fmt: skip
-        elif opened and any((b.get("t_first_file") or 0) - off <= M.t0 + BAG_TOL_S for _, b in opened):
-            # still recording since before the mission (mcap flushes its chunks
-            # lazily: the file's mtime says little until the bag is closed)
+        elif opened and any(
+            float((r.get("run_info") or {}).get("t_start") or b.get("t_first_file") or 0) - off <= M.t0 + BAG_TOL_S
+            for r, b in opened
+        ):
+            # still recording since the run started (the mission_bag window starts
+            # with the session; an open mcap's ctime / mtime is its last write)
             st = WARN
             items.append({"machine": m, "status": WARN, "why": "still recording (no metadata.yaml yet): re-collect "
                                                                 "after Stop & save to check the topics"})  # fmt: skip

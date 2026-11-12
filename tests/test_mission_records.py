@@ -495,3 +495,13 @@ def test_logbook_end_hook_and_run_ids(tmp_path):
 
 def test_shutil_unused():
     assert shutil.which("rsync"), "rsync is needed by the collector tests"
+
+
+def test_bag_still_recording_is_a_warning(tmp_path):
+    fx = mf.make(tmp_path)
+    (fx["robot_exp"] / "runs" / mf.ROBOT_RID / "mission_bag" / "metadata.yaml").unlink()
+    mf.collect(fx)
+    rep = read_json(fx["mdir"] / "report.json")
+    bags = next(c for c in rep["checks"] if c["id"] == "bags")
+    assert bags["status"] == "warn" and "still recording" in json.dumps(bags["items"])
+    assert rep["status"] == "warn"
