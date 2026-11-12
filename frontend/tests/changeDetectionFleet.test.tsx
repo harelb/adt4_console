@@ -90,6 +90,13 @@ describe("fleet change detection start / stop", () => {
     expect(res).toContain("hilbert (not relocalized: no prior-map match yet)");
     expect(res).toContain("gauss (offline (fleetlink link down))");
     expect(res).toContain("lewis (already running)");
+    // one row for the robots it was done for, then one per robot with its reason
+    expect(Array.from(q(el, "cd-fleet-result").children).map(c => c.textContent)).toEqual([
+      "started euclid, hamilton",
+      "skipped gauss (offline (fleetlink link down))",
+      "skipped hilbert (not relocalized: no prior-map match yet)",
+      "skipped lewis (already running)",
+    ]);
     expect(gets.filter(u => u === "api/change_detection/fleet")).toHaveLength(2); // refreshed
   });
 

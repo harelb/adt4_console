@@ -46,13 +46,17 @@ export function fleetSummary(robots: FleetRobot[]): string {
   return keys.map(k => `${n.get(k)} ${k}`).join(", ") || "no robots";
 }
 
-/** One line: who it was done for, who was skipped and why, who failed and why. */
-export function fleetResultText(r: FleetCmdResult): string {
+/** Who it was done for (one row), then one row per robot that failed or was skipped, with why. */
+export function fleetResultRows(r: FleetCmdResult): {tone: "" | "err" | "muted"; text: string}[] {
   const done = r.robots.filter(x => x.ok).map(x => x.robot);
-  const skipped = r.robots.filter(x => x.skipped).map(x => `${x.robot} (${x.error || "skipped"})`);
-  const failed = r.robots.filter(x => !x.ok && !x.skipped).map(x => `${x.robot} (${x.error || x.message || "no answer"})`);
-  const verb = r.cmd === "start" ? "started" : "stopped";
-  return [done.length ? `${verb} ${done.join(", ")}` : "", skipped.length ? `skipped ${skipped.join(", ")}` : "", failed.length ? `FAILED ${failed.join(", ")}` : ""].filter(Boolean).join(" · ") || "no robots";
+  const rows: {tone: "" | "err" | "muted"; text: string}[] = done.length ? [{tone: "", text: `${r.cmd === "start" ? "started" : "stopped"} ${done.join(", ")}`}] : [];
+  for (const x of r.robots) if (!x.ok && !x.skipped) rows.push({tone: "err", text: `FAILED ${x.robot} (${x.error || x.message || "no answer"})`});
+  for (const x of r.robots) if (x.skipped) rows.push({tone: "muted", text: `skipped ${x.robot} (${x.error || "skipped"})`});
+  return rows.length ? rows : [{tone: "muted", text: "no robots"}];
+}
+
+export function fleetResultText(r: FleetCmdResult): string {
+  return fleetResultRows(r).map(x => x.text).join(" · ");
 }
 
 export function FleetChangeDetectionControl() {
@@ -111,7 +115,13 @@ export function FleetChangeDetectionControl() {
           {busy === "stop" ? "…" : "Stop all"}
         </button>
       </div>
-      {result && <div className={result.ok ? "" : "tone-err"} data-testid="cd-fleet-result">{fleetResultText(result)}</div>}
+      {result && (
+        <div data-testid="cd-fleet-result">
+          {fleetResultRows(result).map(x => (
+            <div key={x.text} className={x.tone === "err" ? "tone-err" : x.tone}>{x.text}</div>
+          ))}
+        </div>
+      )}
       {waiting.length > 0 && (
         <div className="row gap-sm wrap cd-gate">
           {!confirm ? (
