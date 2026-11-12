@@ -26,6 +26,10 @@ export interface ViewStyleState {
   regionHulls: boolean;
   /** the ground grid under the map */
   grid: boolean;
+  /** Display › "Place labels": every place's symbol (and name) as text, by
+   *  source kind (`placeLabelsKey`); on for Neo4j maps, off (places labelled
+   *  only by "Text labels", small maps) for files and live maps */
+  placeLabels: Record<PlaceLabelsKey, boolean>;
   /** opacity of the mission's planned agent paths (0.15..1) */
   missionPathOpacity: number;
   /** size of the mission's start / end markers (x the base size) */
@@ -44,6 +48,10 @@ export interface ViewStyleState {
   shot: ShotOpts;
 }
 
+/** Place labels are chosen per source kind: Neo4j maps, or everything else. */
+export type PlaceLabelsKey = "neo4j" | "other";
+export const placeLabelsKey = (kind: string | undefined): PlaceLabelsKey => (kind === "neo4j" ? "neo4j" : "other");
+
 export const STYLE_STORAGE_KEY = "adt4.viewer.style.v1";
 
 export const DEFAULT_VIEW_STYLE: ViewStyleState = {
@@ -55,6 +63,7 @@ export const DEFAULT_VIEW_STYLE: ViewStyleState = {
   regionColorPlaces: true,
   regionHulls: true,
   grid: true,
+  placeLabels: {neo4j: true, other: false},
   missionPathOpacity: 1,
   missionMarkerScale: 1.5,
   trajectoryOpacity: 1,
@@ -92,6 +101,7 @@ export function parseStoredStyle(raw: string | null): ViewStyleState {
   if (typeof v.regionColorPlaces === "boolean") out.regionColorPlaces = v.regionColorPlaces;
   if (typeof v.regionHulls === "boolean") out.regionHulls = v.regionHulls;
   if (typeof v.grid === "boolean") out.grid = v.grid;
+  if (isObj(v.placeLabels)) for (const k of ["neo4j", "other"] as const) if (typeof v.placeLabels[k] === "boolean") out.placeLabels[k] = v.placeLabels[k];
   const num = (x: unknown, lo: number, hi: number) => (typeof x === "number" && Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : null);
   out.missionPathOpacity = num(v.missionPathOpacity, 0.15, 1) ?? out.missionPathOpacity;
   out.missionMarkerScale = num(v.missionMarkerScale, 0.5, 4) ?? out.missionMarkerScale;

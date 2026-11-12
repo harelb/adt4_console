@@ -15,7 +15,7 @@ import {DETAIL_LEVEL} from "../lib/meshPlan";
 import {currentActionIndex, distinctPoints} from "./planUtil";
 import {LiveOverlays} from "./LiveOverlays";
 import {AwcdOverlay} from "./AwcdOverlay";
-import {useViewStyle} from "../stores/viewStyle";
+import {placeLabelsKey, useViewStyle} from "../stores/viewStyle";
 import {contrastFor, defaultBackground, STYLE_BACKGROUND, type ColorOpts} from "./style";
 import {useTheme} from "../stores/theme";
 import {useBackground, useRobotColor3D} from "./background";
@@ -58,15 +58,16 @@ function SourceContent({src, cb}: {src: SourceView; cb: SceneCallbacks}) {
   const {hiddenLayers, edgeKinds, flat, stackHeight, showBBoxes, showTrajectory, meshOpacity, vizStyle, showText, meshCull, meshClipOn, meshClipHeight} = useViewer();
   const heights = useViewStyle(s => s.heights);
   const regionHulls = useViewStyle(s => s.regionHulls);
+  const placeLabels = useViewStyle(s => s.placeLabels[placeLabelsKey(src.kind)]);
   const meshColor = useViewStyle(s => s.meshColor);
   const meshLevel = useViewer(s => DETAIL_LEVEL[s.meshDetail === "auto" ? s.meshAutoDetail : s.meshDetail]);
   const colors = useColorOpts();
   const bg = useBackground();
   const edgeInk = contrastFor(bg, vizStyle).edge;
   const layout = useMemo(
-    () => (src.model ? layoutGraph(src.model, {hiddenLayers, edgeKinds, flat, stackHeight, style: vizStyle, text: showText, heights, colors, regionHulls}) : null),
+    () => (src.model ? layoutGraph(src.model, {hiddenLayers, edgeKinds, flat, stackHeight, style: vizStyle, text: showText, placeLabels, heights, colors, regionHulls}) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [src.model, src.rev, hiddenLayers, edgeKinds, flat, stackHeight, vizStyle, showText, heights, colors, regionHulls],
+    [src.model, src.rev, hiddenLayers, edgeKinds, flat, stackHeight, vizStyle, showText, placeLabels, heights, colors, regionHulls],
   );
   const onLayout = cb.onLayout;
   useEffect(() => {
@@ -100,6 +101,7 @@ function SourceContent({src, cb}: {src: SourceView; cb: SceneCallbacks}) {
           edgeKinds={edgeKinds}
           style={vizStyle}
           showText={showText}
+          placeLabels={placeLabels}
           colors={colors}
           edgeInk={edgeInk}
         />

@@ -3,6 +3,7 @@ import type {NodeRecord} from "../codec";
 import type {TrajPath} from "../stores/viewer";
 import {GraphModel, isAgentNode, layerHidden, layerInfo, type LayerInfo} from "../lib/graphModel";
 import {LAYER_COLORS, nodeColor} from "../lib/palette";
+import {placeLabelText} from "../lib/labels";
 import {
   colorKeyOf,
   heightKeyOf,
@@ -31,6 +32,9 @@ export interface LayoutOpts {
   style?: VizStyle; // default "classic"
   /** collect text labels (hydra text adapters) */
   text?: boolean;
+  /** label every place (symbol as the UI prints it + name), whatever `text`
+   *  and the places cap say (Display › Place labels) */
+  placeLabels?: boolean;
   /** per-layer height overrides (units of `stackHeight`) */
   heights?: Heights;
   /** colour overrides + region colouring */
@@ -45,6 +49,8 @@ export interface TextLabel {
   kind: LayerInfo["kind"];
   /** the node it names (label decluttering keeps a picked node's) */
   sym?: string;
+  /** one of every place's labels (`LayoutOpts.placeLabels`): its own budget */
+  allPlaces?: boolean;
 }
 
 /** Per-kind label caps (a layer with more nodes gets no labels). The view shows
@@ -371,7 +377,11 @@ export function layoutGraph(model: GraphModel, opts: LayoutOpts): GraphLayout {
       const chr = String.fromCharCode(info.key.split("/").map(Number)[1] || 32).trim();
       texts.push({pos: [last.pos[0], last.pos[1], last.pos[2] + z + 0.9], text: `${info.name}${chr ? ` ${chr}` : ""}`, kind: "agents"});
     }
-    if (opts.text && perNode && cap && shown.length <= cap) {
+    if (opts.placeLabels && info.kind === "places") {
+      // every place, uncapped: the view shows a decluttered, budgeted subset
+      const dz = TEXT_HEIGHT.places ?? 0.5;
+      for (const n of shown) texts.push({pos: [n.pos[0], n.pos[1], n.pos[2] + z + dz], text: placeLabelText(n.sym, n.name), kind: "places", sym: n.sym, allPlaces: true});
+    } else if (opts.text && perNode && cap && shown.length <= cap) {
       const dz = TEXT_HEIGHT[info.kind] ?? 0.5;
       for (const n of shown) {
         let text = n.sym; // IdTextAdapter
