@@ -82,7 +82,7 @@ def test_per_platform_sessions(client):
     assert "run-adt4 spot_relocalize-relocalize" in by["euclid"]
     assert "run-adt4 phoenix_relocalize-relocalize" in by["gauss"]
     # a platform without a session is refused
-    r = client.post("/api/launch", json={**plan, "sessions": {"spot": "spot-default"}})
+    r = client.post("/api/launch", json={**plan, "sessions": {"spot": "spot_relocalize-relocalize"}})
     assert r.status_code == 400 and "phoenix" in r.json()["detail"]
     d = client.get("/api/launch/defaults", params={"mode": "mapping"}).json()
     assert d["robot_platforms"]["gauss"] == "phoenix" and d["robot_platforms"]["euclid"] == "spot"

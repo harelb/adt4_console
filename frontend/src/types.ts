@@ -670,5 +670,10 @@ export interface LaunchDefaults {
   robot_platforms?: Record<string, string>;
   /** the mode's preset robot session per platform (fleet_defaults.sessions) */
   platform_sessions?: Record<string, string>;
+  /** robot session -> "mapping" | "relocalize" (experiment manifest); the robot
+   * session pickers list the selected mode's */
+  session_modes?: Record<string, string>;
+  /** the mode these defaults are for */
+  mode?: string;
   [k: string]: unknown;
 }

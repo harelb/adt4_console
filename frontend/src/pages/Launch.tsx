@@ -2,7 +2,7 @@ import {useEffect, useMemo, useRef, useState} from "react";
 import {useSearchParams} from "react-router";
 import {parseLaunchPreset} from "../lib/launchLink";
 import {defaultExperiment, isLaunchMode, lastPriorValue, nextExperimentName, type LastLaunch} from "../lib/launchMemory";
-import {platformLabel, platformOf, platformSession, platformsOf, sessionsFor} from "../lib/launchSessions";
+import {picksForMode, platformLabel, platformOf, platformSession, platformsOf, sessionForMode, sessionMismatch, sessionModeOf, sessionsFor, sessionsForMode, type SessionModes} from "../lib/launchSessions";
 import {preferBaseCopy, priorAvailability} from "../lib/runCopies";
 import {useFleet} from "../stores/fleet";
 import {trackJob} from "../stores/jobs";
@@ -34,6 +34,8 @@ export function LaunchPage() {
   const [session, setSession] = useState("");
   // platform -> session picked in the per-platform pickers (robots of 2+ platforms)
   const [platformPicks, setPlatformPicks] = useState<Record<string, string>>({});
+  // robot session pickers list every session, not only the launch mode's
+  const [showAllSessions, setShowAllSessions] = useState(false);
   // launch only the base station's session (no robots)
   const [baseOnly, setBaseOnly] = useState(false);
   const [baseStation, setBaseStation] = useState<string>("");
@@ -70,10 +72,13 @@ export function LaunchPage() {
   // page opens, so a relaunch after Stop & save keeps the prior map, sessions and robots
   const last = (defaults.data?.last ?? null) as LastLaunch | null;
   const lastApplied = useRef(false);
-  const applyLast = (l: LastLaunch, m: Mode, withPrior: boolean) => {
+  // a remembered session of the other mode is dropped for mode `m`'s preset (a
+  // relocalize launch must not run the last mapping launch's session: 2026-11-11)
+  const applyLast = (l: LastLaunch, m: Mode, withPrior: boolean, d: LaunchDefaults | undefined = defaults.data) => {
+    const modes = d?.session_modes;
     if (l.robots?.length) setRobots(l.robots);
-    if (l.session) setSession(l.session);
-    setPlatformPicks(l.sessions ?? {});
+    if (l.session) setSession(sessionForMode(l.session, m, modes, d?.session ?? ""));
+    setPlatformPicks(picksForMode(l.sessions, m, modes));
     setBaseOnly(!!l.base_only);
     setBaseStation(l.base_station ?? "");
     setBsSession(l.bs_session ?? "");
@@ -118,11 +123,19 @@ export function LaunchPage() {
     const p = pendingLast.current;
     if (p) {
       pendingLast.current = null;
-      applyLast(p.l, mode, p.withPrior);
+      applyLast(p.l, mode, p.withPrior, d);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defaults.data]);
   useEffect(() => setExperiment(defaultExperiment(mode)), [mode]);
+  // a mode switch never keeps a session of the other mode (the new mode's defaults
+  // then fill in its presets)
+  useEffect(() => {
+    const modes = defaults.data?.session_modes;
+    setSession(cur => (sessionMismatch(cur, mode, modes) ? "" : cur));
+    setPlatformPicks(cur => picksForMode(cur, mode, modes));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
 
   const sessions = defaults.data?.sessions ?? config.data?.sessions ?? [];
   const allMachines = machines?.machines ?? [];
@@ -130,6 +143,9 @@ export function LaunchPage() {
   const baseStations = allMachines.filter(m => m.role === "base_station");
   const robotPlatforms = defaults.data?.robot_platforms as Record<string, string> | undefined;
   const presets = defaults.data?.platform_sessions as Record<string, string> | undefined;
+  const sessionModes = defaults.data?.session_modes;
+  // defaults of another mode (still loading after a mode switch) say nothing about this one
+  const modesReady = defaults.data?.mode === undefined || defaults.data?.mode === mode;
   const platformOfRobot = (r: string) => platformOf(r, robotPlatforms, allMachines.find(m => m.name === r)?.platform_type);
   const selPlatforms = platformsOf(robots, platformOfRobot);
   const perPlatform = selPlatforms.length > 1;
@@ -174,6 +190,10 @@ export function LaunchPage() {
     if (perPlatform) {
       for (const p of selPlatforms) if (!sessionOf(p)) problems.push(`Pick a ${platformLabel(p)} session`);
     } else if (!session) problems.push("Pick a robot session");
+    for (const s of perPlatform ? selPlatforms.map(sessionOf) : [session]) {
+      if (sessionMismatch(s, mode, sessionModes)) problems.push(`${s} is a ${sessionModeOf(s, sessionModes)} session: pick a ${mode} session`);
+    }
+    if (!modesReady) problems.push(`Loading the ${mode} presets`);
   }
   if (!experiment.trim()) problems.push("Name the experiment");
   else if (!/^[\w.-]+$/.test(experiment.trim())) problems.push("Experiment name: letters, digits, . _ - only");
@@ -292,20 +312,42 @@ export function LaunchPage() {
           </div>
           {perPlatform ? (
             selPlatforms.map(p => (
-              <Field key={p} label={`${platformLabel(p)} session`} hint={`Runs on ${robots.filter(r => platformOfRobot(r) === p).join(", ")}`}>
+              <Field
+                key={p}
+                label={`${platformLabel(p)} session`}
+                hint={
+                  <>
+                    <SessionModeTag session={sessionOf(p)} mode={mode} modes={sessionModes} /> Runs on {robots.filter(r => platformOfRobot(r) === p).join(", ")}
+                  </>
+                }
+              >
                 <FuzzyPicker
                   ariaLabel={`${platformLabel(p)} session`}
                   value={sessionOf(p)}
-                  options={sessionsFor(sessions, p)}
+                  options={sessionsForMode(sessionsFor(sessions, p), mode, sessionModes, showAllSessions, sessionOf(p))}
                   onChange={v => setPlatformPicks(cur => ({...cur, [p]: v}))}
                   placeholder="type to filter sessions"
                 />
               </Field>
             ))
           ) : (
-            <Field label="Robot session">
-              <FuzzyPicker ariaLabel="Robot session" value={session} options={sessions} onChange={setSession} placeholder="type to filter sessions" />
+            <Field label="Robot session" hint={<SessionModeTag session={session} mode={mode} modes={sessionModes} />}>
+              <FuzzyPicker
+                ariaLabel="Robot session"
+                value={session}
+                options={sessionsForMode(sessions, mode, sessionModes, showAllSessions, session)}
+                onChange={setSession}
+                placeholder="type to filter sessions"
+              />
             </Field>
+          )}
+          {sessionModes && (
+            <Toggle
+              checked={showAllSessions}
+              onChange={setShowAllSessions}
+              label={showAllSessions ? `Showing all sessions (a ${mode === "mapping" ? "relocalize" : "mapping"} session is refused in ${mode} mode)` : `Show all sessions (listing ${mode} sessions only)`}
+              title="The robot session list shows only the selected launch mode's sessions; show all to pick a base-station or hand-made session"
+            />
           )}
           </>
           )}
@@ -487,6 +529,20 @@ export function PreflightPanel({result, order, onClear}: {result: PreflightResul
         ))}
       </div>
     </Card>
+  );
+}
+
+
+/** The robot session's launch mode next to its picker; a session of the other
+ * mode is flagged (the launch refuses it). */
+function SessionModeTag({session, mode, modes}: {session: string; mode: string; modes: SessionModes | undefined}) {
+  const m = sessionModeOf(session, modes);
+  if (!session || !modes) return null;
+  if (!m) return <Badge tone="off" title="Not a mapping or relocalize robot session">no mode</Badge>;
+  return m === mode ? (
+    <Badge tone="ok" title={`${session} is a ${m} session`}>{m}</Badge>
+  ) : (
+    <Badge tone="err" title={`${session} is a ${m} session; this is a ${mode} launch`}>{m} session: not {mode}</Badge>
   );
 }
 
