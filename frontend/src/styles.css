@@ -2213,6 +2213,35 @@ input[type="checkbox"] {
   max-height: 200px;
   overflow: auto;
 }
+/* chat: long goals, symbols, captions and links wrap inside their bubble or
+   card instead of running out of it (a PDDL goal is one long line) */
+.chat-log {
+  min-width: 0;
+}
+.chat-log .msg {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-log .msg > *,
+.chat-log .msg .row > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.chat-log .msg pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+.chat-log .msg .chip:not(.chip-nowrap) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.chat-log .msg a {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
 .msg-goal {
   background: var(--info-bg);
   border: 1px solid rgba(79, 195, 247, 0.5);
