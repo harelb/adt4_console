@@ -478,6 +478,10 @@ def _blob_bytes(s: str) -> tuple[bytes, str]:
 
 # ---------------------------------------------------------------- console log
 _console_handler: logging.Handler | None = None
+# attach_console_log() was called before any root was known (a console started
+# without $ADT4_RUN_DIR: the base dir comes with the logbook / first session);
+# the logbook attaches it as soon as it sets the fallback root.
+_console_wanted = False
 
 
 def console_log_path() -> pathlib.Path | None:
@@ -487,8 +491,10 @@ def console_log_path() -> pathlib.Path | None:
 
 def attach_console_log(path=None, max_bytes: int = 50 * 1024 * 1024, backups: int = 5) -> pathlib.Path | None:
     """Mirror the console's own log to a rotating file (``$ADT4_RUN_DIR/console.log``
-    or the base experiment dir); re-attaching moves it."""
-    global _console_handler
+    or the base experiment dir); re-attaching moves it.  Without a root yet it
+    returns None and the next :func:`set_fallback_root` caller attaches it."""
+    global _console_handler, _console_wanted
+    _console_wanted = True
     path = pathlib.Path(path) if path else console_log_path()
     if path is None:
         return None
@@ -513,7 +519,8 @@ def attach_console_log(path=None, max_bytes: int = 50 * 1024 * 1024, backups: in
 
 
 def detach_console_log() -> None:
-    global _console_handler
+    global _console_handler, _console_wanted
+    _console_wanted = False
     with _lock:
         if _console_handler is not None:
             logging.getLogger().removeHandler(_console_handler)

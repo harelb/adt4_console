@@ -203,7 +203,9 @@ class Logbook:
         if not self.persist:
             return
         eventlog.set_fallback_root(self.base_dir())
-        if eventlog._console_handler is not None:  # noqa: SLF001 — moved only once attached (cli)
+        # moved once attached, or attached now when the cli asked for it before
+        # there was any root (no $ADT4_RUN_DIR, no experiment yet)
+        if eventlog._console_handler is not None or eventlog._console_wanted:  # noqa: SLF001
             eventlog.attach_console_log()
 
     def session_dir(self, sid: str | None = None) -> pathlib.Path | None:
