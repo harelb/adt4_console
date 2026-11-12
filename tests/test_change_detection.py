@@ -1,6 +1,6 @@
 """Change detection start / stop / reset (API.md §19): the relocalization gate."""
 
-from adt4_console.routes.change_detection import relocalized
+from adt4_console.routes.change_detection import hydra_matches, relocalized
 
 from .conftest import make_client
 
@@ -12,6 +12,21 @@ FA_OK = {
 }
 
 
+def _hydra(count, nickname="euclid/hydra_multi", status="nominal"):
+    """A C1 ``health`` table with hydra_multi's monitor row."""
+    return {
+        "nodes": [
+            {"nickname": "euclid/roman_lc", "status": "nominal", "notes": "ok"},
+            {
+                "nickname": nickname,
+                "node_name": "hydra_multi",
+                "status": status,
+                "notes": f"{count} valid interrobot loop closures",
+            },
+        ]
+    }
+
+
 def test_relocalized_verdicts():
     assert not relocalized(None)["ok"]
     assert "older agent" in relocalized({"pose": {}})["reason"]
@@ -20,7 +35,9 @@ def test_relocalized_verdicts():
     assert relocalized({"frame_align": FA_OK})[
         "ok"
     ]  # no ROMAN info: the transform decides
-    no_match = relocalized({"frame_align": FA_OK, "reloc": {"prior_lcs": 0}})
+    no_match = relocalized(
+        {"frame_align": FA_OK, "reloc": {"prior_lcs": 0}, "health": _hydra("0 / 3")}
+    )
     assert not no_match["ok"] and "no prior-map match" in no_match["reason"]
     ok = relocalized(
         {
@@ -153,19 +170,27 @@ def test_awcd_change_set_attribution_and_clear():
     assert cs.state()["changes"] == [] and cs.state()["topic"] is None
     cs.on_robot(awcd_msg_to_dict(_msg("hamilton", added=[_info(5, "bag", (0, 0, 0))],
                                       removed=[_info(42, "cone", (3, 3, 0))])))  # fmt: skip
-    cs.on_robot(awcd_msg_to_dict(_msg("euclid", removed=[_info(42, "cone", (3, 3, 0))])))
+    cs.on_robot(
+        awcd_msg_to_dict(_msg("euclid", removed=[_info(42, "cone", (3, 3, 0))]))
+    )
     cs.on_robot(awcd_msg_to_dict(_msg("reconciled")))  # ignored
     added_id = (namespace_crc("hamilton") << 32) | 5
     rec = _msg("reconciled", added=[_info(added_id, "bag", (0, 0, 0))],
                removed=[_info(42, "cone", (3, 3, 0))])  # fmt: skip
-    cs.on_reconciled(awcd_msg_to_dict(rec), "/willow/awcd_base_station/reconciled_changes")
+    cs.on_reconciled(
+        awcd_msg_to_dict(rec), "/willow/awcd_base_station/reconciled_changes"
+    )
     st = cs.state(["euclid", "hamilton", "gauss"])
     assert st["topic"].endswith("reconciled_changes") and st["t"] == 100.0
     assert st["counts"] == {"added": 1, "removed": 1}
     removed, added = st["changes"]
     assert removed["kind"] == "removed" and removed["robots"] == ["euclid", "hamilton"]
     assert added["kind"] == "added" and added["robots"] == ["hamilton"]
-    assert added["key"] == f"a{added_id}" and added["label"] == "bag" and added["short_id"] == 5
+    assert (
+        added["key"] == f"a{added_id}"
+        and added["label"] == "bag"
+        and added["short_id"] == 5
+    )
     assert set(st["robots"]) == {"euclid", "hamilton"}
     assert st["robots"]["hamilton"] == {"t": 100.0, "added": 1, "removed": 1}
     # a base station clear: robots' reports dropped; the reconciled set follows
@@ -173,7 +198,9 @@ def test_awcd_change_set_attribution_and_clear():
     cs.forget(["euclid"])
     assert cs.state()["changes"][0]["robots"] == ["hamilton"]
     cs.on_reconciled(awcd_msg_to_dict(_msg("reconciled")))
-    assert cs.state()["changes"] == [] and cs.state()["topic"].endswith("reconciled_changes")
+    assert cs.state()["changes"] == [] and cs.state()["topic"].endswith(
+        "reconciled_changes"
+    )
     cs.forget()
     assert cs.state()["robots"] == {}
 
@@ -185,7 +212,9 @@ def test_changes_route(settings):
         r = client.get("/api/change_detection/changes").json()
         assert r["available"] is False and r["changes"] == []
         cs = AwcdChangeSet()
-        cs.on_reconciled(awcd_msg_to_dict(_msg("reconciled", removed=[_info(1, "cone", (0, 0, 0))])))
+        cs.on_reconciled(
+            awcd_msg_to_dict(_msg("reconciled", removed=[_info(1, "cone", (0, 0, 0))]))
+        )
         ros = FakeRos()
         ros.awcd_changes = lambda: cs.state()
         svc.ros = ros
@@ -205,10 +234,121 @@ def test_bridge_routes_awcd_messages():
                 "/willow/awcd_base_station/reconciled_changes")  # fmt: skip
     assert [t for t, _ in pushed] == ["awcd/changes", "awcd/changes"]
     last = pushed[-1][1]
-    assert last["changes"][0]["robots"] == ["hamilton"] and last["counts"]["removed"] == 1
+    assert (
+        last["changes"][0]["robots"] == ["hamilton"] and last["counts"]["removed"] == 1
+    )
     calls = []
     br.run = lambda fn, timeout=5.0: [("/willow/awcd_base_station/clear_robots", ["x"])]
-    br.call_service = lambda name, typ, req, timeout=0: calls.append((name, req)) or {"success": True}
+    br.call_service = lambda name, typ, req, timeout=0: calls.append((name, req)) or {
+        "success": True
+    }
     out = br.clear_change_detection(["hamilton"])
-    assert out["ok"] and calls == [("/willow/awcd_base_station/clear_robots", {"robot_names": ["hamilton"]})]
+    assert out["ok"] and calls == [
+        ("/willow/awcd_base_station/clear_robots", {"robot_names": ["hamilton"]})
+    ]
     assert br.awcd_changes()["robots"] == {}
+
+
+# 2026-11-11 robot test: hydra_multi accepted 44 / 51 (hamilton) and 14 / 19
+# (euclid) prior-map loop closures while fleetlink's ROMAN counter stayed 0.
+RELOC_ZERO = {"prior_lcs": 0, "self_lcs": 0, "jumps": 5, "total": {"dxy": 0.0, "dyaw": 0.0}}  # fmt: skip
+FA_MOVED = {**FA_OK, "child": "hamilton/odom", "T": [-25.0, 7.5, 0, 1, 0, 0, 0]}
+
+
+def test_hydra_multi_count_is_the_best_evidence():
+    r = relocalized(
+        {"frame_align": FA_OK, "reloc": RELOC_ZERO, "health": _hydra("44 / 51")},
+        "hamilton",
+    )
+    assert r["ok"] and r["state"] == "relocalized" and r["source"] == "hydra_multi"
+    assert r["matches"] == 44 and "44 accepted prior-map matches" in r["reason"]
+    assert "not relocalized" not in r["reason"]
+    # bare nickname, and no reloc at all (older agent) still count
+    r = relocalized(
+        {"frame_align": FA_OK, "health": _hydra("14 / 19", nickname="hydra_multi")}
+    )
+    assert r["ok"] and r["matches"] == 14
+    # even before the agent sends a usable transform
+    r = relocalized({"frame_align": {**FA_OK, "ok": False}, "health": _hydra("2 / 2")})
+    assert r["ok"] and r["source"] == "hydra_multi"
+    # a positive count is still suspect after two big jumps
+    jumpy = {
+        **RELOC_ZERO,
+        "recent_jumps": [{"dxy": 4, "dyaw": 0}, {"dxy": 9, "dyaw": 0}],
+    }
+    r = relocalized({"frame_align": FA_OK, "reloc": jumpy, "health": _hydra("44 / 51")})
+    assert not r["ok"] and r["state"] == "suspect"
+
+
+def test_hydra_matches_parses_only_the_count_note():
+    assert hydra_matches(_hydra("44 / 51")) == (44, 51)
+    assert hydra_matches(_hydra("0 / 0")) == (0, 0)
+    stale = _hydra("x", status="error")
+    stale["nodes"][1]["notes"] = "time since last spin: 1.45e+03 [s]"
+    assert hydra_matches(stale) is None
+    waiting = _hydra("x", status="warning")
+    waiting["nodes"][1]["notes"] = "waiting for scene graphs"
+    assert hydra_matches(waiting) is None
+    assert hydra_matches({}) is None and hydra_matches(None) is None
+    # the count of another node's note is not hydra_multi's
+    other = {"nodes": [{"nickname": "x/roman_lc", "notes": "3 / 4 valid interrobot loop closures"}]}  # fmt: skip
+    assert hydra_matches(other) is None
+
+
+def test_roman_counter_is_second():
+    r = relocalized(
+        {"frame_align": FA_OK, "reloc": {**RELOC_ZERO, "prior_lcs": 3}},
+        "hamilton",
+    )
+    assert r["ok"] and r["source"] == "roman" and r["matches"] == 3
+
+
+def test_map_odom_move_is_a_weaker_aligned_signal():
+    # from identity (agent started after the relocalization: no move of its own)
+    r = relocalized({"frame_align": FA_MOVED, "reloc": RELOC_ZERO}, "hamilton")
+    assert r["ok"] and r["state"] == "aligned" and r["source"] == "map_odom"
+    assert "no match count" in r["reason"] and "26.1 m" in r["reason"]
+    # since the agent's first sample
+    moved = {**RELOC_ZERO, "total": {"dxy": 0.1, "dyaw": 12.0}}
+    r = relocalized({"frame_align": FA_OK, "reloc": moved})
+    assert r["ok"] and r["state"] == "aligned" and "12°" in r["reason"]
+    # optimizer noise is not a move
+    noise = {**FA_OK, "T": [0.2, 0.1, 0, 1, 0, 0, 0]}
+    assert (
+        relocalized({"frame_align": noise, "reloc": RELOC_ZERO})["state"] == "unknown"
+    )
+
+
+def test_no_signal_is_unknown_not_not_relocalized():
+    # euclid: health table reached the base empty, ROMAN counter 0, near identity
+    r = relocalized(
+        {"frame_align": FA_OK, "reloc": RELOC_ZERO, "health": {"nodes": []}}, "euclid"
+    )
+    assert not r["ok"] and r["state"] == "unknown"
+    assert r["reason"].startswith("unknown (no relocalization signal from euclid")
+    assert "not relocalized" not in r["reason"]
+    assert not relocalized(None, "euclid")["ok"]
+    # only a reported zero count says "not relocalized ... initial estimate"
+    r = relocalized(
+        {"frame_align": FA_OK, "reloc": RELOC_ZERO, "health": _hydra("0 / 5")}, "euclid"
+    )
+    assert not r["ok"] and r["state"] == "not_relocalized"
+    assert "initial estimate" in r["reason"]
+
+
+def test_routes_gate_start_on_hydra_multi_count(settings):
+    client, svc = make_client(settings)
+    ros = FakeRos()
+    states = {"hamilton": {"frame_align": FA_OK, "reloc": dict(RELOC_ZERO), "health": {}}}  # fmt: skip
+    with client:
+        svc.ros = ros
+        svc.live.state = lambda r: states.get(r)
+        r = client.get("/api/robots/hamilton/change_detection").json()
+        assert r["relocalized"]["state"] == "unknown"
+        r = client.post("/api/robots/hamilton/change_detection/start", json={})
+        assert r.status_code == 409 and "no relocalization signal from hamilton" in r.json()["reason"]  # fmt: skip
+        states["hamilton"]["health"] = _hydra(
+            "44 / 51", nickname="hamilton/hydra_multi"
+        )
+        r = client.post("/api/robots/hamilton/change_detection/start", json={}).json()
+        assert r["ok"] and not r["override"] and r["relocalized"]["matches"] == 44

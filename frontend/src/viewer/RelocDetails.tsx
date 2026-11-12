@@ -1,9 +1,10 @@
-// Live panel: the evidence behind a robot's relocalization (fleetlink C1
-// ``reloc``): its latest loop closures against the prior map and how its
-// ``map -> odom`` placement moved. Nothing for agents that do not report it.
+// Live panel: the evidence behind a robot's relocalization: hydra_multi's
+// accepted prior-map loop closures (its monitor row), fleetlink's C1 ``reloc``
+// (the ROMAN loop closures it saw and how ``map -> odom`` moved). Nothing for
+// agents that report neither.
 import {useRobots} from "../stores/robots";
 import {useRelocContext} from "./RobotLegend";
-import {isBigJump} from "../lib/frameAlign";
+import {hydraMatches, isBigJump} from "../lib/frameAlign";
 
 const fmtAge = (s: number | null | undefined) =>
   s === null || s === undefined ? "-" : s < 90 ? `${s.toFixed(0)} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
@@ -11,15 +12,24 @@ const fmtAge = (s: number | null | undefined) =>
 export function RelocDetails({robot}: {robot: string}) {
   const reloc = useRobots(s => s.state[robot]?.reloc ?? s.link[robot]?.reloc);
   const at = useRobots(s => s.stateAt[robot]);
-  const {prior} = useRelocContext(robot);
-  if (!reloc) return null;
+  const {prior, hydraMulti} = useRelocContext(robot);
+  const hm = hydraMatches(hydraMulti);
+  if (!reloc && !hm) return null;
+  if (!reloc) {
+    return (
+      <div className="reloc-details small muted" data-testid={`reloc-${robot}`}>
+        relocalization · {hm!.accepted} accepted prior-map matches (hydra_multi {hm!.accepted} / {hm!.total})
+      </div>
+    );
+  }
   const since = at ? Math.max(0, (Date.now() - at) / 1000) : 0;
   const age = (a: number | null | undefined) => (a === null || a === undefined ? null : a + since);
   const jumps = reloc.recent_jumps ?? (reloc.last_jump ? [reloc.last_jump] : []);
   return (
     <details className="reloc-details small" data-testid={`reloc-${robot}`}>
       <summary title={prior ? `prior map: ${prior}` : undefined}>
-        relocalization · {reloc.prior_lcs} prior matches · {reloc.jumps} corrections
+        relocalization · {hm ? `${hm.accepted} accepted matches (hydra_multi ${hm.accepted} / ${hm.total}) · ` : ""}
+        {reloc.prior_lcs} ROMAN matches seen by fleetlink · {reloc.jumps} corrections
         {reloc.total ? ` · moved ${reloc.total.dxy.toFixed(1)} m / ${reloc.total.dyaw.toFixed(0)}°` : ""}
       </summary>
       {reloc.lcs.length ? (
@@ -46,7 +56,11 @@ export function RelocDetails({robot}: {robot: string}) {
           </tbody>
         </table>
       ) : (
-        <div className="muted">no loop closure against {prior ? `prior map ${prior}` : "the prior map"} yet</div>
+        <div className="muted">
+          {hm && hm.accepted > 0
+            ? `fleetlink saw no ROMAN loop closure (hydra_multi accepted ${hm.accepted}: restart the robot's fleetlink agent if this stays empty)`
+            : `no loop closure against ${prior ? `prior map ${prior}` : "the prior map"} yet`}
+        </div>
       )}
       {jumps.length > 0 && (
         <table className="reloc-table mono">

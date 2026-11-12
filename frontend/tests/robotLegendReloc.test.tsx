@@ -26,7 +26,12 @@ describe("robot legend relocalization status", () => {
         hamilton: {
           frame_align: fa("hamilton", [-26.3, 6.97, 0.03, 1, 0, 0, 0]),
           reloc: NO_LC,
-          health: {nodes: [{nickname: "hamilton/roman_lc", status: "nominal", notes: "No loop closures found for robot 0, submap 54."}]},
+          health: {
+            nodes: [
+              {nickname: "hamilton/roman_lc", status: "nominal", notes: "No loop closures found for robot 0, submap 54."},
+              {nickname: "hamilton/hydra_multi", status: "nominal", notes: "44 / 51 valid interrobot loop closures"},
+            ],
+          },
         },
       } as never,
       stateAt: {hamilton: Date.now()},
@@ -39,7 +44,11 @@ describe("robot legend relocalization status", () => {
     const chips = [...host.querySelectorAll(".robot-chip")].map(c => c.textContent ?? "");
     expect(chips.length).toBe(2);
     expect(host.textContent).not.toMatch(/gauss|guess/i);
-    expect(host.querySelector("[data-testid=align-euclid]")?.textContent).toBe("not relocalized · no prior-map match yet");
-    expect(host.querySelector("[data-testid=align-hamilton]")?.textContent).toBe("not relocalized · matching prior map…");
+    // fleetlink's ROMAN counter stayed 0 on both (agent callback starvation):
+    // hamilton's hydra_multi row has the count; euclid's table did not reach the
+    // base, but its map -> odom moved 0.5 m from identity
+    expect(host.querySelector("[data-testid=align-hamilton]")?.textContent).toBe("relocalized · 44 accepted matches");
+    expect(host.querySelector("[data-testid=align-euclid]")?.textContent).toBe("aligned · no match count");
+    expect(host.textContent).not.toMatch(/not relocalized/);
   });
 });

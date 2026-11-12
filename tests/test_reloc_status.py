@@ -32,7 +32,8 @@ def test_graph_sources_list_only_live_team_robots(settings):
 
 
 def test_no_prior_match_reason_is_unambiguous():
-    r = relocalized({"frame_align": FA_OK, "reloc": {"prior_lcs": 0}})
+    hydra = {"nodes": [{"nickname": "euclid/hydra_multi", "notes": "0 / 2 valid interrobot loop closures"}]}  # fmt: skip
+    r = relocalized({"frame_align": FA_OK, "reloc": {"prior_lcs": 0}, "health": hydra})
     assert not r["ok"]
     assert "no prior-map match yet" in r["reason"]
     assert "guess" not in r["reason"]  # "starting guess" was read as "starting gauss"

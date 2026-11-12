@@ -1502,17 +1502,24 @@ transient_local). In router mode they are plain ROS.
 
 | Method | Path | Body / notes |
 |---|---|---|
-| GET | `/robots/{robot}/change_detection` | `{robot, state, t, relocalized: {ok, reason}}` |
+| GET | `/robots/{robot}/change_detection` | `{robot, state, t, relocalized: {ok, state, reason, source, matches}}` |
 | POST | `/robots/{robot}/change_detection/{start \| stop \| reset \| reset_start}` | `{override}` → `{ok, results: [{cmd, ok, message \| error}], override, state, relocalized}` |
 | POST | `/change_detection/clear` | `{robots: [] = all}`: AWCD base station `clear_robots` (discovered, base-local) |
 | GET | `/change_detection/changes` | the AWCD base station's merged change set (below) |
 
 - **Gate:** start and reset_start return **409** `{detail, not_relocalized: true, reason}` unless the
   robot is relocalized or `override` is set. Stop and reset are never gated.
-- **What "relocalized" means on the server** (`relocalized()`):
-  - `frame_align.ok` with a global parent;
-  - at least one ROMAN prior-map match (`reloc.prior_lcs`), when the agent reports it;
-  - fewer than 2 big `map -> odom` jumps (> 3 m or 30°).
+- **What "relocalized" means on the server** (`relocalized()` →
+  `{ok, state, reason, source, matches}`), best evidence first:
+  1. hydra_multi's accepted inter-robot loop closures: the `N / M valid interrobot loop closures`
+     note of the hydra_multi row in the robot's C1 `health` table, N > 0 (`source: hydra_multi`);
+  2. fleetlink's ROMAN counter `reloc.prior_lcs` > 0 (`source: roman`);
+  3. `map -> odom` moved > 0.5 m or 2° from the initial estimate (`reloc.total`, or from identity):
+     `state: aligned`, no match count (`source: map_odom`).
+  A positive verdict with 2 or more big `map -> odom` jumps (> 3 m or 30°) is `suspect` (not ok).
+  `not_relocalized` only when there is no `map -> odom` transform, or hydra_multi reports 0
+  accepted; with no signal at all the state is `unknown` ("no relocalization signal from
+  <robot>"), not ok. Agents without `reloc` and no hydra_multi count: the transform decides.
 - **UI:** the Live panel shows each robot's state badge and Start / Stop / Reset. Start
   (reset + start) is enabled only when the legend's relocalization status is **ok**. That status
   also checks the distance to a shown prior map. "Start anyway…" asks for confirmation and sends

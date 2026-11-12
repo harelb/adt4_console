@@ -71,11 +71,14 @@ export function useRelocContext(robot: string): RelocContext {
       prior: id ? priorName(sources[id]?.label || id.slice("file:".length)) : null,
       roman: healthNode(health, robot, "roman_lc"),
       hydraMulti: healthNode(health, robot, "hydra_multi"),
+      robot,
     };
   }, [sources, order, health, robot]);
 }
 
-/** "relocalized · 4 matches · last 20 s ago" / "not relocalized · matching prior map…" /
+/** "relocalized · 44 accepted matches" (hydra_multi) / "relocalized · 4 matches · last
+ *  20 s ago" (ROMAN via fleetlink) / "aligned · no match count" / "relocalization
+ *  unknown · no signal from euclid" / "not relocalized · matching prior map…" /
  *  "not relocalized · no prior-map match yet" (old wording "no prior match yet —
  *  starting guess" was read as "starting gauss") /
  *  "suspect — 13 m outside the prior map" (older agents: the
