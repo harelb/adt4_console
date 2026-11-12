@@ -324,3 +324,20 @@ def test_map_scene_routes():
     )
     app.state.services = NS(chat=NS(sget=None))
     assert client.get("/api/maps/scene").status_code == 503
+
+
+def test_keep_detections_for_the_fleet_change_detection_reset():
+    svc, graph, ros, mod = service(answer=(True, "Kept 2 change detection change(s) in the map."))
+    st = svc.detections_status()
+    assert st["running"] and st["keep_supported"] is False  # an older writer
+    ros.has_service = lambda name: name.startswith("/willow/scene_change_writer/")
+    svc._writer_cache = (0.0, False)
+    assert svc.detections_status()["keep_supported"]
+    out = svc.keep_detections()
+    assert out == {"ok": True, "service": "/willow/scene_change_writer/keep_detections",
+                   "message": "Kept 2 change detection change(s) in the map."}  # fmt: skip
+    assert ros.services == [("/willow/scene_change_writer/keep_detections", "std_srvs/srv/Trigger")]
+    assert graph.src.invalidated == 0  # keeping changes nothing in the map
+    svc, graph, ros, mod = service(writer=False)
+    st = svc.detections_status()
+    assert not st["running"] and not st["keep_supported"] and st["reason"]

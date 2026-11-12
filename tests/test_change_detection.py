@@ -352,3 +352,155 @@ def test_routes_gate_start_on_hydra_multi_count(settings):
         )
         r = client.post("/api/robots/hamilton/change_detection/start", json={}).json()
         assert r["ok"] and not r["override"] and r["relocalized"]["matches"] == 44
+
+
+# ------------------------------------------- fleet-wide reset (reset_all)
+class FleetRos(FakeRos):
+    """Three robots: euclid / hamilton reachable (hamilton's reset fails),
+    gauss offline."""
+
+    def __init__(self, base_ok=True):
+        super().__init__()
+        self.cleared = []
+        self.base_ok = base_ok
+
+    def change_detection_unreachable(self, robot):
+        return "offline (fleetlink link down)" if robot == "gauss" else None
+
+    def change_detection_cmd(self, robot, cmd):
+        out = super().change_detection_cmd(robot, cmd)
+        if robot == "hamilton":
+            out.update(ok=False, error="no answer from the robot")
+        return out
+
+    def clear_change_detection(self, robots):
+        self.cleared.append(list(robots))
+        self.calls.append(("base", "clear"))
+        if not self.base_ok:
+            return {"ok": False, "error": "no awcd_base_station clear_robots service on the base station"}
+        return {"ok": True, "message": "cleared euclid", "service": "/willow/awcd_base_station/clear_robots"}
+
+
+class FakeSget:
+    def __init__(self, ros, running=True, keep=True, keep_ok=True):
+        self.ros, self.running, self.keep, self.keep_ok = ros, running, keep, keep_ok
+
+    def detections_status(self):
+        return {"writer": "/willow/scene_change_writer", "running": self.running,
+                "keep_supported": self.running and self.keep,
+                "reason": None if self.running else "writer not running"}  # fmt: skip
+
+    def keep_detections(self):
+        self.ros.calls.append(("writer", "keep_detections"))
+        return {"ok": self.keep_ok, "service": "/willow/scene_change_writer/keep_detections",
+                "message": "Kept 3 change detection change(s) in the map." if self.keep_ok else "Neo4j down"}  # fmt: skip
+
+
+def _fleet_client(settings, **sget_kw):
+    settings.robots = ["euclid", "gauss", "hamilton"]
+    client, svc = make_client(settings)
+    return client, svc
+
+
+def test_reset_all_keeps_map_changes_then_resets_every_robot_and_the_base(settings):
+    client, svc = _fleet_client(settings)
+    with client:
+        ros = FleetRos()
+        svc.ros = ros
+        svc.chat.sget = FakeSget(ros)
+        plan = client.get("/api/change_detection/reset_all").json()
+        assert [r["robot"] for r in plan["robots"]] == ["euclid", "gauss", "hamilton"]
+        assert [r["reachable"] for r in plan["robots"]] == [True, False, True]
+        assert plan["map"]["keep_supported"]
+        assert ros.calls == []  # the preview changes nothing
+
+        r = client.post("/api/change_detection/reset_all", json={}).json()
+        # the map first: keeping must precede the detectors' empty change sets
+        assert ros.calls[0] == ("writer", "keep_detections")
+        assert sorted(ros.calls[1:3]) == [("euclid", "reset"), ("hamilton", "reset")]
+        assert ros.calls[3] == ("base", "clear") and ros.cleared == [[]]
+        assert r["keep_applied"] and r["map"]["action"] == "keep" and r["map"]["ok"]
+        by = {x["robot"]: x for x in r["robots"]}
+        assert by["euclid"]["ok"] and not by["euclid"]["skipped"]
+        assert by["gauss"]["skipped"] and "offline" in by["gauss"]["error"]
+        assert not by["hamilton"]["ok"] and not by["hamilton"]["skipped"]
+        assert r["base"]["ok"]
+        assert r["ok"] is False  # hamilton failed; gauss (offline) alone would not fail it
+        events = svc.scene_repair.state()["events"]
+        assert events[-1]["kind"] == "detections_reset" and "euclid" in events[-1]["text"]
+
+
+def test_reset_all_offline_robots_and_no_base_station_are_not_failures(settings):
+    client, svc = _fleet_client(settings)
+    with client:
+        ros = FleetRos(base_ok=False)
+        ros.change_detection_cmd = lambda robot, cmd: (ros.calls.append((robot, cmd)), {"ok": True, "message": "reset requested"})[1]  # fmt: skip
+        svc.ros = ros
+        svc.chat.sget = FakeSget(ros, running=False)
+        r = client.post("/api/change_detection/reset_all", json={"keep_applied": True}).json()
+        assert r["ok"] and r["map"]["action"] == "none"
+        assert ("writer", "keep_detections") not in ros.calls
+        assert [x["robot"] for x in r["robots"] if x["skipped"]] == ["gauss"]
+
+
+def test_reset_all_revert_skips_keep_and_unsupported_keep_is_refused(settings):
+    client, svc = _fleet_client(settings)
+    with client:
+        ros = FleetRos()
+        svc.ros = ros
+        svc.chat.sget = FakeSget(ros, keep=False)
+        r = client.post("/api/change_detection/reset_all", json={})
+        assert r.status_code == 409 and r.json()["keep_unsupported"]
+        assert ros.calls == []  # nothing reset
+        r = client.post("/api/change_detection/reset_all", json={"keep_applied": False}).json()
+        assert r["map"]["action"] == "revert" and "reverted" in r["map"]["message"]
+        assert ("writer", "keep_detections") not in ros.calls and ("euclid", "reset") in ros.calls
+
+
+def test_reset_all_aborts_when_keeping_fails(settings):
+    client, svc = _fleet_client(settings)
+    with client:
+        ros = FleetRos()
+        svc.ros = ros
+        svc.chat.sget = FakeSget(ros, keep_ok=False)
+        r = client.post("/api/change_detection/reset_all", json={"robots": ["euclid"]}).json()
+        assert not r["ok"] and "Neo4j down" in r["error"]
+        assert ros.calls == [("writer", "keep_detections")]  # no robot was reset
+
+
+def test_reset_all_ros_off_is_503(settings):
+    client, svc = make_client(settings)
+    with client:
+        assert client.post("/api/change_detection/reset_all", json={}).status_code == 503
+        assert client.get("/api/change_detection/reset_all").json()["available"] is False
+
+
+def test_scene_repair_drops_only_detection_recommendations():
+    from adt4_console.scene_repair import SceneRepair
+
+    sr = SceneRepair()
+    sr._recs["sr1"] = {"id": "sr1", "robot": "euclid", "status": "pending", "source": "awcd/reconciled",
+                       "origin": "perception", "changes": [{"source": "awcd/reconciled"}]}  # fmt: skip
+    sr._recs["sr2"] = {"id": "sr2", "robot": "hamilton", "status": "pending", "source": "awcd/reconciled",
+                       "origin": "perception",
+                       "changes": [{"source": "awcd/reconciled"}, {"source": "sget/chat"}]}  # fmt: skip
+    assert sr.on_detections_reset("change detection reset") == 1
+    assert sr._recs["sr1"]["status"] == "superseded" and sr._recs["sr2"]["status"] == "pending"
+    assert "1 pending recommendation" in sr.state()["events"][-1]["text"]
+
+
+def test_bridge_change_detection_unreachable():
+    from adt4_console.ros_bridge import RosBridge
+
+    br = RosBridge(NS(ros=False, planner_ns="willow", ros_domain_id=0))
+    links = {"gauss": {"connected": False}, "euclid": {"connected": True, "services": {}},
+             "hamilton": {"connected": True, "services": {"/hamilton/change_detection/reset": {}}}}  # fmt: skip
+    br.link_status = lambda r: links.get(r)
+    br.has_service = lambda name: name == "/phoenix/change_detection/reset"
+    assert "offline" in br.change_detection_unreachable("gauss")
+    assert "not relayed" in br.change_detection_unreachable("euclid")
+    assert br.change_detection_unreachable("hamilton") is None
+    assert br.change_detection_unreachable("phoenix") is None  # router mode: served
+    assert "no change detection" in br.change_detection_unreachable("sequoia")
+    br._plan["sequoia"].change_detection = {"state": "paused", "t": 1.0}
+    assert br.change_detection_unreachable("sequoia") is None  # it reported a state

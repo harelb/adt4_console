@@ -1341,6 +1341,27 @@ class RosBridge:
             out["error"] = "no answer from the robot (relayed call failed or timed out)"
         return out
 
+    def change_detection_unreachable(self, robot: str) -> str | None:
+        """Why ``/<robot>/change_detection/reset`` cannot be called now (None: try
+        it): the fleetlink link is down or does not relay it, or (router mode)
+        nothing serves it and the robot never reported a detector state."""
+        name = f"/{robot}/{CHANGE_DETECTION_NS}/reset"
+        link = self.link_status(robot)
+        if link is not None:
+            if link.get("connected") is False:
+                return "offline (fleetlink link down)"
+            if name not in (link.get("services") or {}):
+                return "service not relayed (fleetlink relay.yaml)"
+            return None
+        if self._plan[robot].change_detection is not None:
+            return None
+        try:
+            if self.has_service(name):
+                return None
+        except Exception as e:  # noqa: BLE001
+            return f"ROS graph lookup failed: {e}"
+        return "no change detection on the ROS graph (offline, or not running it)"
+
     def clear_change_detection(self, robots: list[str] | None = None) -> dict:
         """Drop the robots' (all: empty) cached changes at the AWCD base station
         (``<ns>/awcd_base_station/clear_robots``, discovered; base-local)."""

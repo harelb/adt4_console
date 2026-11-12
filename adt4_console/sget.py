@@ -107,6 +107,8 @@ TOOLS = {
 WRITER_TOOLS = ("undo_scene_edit", "clear_scene_edits", "reset_scene_graph")
 # the viewer's map controls: action -> scene change writer service (std_srvs/Trigger)
 WRITER_ACTIONS = {"undo": "undo_last_edit", "clear": "clear_edits", "reset": "reset"}
+# keep change detection's changes in the map across a change detection reset
+KEEP_DETECTIONS = "keep_detections"
 RESET_CONFIRM = "reset"  # typed by the operator: a reset drops every change to the map
 _NO_EDIT = ("Refused", "Not done", "Not available", "Failed")
 
@@ -250,6 +252,30 @@ class SgetService:
                 self._refresh(src)
         log.info("map %s via %s: ok=%s %s", action, name, ok, message)
         return {"ok": bool(ok), "action": action, "service": name, "message": message}
+
+    # ------------------------------------------- change detection reset (fleet)
+    def detections_status(self) -> dict:
+        """What a fleet-wide change detection reset can do with the map: is the
+        writer up, and can it keep what change detection put in the map
+        (``keep_detections``, heracles_ros) instead of reverting it."""
+        running = self.writer_running()
+        keep = False
+        if running:
+            try:
+                keep = bool(self.ros.has_service(f"{self.writer()}/{KEEP_DETECTIONS}"))
+            except Exception:  # noqa: BLE001
+                keep = False
+        return {"writer": self.writer(), "running": running, "keep_supported": keep,
+                "reason": None if running else self.status()["reason"]}  # fmt: skip
+
+    def keep_detections(self) -> dict:
+        """The writer keeps change detection's changes in the map, as they are
+        now, and forgets them as change detection's: the detectors' empty sets
+        after a reset no longer withdraw them.  {ok, service, message}."""
+        name = f"{self.writer()}/{KEEP_DETECTIONS}"
+        ok, message = self._call_writer(KEEP_DETECTIONS)
+        log.info("keep detections via %s: ok=%s %s", name, ok, message)
+        return {"ok": bool(ok), "service": name, "message": message}
 
     # --------------------------------------------------------------- proposals
     def propose(self, tool: str, args: dict, src_id: str) -> tuple[dict, dict]:

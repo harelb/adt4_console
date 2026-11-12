@@ -104,13 +104,10 @@ describe("awcd change list", () => {
     expect(fly).toHaveBeenCalledWith([-1, 0, 0]);
   });
 
-  it("Clear asks first, then calls the base station's clear", async () => {
+  it("the panel offers the fleet-wide reset, not a base-station-only clear", async () => {
     const el = await mount(STATE);
-    act(() => (Array.from(el.querySelectorAll("button")).find(b => b.textContent === "Clear at base station…") as HTMLButtonElement).click());
-    expect(posts).toEqual([]);
-    await act(async () => (el.querySelector("[data-testid=awcd-clear]") as HTMLButtonElement).click());
-    expect(posts).toEqual([{url: "api/change_detection/clear", body: {robots: []}}]);
-    expect(el.textContent).toContain("cleared 2 robots");
+    expect(el.querySelector("[data-testid=cd-reset-all]")).not.toBeNull();
+    expect(Array.from(el.querySelectorAll("button")).some(b => b.textContent === "Clear at base station…")).toBe(false);
   });
 
   it("hides the controls when AWCD is unavailable", async () => {

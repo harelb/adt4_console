@@ -1,5 +1,7 @@
 // Active window change detection on one robot (API.md §19): the detector's
-// latched state and Start / Stop / Reset.  The relocalize_awcd configs start it
+// latched state and Start / Stop.  Resetting is fleet-wide (the AWCD panel's
+// "Reset change detection (all robots)", ChangeDetectionReset.tsx): it also
+// resets the base station and plan repair's map side.  The relocalize_awcd configs start it
 // paused; Start is only offered once the robot is relocalized against the prior
 // map (the same verdict as the legend's AlignStatus, from the same evidence as
 // the backend's relocalized(): hydra_multi count, ROMAN count, map -> odom
@@ -52,7 +54,7 @@ export function ChangeDetectionControl({robot}: {robot: string}) {
   }, [robot]);
 
   const ready = canStart(rs.tone);
-  const send = async (cmd: "start" | "stop" | "reset" | "reset_start", override = false) => {
+  const send = async (cmd: "start" | "stop" | "reset_start", override = false) => {
     setBusy(cmd);
     setMsg(null);
     try {
@@ -87,9 +89,6 @@ export function ChangeDetectionControl({robot}: {robot: string}) {
             {busy === "stop" ? "…" : "Stop"}
           </button>
         )}
-        <button className="btn btn-xs" disabled={!!busy} onClick={() => send("reset")} title="Drop the detector's accumulated changes">
-          {busy === "reset" ? "…" : "Reset"}
-        </button>
       </div>
       {!running && !ready && (
         <div className="row gap-sm wrap cd-gate" data-testid={`cd-gate-${robot}`}>
