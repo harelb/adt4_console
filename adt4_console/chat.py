@@ -222,7 +222,7 @@ def price_for(model: str) -> tuple[float, float]:
 class UsageLedger:
     """Cumulative LLM spend, persisted so the budget cap survives restarts."""
 
-    def __init__(self, path: str, budget_usd: float):
+    def __init__(self, path: str, budget_usd: float | None):
         self.path = pathlib.Path(os.path.expanduser(path))
         self.budget_usd = budget_usd
         self.lock = threading.Lock()
@@ -242,6 +242,8 @@ class UsageLedger:
         return float(self.data["spent_usd"])
 
     def remaining(self) -> float:
+        if self.budget_usd is None:  # no cap
+            return float("inf")
         return self.budget_usd - self.spent
 
     def record(self, model: str, input_tokens: int, output_tokens: int) -> float:
@@ -365,7 +367,7 @@ class ChatService:
         )
         self.ledger = UsageLedger(
             getattr(settings, "llm_usage_path", "~/.adt4_console/llm_usage.json"),
-            getattr(settings, "llm_budget_usd", 10.0),
+            getattr(settings, "llm_budget_usd", None),
         )
         # heracles_agents' goal rules and goal check; without it PDDL goals are off
         self.goal_prompts, self.goal_check, self.goal_prompts_error = (
@@ -1656,7 +1658,7 @@ class ChatService:
                         resp.usage.completion_tokens,
                     )
                     log.info(
-                        "chat LLM %s: %d in / %d out tokens, $%.5f (total $%.4f of $%.2f)",
+                        "chat LLM %s: %d in / %d out tokens, $%.5f (total $%.4f, cap %s)",
                         resp.model, resp.usage.prompt_tokens, resp.usage.completion_tokens,
                         cost, self.ledger.spent, self.ledger.budget_usd,
                     )  # fmt: skip

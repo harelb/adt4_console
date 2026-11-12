@@ -62,7 +62,8 @@ class Settings:
     llm_model: str | None = (
         None  # None -> provider default (gpt-4.1-mini / claude-opus-5-5)
     )
-    llm_budget_usd: float = 10.0  # hard cap on cumulative chat spend (persisted)
+    # optional hard cap on cumulative chat spend (persisted); None: no cap
+    llm_budget_usd: float | None = None
     llm_usage_path: str = "~/.adt4_console/llm_usage.json"
 
     # SAM3 query server (agentic_navigation sam3_frontend/query_server.py):

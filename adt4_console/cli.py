@@ -82,8 +82,9 @@ def parse_args(argv=None):
     p.add_argument(
         "--llm-budget-usd",
         type=float,
-        default=10.0,
-        help="hard cap on cumulative chat LLM spend; afterwards chat goes offline",
+        default=None,
+        help="optional hard cap on cumulative chat LLM spend (USD); afterwards chat goes "
+        "offline. Default: no cap",
     )
     p.add_argument(
         "--sam3-url",
