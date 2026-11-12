@@ -86,6 +86,8 @@ class Services:
         None  # scene_repair.SceneRepair: scene change -> replan (API.md §20)
     )
     manipulation: ManipulationApprovalService | None = None
+    logbook: object = None  # logbook.Logbook: sessions, relocalization gate, missions
+    hub_tap: object = None  # eventtap.HubTap
 
     def start(self) -> None:
         if self.settings.fleet_poll:
@@ -99,9 +101,13 @@ class Services:
             self.quad.start()
         self.graph.start()
         self.graph.warm()
+        if self.logbook is not None:
+            self.logbook.start(_active_experiment(self))
+            self.logbook.publish_mission(force=True)  # the ticker retries until ROS is up
 
     def stop(self) -> None:
         for svc in (
+            self.logbook,
             self.missions,
             self.quad,
             self.teleop,
@@ -186,7 +192,51 @@ def build_services(
     chat.sget = SgetService(graph, ros, settings)
     svc.missions.edits = svc.edits
     wire_scene_repair(svc)
+    wire_logbook(svc)
     return svc
+
+
+def _active_experiment(svc) -> str | None:
+    try:
+        st = svc.launch_state.get() if svc.launch_state is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+    return (st or {}).get("experiment") if isinstance(st, dict) else None
+
+
+def wire_logbook(svc) -> None:
+    """Mission logging (eventlog): the logbook (sessions / reloc gate / missions)
+    and the hub tap.  Files only with ``settings.mission_log``."""
+    from . import eventlog
+    from .eventtap import HubTap
+    from .logbook import Logbook
+
+    settings = svc.settings
+    if settings.mission_log:
+        eventlog.enable(True)
+
+    def image_lookup(sym):
+        """The image files the goal card shows for ``sym`` (the live map's node images)."""
+        t = _live_target(svc)
+        if t is None:
+            return []
+        d = t.node_detail(sym)
+        return [t.image(d["sym"], i).path for i in range(len(d.get("images") or []))]
+
+    lb = Logbook(settings, svc.hub, live_state=lambda r: svc.live.state(r) if svc.live is not None else None,
+                 image_lookup=image_lookup, persist=bool(settings.mission_log),
+                 state_path=settings.logbook_state_path)  # fmt: skip
+
+    def ros_publish(topic, msg_type, fields):
+        if not svc.ros.available:
+            raise RuntimeError("ROS is not up")
+        svc.ros.publish_latched(topic, msg_type, fields)
+
+    lb.ros_publish = ros_publish
+    svc.logbook = lb
+    svc.hub_tap = HubTap()
+    svc.hub.taps.append(svc.hub_tap)
+    lb.on_mission_edge = lambda why: [svc.hub_tap.clock_offset(r, why=why) for r in list(svc.hub_tap.link)]
 
 
 def _live_target(svc):
@@ -394,13 +444,19 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
         ws,
     )
 
+    from .routes import logbook as logbook_routes
+
     for mod in (fleet, launch, jobs, network, maps, graph, plan, live, chat, sam3, teleop, terminal,
-                geo, mission, quad, edit, change_detection, scene_repair, manipulation, ws):  # fmt: skip
+                geo, mission, quad, edit, change_detection, scene_repair, manipulation, logbook_routes,
+                ws):  # fmt: skip
         app.include_router(mod.router)
     app.include_router(live.robots_router)
 
     _mount_static(app, pathlib.Path(settings.static_dir))
 
+    from .eventtap import RestTap
+
+    app.add_middleware(RestTap)  # innermost: sees plain bodies (operator actions -> events)
     app.add_middleware(SelectiveGZipMiddleware, minimum_size=1024)
     app.add_middleware(TokenAuthMiddleware, token=settings.token)
     return app

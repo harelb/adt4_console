@@ -311,6 +311,10 @@ def launch(body: LaunchPlanBody, request: Request):
     # prior map included
     if getattr(svc, "launch_memory", None) is not None:
         svc.launch_memory.remember(body.model_dump())
+    # mission logging: this launch is a new session; every run-adt4 gets its id
+    session_id = None
+    if getattr(svc, "logbook", None) is not None:
+        session_id = svc.logbook.new_session(plan_fields(plan, body))
 
     def run(job):
         cb = JobLaunchCallbacks(job, fleet.zenohd_state)
@@ -325,8 +329,10 @@ def launch(body: LaunchPlanBody, request: Request):
             runtime_config=runtime_config,
             output_root=svc.settings.output_root,
             callbacks=cb,
-            deps=svc.launch_deps,
+            deps=with_session_id(svc.launch_deps, session_id),
         )
+        if session_id:
+            job.log("dim", f"session {session_id} (ADT4_SESSION_ID on every run-adt4)")
         if ok:
             try:
                 attach_prior(svc, plan, job)
@@ -340,7 +346,51 @@ def launch(body: LaunchPlanBody, request: Request):
         else f"Launch {plan.experiment}: base station {plan.base_station} only"
     )
     job = svc.jobs.start("launch", title, run)
-    return {"job_id": job.id}
+    return {"job_id": job.id, "session_id": session_id}
+
+
+def plan_fields(plan, body) -> dict:
+    """The launch config a session records (the plan as sent; never the env)."""
+    import dataclasses
+
+    if dataclasses.is_dataclass(plan):
+        return dataclasses.asdict(plan)
+    return body.model_dump()
+
+
+def session_env_prefix(session_id: str) -> str:
+    import shlex
+
+    return f"export ADT4_SESSION_ID={shlex.quote(session_id)} && "
+
+
+def with_session_id(deps, session_id: str | None):
+    """The launch deps with an ``ssh`` that prefixes every ``run-adt4`` command
+    with ``export ADT4_SESSION_ID=<id> &&`` (the console prepends the env like
+    the workflow's ``ADT4_FLEETLINK_MODE=`` prefix; launch_workflow is unchanged).
+    run-adt4 records it (run_info.json) and passes it on to the session."""
+    if not session_id:
+        return deps
+    import dataclasses
+
+    from dcist_launch_system.fleet.launch_workflow import LaunchDeps
+
+    base = deps if deps is not None else LaunchDeps()
+    ssh = base.ssh
+    prefix = session_env_prefix(session_id)
+
+    def ssh_with_session(user, ip, cmd, *a, **kw):
+        if isinstance(cmd, str) and "run-adt4" in cmd and "ADT4_SESSION_ID=" not in cmd:
+            cmd = prefix + cmd
+        return ssh(user, ip, cmd, *a, **kw)
+
+    if dataclasses.is_dataclass(base):
+        return dataclasses.replace(base, ssh=ssh_with_session)
+    import copy
+
+    out = copy.copy(base)
+    out.ssh = ssh_with_session
+    return out
 
 
 def attach_prior(svc, plan, job) -> dict | None:
@@ -433,6 +483,8 @@ def launch_active_clear(request: Request):
     svc = services(request)
     if svc.launch_state is not None:
         svc.launch_state.clear()
+    if getattr(svc, "logbook", None) is not None:
+        svc.logbook.stop_session("launch_cleared")
     return {"active": None, "default_sources": []}
 
 
@@ -525,6 +577,9 @@ class StopSaveBody(BaseModel):
 def stop_save(robot: str, request: Request, body: StopSaveBody | None = None):
     svc = services(request)
     teardown = body.teardown if body else True
+    if teardown and getattr(svc, "logbook", None) is not None:
+        # the session stops once every robot in it is stopped and saved
+        svc.logbook.robot_stop_saved(robot)
 
     def finish(job, result, hydra_exited):
         """Tear the stack down once hydra's save is known to be done."""

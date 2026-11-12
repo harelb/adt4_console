@@ -681,7 +681,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
     try {
       // a PDDL goal goes to the engine the card shows (GRSTAPS-X: its plugin or goal_manager)
       const engine = it.kind === "pddl" ? ((it.body as {engine?: string}).engine ?? useEngines.getState().engine) : undefined;
-      const r = await sendGoal(robot, it.kind, engine === "grstaps" ? {...it.body, engine} : it.body);
+      const r = await sendGoal(robot, it.kind, engine === "grstaps" ? {...it.body, engine} : it.body, "operator");
       const to = it.team ? `Sent once to ${sendLabel(robot, it.team)} through ${robot}` : `Sent to ${robot}`;
       patch(idx, c => ({...(c as typeof it), sent: goalSendMessage(to, r), track: r?.track ?? (c as typeof it).track}));
     } catch (e) {

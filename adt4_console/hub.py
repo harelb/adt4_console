@@ -41,6 +41,7 @@ LATEST_VALUE_PREFIXES = (
     "manipulation/",
     "goal_track/",
     "awcd/",
+    "logbook/",
 )
 LATEST_VALUE_SUFFIXES = ("/version",)
 VIDEO_PREFIX = "video/"
@@ -194,6 +195,9 @@ class Hub:
         self._gop: dict[str, list[tuple[bytes, bool, float, int]]] = {}
         # called with a video topic when some client starts waiting for a key frame
         self.on_video_starved = None
+        # fn(topic, data) on every (non-video) publish, e.g. the event log's
+        # eventtap.HubTap; must be quick and never raise into the publisher
+        self.taps: list = []
         self._lock = threading.Lock()
 
     def add_client(self, loop=None) -> Client:
@@ -235,6 +239,11 @@ class Hub:
         for c in clients:
             if c.wants(topic):
                 c.push(topic, frame)
+        for tap in self.taps:
+            try:
+                tap(topic, data)
+            except Exception:  # noqa: BLE001
+                pass
         return seq
 
     def publish_video(self, topic: str, data, key: bool) -> int:

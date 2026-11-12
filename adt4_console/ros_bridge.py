@@ -805,6 +805,27 @@ class RosBridge:
 
         self.run(go, timeout=1.0)
 
+    def publish_latched(self, topic: str, msg_type: str, fields: dict) -> None:
+        """Publish on a latched topic (transient_local, reliable, depth 1): late
+        subscribers get the last message (``/global/mission/current``)."""
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        from rosidl_runtime_py.set_message import set_message_fields
+
+        cls = import_type(msg_type)
+        pubs = self.__dict__.setdefault("_latched_pubs", {})
+
+        def go():
+            pub = pubs.get(topic)
+            if pub is None:
+                qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                                 durability=DurabilityPolicy.TRANSIENT_LOCAL)  # fmt: skip
+                pub = pubs[topic] = self.node.create_publisher(cls, topic, qos)
+            msg = cls()
+            set_message_fields(msg, fields)
+            pub.publish(msg)
+
+        self.run(go, timeout=2.0)
+
     def take_lease_available(self) -> dict[str, bool]:
         """{robot: whether its executor serves ``~/take_lease``} from the local ROS
         graph (in fleetlink mode the bridge serves the relayed service), cached a
@@ -1522,6 +1543,7 @@ class RosBridge:
             raise
         if subs == 0 and gid:
             self.goals.send_failed(gid, f"nothing subscribes to {topic}")
+        self._log_goal_sent(robot, kind, topic, fields, subs, gid, extra)
         self._last_goal_robot = robot
         extra = {k: v for k, v in (extra or {}).items() if v is not None}
         out = {"ok": True, "topic": topic, "msg": fields, "subscribers": subs, "track": gid, **extra}
@@ -1538,6 +1560,20 @@ class RosBridge:
         self._plan[robot].goals.append(entry)
         self._publish_plan(robot)
         return out
+
+    def _log_goal_sent(self, robot, kind, topic, fields, subs, gid, extra) -> None:
+        """``goal.sent`` (mission logging); the logbook opens a mission on the first."""
+        from . import eventlog
+
+        try:
+            robots = self.goal_robots(robot, fields)
+        except Exception:  # noqa: BLE001
+            robots = [robot]
+        ex = {k: v for k, v in (extra or {}).items() if k in ("via", "engine", "warning", "plugin", "lease", "constraints")}
+        eventlog.emit("console", "goal.sent", {
+            "robot": robot, "robots": robots, "kind": kind, "topic": topic, "payload": fields,
+            "track_id": gid, "subscribers": subs, **ex,
+        }, goal_id=gid, robot=robot)  # fmt: skip
 
     # ------------------------------------------------------- plan repair v3
     def commanded_goal_topic(self) -> str:
