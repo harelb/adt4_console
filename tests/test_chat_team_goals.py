@@ -61,12 +61,12 @@ def test_prompt_has_the_team_goal_rules():
 @needs_heracles_agents
 def test_system_prompt_includes_team_rules_with_and_without_neo4j():
     c = chat()
-    assert "One goal per request covers the whole team" in c._system(None, "euclid")
+    assert "One goal per request covers the whole team" in c._system(None, "euclid", turn=c.turn)
 
 
 # --------------------------------------------------------------- proposals
 def _turn(c):
-    c._ctx.pddl_goals = []  # what ChatService.stream does per turn
+    c.turn.pddl_goals = []  # what ChatService.stream does per turn
 
 
 @needs_heracles_agents
@@ -76,7 +76,7 @@ def test_both_robots_is_one_team_card():
     events, out = c._run_tool(
         "propose_goal",
         {"kind": "pddl", "pddl_goal": ALL_CHAIRS, "constraints": BOTH},
-        "Visit all the chairs with both euclid and hamilton", "euclid", None, None,
+        "Visit all the chairs with both euclid and hamilton", "euclid", None, None, turn=c.turn
     )
     [card] = events
     assert card["team"] == ["euclid", "hamilton"] and card["robot"] == "euclid"
@@ -89,7 +89,7 @@ def test_team_card_goes_through_a_team_robot_not_the_selected_one():
     c = chat()
     _turn(c)
     [card], _ = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": ALL_CHAIRS, "constraints": BOTH},
-                            "", "gauss", None, None)  # fmt: skip
+                            "", "gauss", None, None, turn=c.turn)  # fmt: skip
     assert card["robot"] == "euclid"  # gauss is not allowed to act
 
 
@@ -98,7 +98,7 @@ def test_robot_free_goal_without_use_robots_lists_the_fleet():
     c = chat()
     _turn(c)
     [card], _ = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(visited-object o2)"},
-                            "", "euclid", None, None)  # fmt: skip
+                            "", "euclid", None, None, turn=c.turn)  # fmt: skip
     assert {"euclid", "hamilton"} <= set(card["team"]) and card["robot"] == "euclid"
 
 
@@ -107,7 +107,7 @@ def test_single_named_robot_is_not_a_team_card():
     c = chat()
     _turn(c)
     [card], _ = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(holding hamilton o1)"},
-                            "", "euclid", None, None)  # fmt: skip
+                            "", "euclid", None, None, turn=c.turn)  # fmt: skip
     assert "team" not in card and card["robot"] == "hamilton"
 
 
@@ -117,17 +117,17 @@ def test_second_per_robot_goal_in_one_reply_is_refused():
     c = chat()
     _turn(c)
     per_robot = lambda r: "(and " + " ".join(f"(visited-object-by {r} {o})" for o in CHAIRS) + ")"  # noqa: E731
-    first, _ = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": per_robot("euclid")}, "", "euclid", None, None)
+    first, _ = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": per_robot("euclid")}, "", "euclid", None, None, turn=c.turn)
     assert first
     events, out = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": per_robot("hamilton")}, "", "euclid", None,
-                              None)  # fmt: skip
+                              None, turn=c.turn)  # fmt: skip
     assert events == [] and out["error"].startswith("NOT PROPOSED")
     assert "One goal covers the whole team" in out["error"]
     # the same for two picks sent apart
     _turn(c)
-    c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(holding hamilton o1)"}, "", "euclid", None, None)
+    c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(holding hamilton o1)"}, "", "euclid", None, None, turn=c.turn)
     events, out = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(holding euclid o20)"}, "", "euclid",
-                              None, None)  # fmt: skip
+                              None, None, turn=c.turn)  # fmt: skip
     assert events == [] and "(holding hamilton o1)" in out["error"]
 
 
@@ -135,9 +135,9 @@ def test_second_per_robot_goal_in_one_reply_is_refused():
 def test_combined_goal_replaces_the_earlier_proposal():
     c = chat()
     _turn(c)
-    c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(holding hamilton o1)"}, "", "euclid", None, None)
+    c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(holding hamilton o1)"}, "", "euclid", None, None, turn=c.turn)
     [card], out = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(and (holding hamilton o1) (holding euclid o20))"},
-                              "", "euclid", None, None)  # fmt: skip
+                              "", "euclid", None, None, turn=c.turn)  # fmt: skip
     assert card["replaces"] is True and card["team"] == ["hamilton", "euclid"]
     assert "replaces" in out["note"]
 
@@ -146,18 +146,22 @@ def test_combined_goal_replaces_the_earlier_proposal():
 def test_a_new_turn_starts_clean():
     c = chat()
     _turn(c)
-    c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(visited-object o2)"}, "", "euclid", None, None)
+    c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(visited-object o2)"}, "", "euclid", None, None, turn=c.turn)
     _turn(c)
     [card], _ = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(visited-object o9)"}, "", "euclid", None,
-                            None)  # fmt: skip
+                            None, turn=c.turn)  # fmt: skip
     assert "replaces" not in card
 
 
-def test_stream_resets_the_turn(monkeypatch):
+def test_stream_starts_a_new_turn():
+    from tests.test_chat_goal_prompts import _turns_of
+
     c = chat()
-    c._ctx.pddl_goals = ["(visited-object o2)"]
-    list(c.stream("hello", "euclid", src="file:none"))  # offline fallback; still a new turn
-    assert c._ctx.pddl_goals == []
+    turns = _turns_of(c)
+    list(c.stream("hello", "euclid", src="file:none"))
+    turns[0].pddl_goals.append("(visited-object o2)")
+    list(c.stream("hello", "euclid", src="file:none"))
+    assert turns[1] is not turns[0] and turns[1].pddl_goals == []
 
 
 def test_goal_atoms_and_robot_parsing():

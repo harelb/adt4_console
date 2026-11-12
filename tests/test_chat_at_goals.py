@@ -35,8 +35,8 @@ def _no_unattributed_at_limit(text):
 
 def _system(engine):
     c = chat()
-    c._ctx.engine = engine  # the chat's planner toggle
-    return c, c._system(None, "euclid")
+    c.turn.engine = engine  # the chat's planner toggle
+    return c, c._system(None, "euclid", turn=c.turn)
 
 
 def test_propose_goal_description_supports_at_on_fast_downward():
@@ -97,9 +97,9 @@ def test_at_object_goal_on_fast_downward_makes_a_card_for_euclid():
 
     c.goal_check = goal_problems
     c._cypher_src = lambda src: types.SimpleNamespace(id="map", uri="bolt://x", creds=("u", "p"))
-    c._ctx.pddl_goals = []
+    c.turn.pddl_goals = []
     events, out = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(at-object euclid o20)"},
-                              "euclid, be at O20", "hamilton", "map", None)  # fmt: skip
+                              "euclid, be at O20", "hamilton", "map", None, turn=c.turn)  # fmt: skip
     assert checked == ["(at-object euclid o20)"]
     [card] = events
     assert card["type"] == "goal" and card["kind"] == "pddl" and card["robot"] == "euclid"

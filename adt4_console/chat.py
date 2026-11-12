@@ -25,6 +25,7 @@ import pathlib
 import re
 import threading
 import time
+from dataclasses import dataclass, field
 
 from . import cypher_tools, sam3_client
 
@@ -329,6 +330,23 @@ def search_for_model(graph, src_id, query, origin=None, limit: int = 10):
     return hits, {"total_matches": len(every), "returned": len(hits), "objects": hits}
 
 
+@dataclass
+class ChatTurn:
+    """One chat turn's own state, passed down explicitly from :meth:`ChatService.stream`
+    to the prompt, the tool loop and the tool handlers.
+
+    It is not kept on the service or in a thread-local: ``POST /api/chat`` streams
+    the turn through Starlette, which runs each step of the generator on whatever
+    threadpool worker is free, and one service serves every operator's turns."""
+
+    mission: dict | None = None  # {roster, areas, mission, planted, ...} from the planner
+    reasoning: str | None = None  # GPT-5 / 6 reasoning effort (REASONING_LEVELS)
+    engine: str | None = None  # the chat's planner toggle (GOAL_ENGINES)
+    # PDDL goals proposed in this turn (one team goal per request)
+    pddl_goals: list = field(default_factory=list)
+    history: list | None = None  # propose_mission: the request the thread started with
+
+
 class ChatService:
     def __init__(self, settings, graph, live=None, ros=None):
         self.settings = settings
@@ -345,9 +363,6 @@ class ChatService:
         self.sget = (
             None  # sget.SgetService (plan repair's scene edits, when its writer runs)
         )
-        self._ctx = (
-            threading.local()
-        )  # this turn's mission context (roster, areas, mission)
         self.ledger = UsageLedger(
             getattr(settings, "llm_usage_path", "~/.adt4_console/llm_usage.json"),
             getattr(settings, "llm_budget_usd", 10.0),
@@ -495,15 +510,14 @@ class ChatService:
                 "omniplanner": ok,
                 "grstaps": ok and self._grstaps_ok(),
             }
-        self._ctx.value = mission_ctx if self.missions is not None else None
-        # GPT-5 / 6 reasoning effort from the picker (REASONING_LEVELS; None / "fast": the lowest)
-        self._ctx.reasoning = reasoning if reasoning in REASONING_LEVELS else None
-        # the chat's planner toggle: the engine of the PDDL goals proposed this turn
-        self._ctx.engine = engine if engine in GOAL_ENGINES else None
         history = clean_history(history)
-        self._ctx.pddl_goals = []  # PDDL goals proposed this turn (one team goal per request)
-        self._ctx.history = (
-            history  # propose_mission: the request the thread started with
+        turn = ChatTurn(
+            mission=mission_ctx if self.missions is not None else None,
+            # GPT-5 / 6 reasoning effort (REASONING_LEVELS; None / "fast": the lowest)
+            reasoning=reasoning if reasoning in REASONING_LEVELS else None,
+            # the chat's planner toggle: the engine of the PDDL goals proposed this turn
+            engine=engine if engine in GOAL_ENGINES else None,
+            history=history,
         )
         try:
             client = self.llm_client()
@@ -517,10 +531,12 @@ class ChatService:
             if client is None:
                 yield from self._fallback(message, robot, src)
             elif self._client_provider == "openai":
-                yield from self._llm_openai(client, message, robot, src, history, model)
+                yield from self._llm_openai(
+                    client, message, robot, src, history, model, turn
+                )
             else:
                 yield from self._llm_anthropic(
-                    client, message, robot, src, history, model
+                    client, message, robot, src, history, model, turn
                 )
         except Exception as e:  # noqa: BLE001
             log.exception("chat failed")
@@ -775,13 +791,14 @@ class ChatService:
         },
     }
 
-    def _mission_ctx(self):
-        return getattr(self._ctx, "value", None)
+    @staticmethod
+    def _mission_ctx(turn: ChatTurn | None):
+        return turn.mission if turn is not None else None
 
-    def _tool_rounds(self) -> int:
-        return (
-            MISSION_TOOL_ROUNDS if self._mission_ctx() is not None else MAX_TOOL_ROUNDS
-        )
+    def _tool_rounds(self, turn: ChatTurn | None = None) -> int:
+        if self._mission_ctx(turn) is not None:
+            return MISSION_TOOL_ROUNDS
+        return MAX_TOOL_ROUNDS
 
     def _sget_on(self) -> bool:
         """Plan repair's scene edits replace the console's own edit tools."""
@@ -790,7 +807,7 @@ class ChatService:
         except Exception:  # noqa: BLE001
             return False
 
-    def _tools(self, src) -> list[dict]:
+    def _tools(self, src, turn: ChatTurn | None = None) -> list[dict]:
         if self._cypher_src(src) is not None:
             if self._sget_on():
                 from . import sget
@@ -807,7 +824,7 @@ class ChatService:
         else:
             tools = [self._T_FIND_OBJECTS, self._T_SHOW_IMAGES, self._T_SEARCH_IMAGES,
                      self._T_PROPOSE_GOAL]  # fmt: skip
-        ctx = self._mission_ctx()
+        ctx = self._mission_ctx(turn)
         if ctx is not None:
             from .mission import llm_planner
 
@@ -837,8 +854,8 @@ class ChatService:
         self._grstaps_why = why
         return why is None
 
-    def _mission_prompt(self, src) -> str:
-        ctx = self._mission_ctx()
+    def _mission_prompt(self, src, turn: ChatTurn | None = None) -> str:
+        ctx = self._mission_ctx(turn)
         if ctx is None:
             return ""
         from .mission import llm_planner
@@ -916,14 +933,15 @@ class ChatService:
         gr["repair"] = repair == "grstaps"
         return [fd, gr]
 
-    def _chosen_engine(self) -> str | None:
+    @staticmethod
+    def _chosen_engine(turn: ChatTurn | None) -> str | None:
         """The engine the operator picked in the chat's planner toggle this turn."""
-        return getattr(self._ctx, "engine", None)
+        return turn.engine if turn is not None else None
 
-    def _goal_engine(self) -> str:
+    def _goal_engine(self, turn: ChatTurn | None = None) -> str:
         """The engine whose goal rules go in the prompt: the chat's planner toggle,
         else the one the goal manager runs; Fast Downward when unknown."""
-        chosen = self._chosen_engine()
+        chosen = self._chosen_engine(turn)
         if chosen in GOAL_ENGINES:
             return chosen
         ros = self.ros
@@ -935,7 +953,7 @@ class ChatService:
             engine = None
         return engine if engine in GOAL_ENGINES else "fast_downward"
 
-    def _goal_text(self, cypher: bool) -> str:
+    def _goal_text(self, cypher: bool, turn: ChatTurn | None = None) -> str:
         """The PDDL goal rules, domain and examples (heracles_agents.prompts) and the
         console's own goal mechanics."""
         if self.goal_prompts is None:
@@ -944,11 +962,11 @@ class ChatService:
                 "propose kind='pddl' goals; tell the operator that PDDL goals need "
                 "heracles_agents installed with the console. goto / tsp / language goals work."
             )
-        engine = self._goal_engine()
+        engine = self._goal_engine(turn)
         text = self.goal_prompts.repair_goal_prompt(engine, names=GOAL_PROMPT_NAMES)
         why = (
             "the planner the operator selected in the chat"
-            if self._chosen_engine() in GOAL_ENGINES
+            if self._chosen_engine(turn) in GOAL_ENGINES
             else "the engine the goal manager runs now"
         )
         notes = CONSOLE_GOAL_NOTES.replace("<engine_why>", why).replace(
@@ -975,7 +993,7 @@ class ChatService:
             + where
         )
 
-    def _system(self, src, robot) -> str:
+    def _system(self, src, robot, turn: ChatTurn | None = None) -> str:
         csrc = self._cypher_src(src)
         if csrc is None:
             return (
@@ -987,11 +1005,11 @@ class ChatService:
                 "UI; never claim the robot is moving). "
                 f"Selected graph source: {src or 'none'}. {self._selected_text(robot)}"
                 + "\n\n"
-                + self._goal_text(cypher=False)
+                + self._goal_text(cypher=False, turn=turn)
                 + self._roster_text(robot)
                 + (
-                    "\n\n" + self._mission_prompt(src)
-                    if self._mission_ctx() is not None
+                    "\n\n" + self._mission_prompt(src, turn)
+                    if self._mission_ctx(turn) is not None
                     else ""
                 )
             )
@@ -1007,13 +1025,17 @@ class ChatService:
                 cypher_tools.SYSTEM,
                 *described,
                 cypher_tools.MAP_NOTES,
-                self._goal_text(cypher=True),
+                self._goal_text(cypher=True, turn=turn),
                 self._schema.text(csrc),
                 f"Database: {csrc.id}. {self._selected_text(robot)}"
                 + self._roster_text(robot),
             ]  # fmt: skip
             + [self._edit_note()]
-            + ([self._mission_prompt(src)] if self._mission_ctx() is not None else [])
+            + (
+                [self._mission_prompt(src, turn)]
+                if self._mission_ctx(turn) is not None
+                else []
+            )
         )
 
     def _roster_text(self, selected: str | None = None) -> str:
@@ -1063,8 +1085,13 @@ class ChatService:
                     "propose_map_edit (the console's map editor; not plan repair's change log).")  # fmt: skip
         return ""
 
-    def _run_tool(self, name, args, message, robot, src, origin):
-        """Execute one tool call; returns (events_to_stream, result_for_model)."""
+    def _run_tool(
+        self, name, args, message, robot, src, origin, turn: ChatTurn | None = None
+    ):
+        """Execute one tool call; returns (events_to_stream, result_for_model).
+        ``turn``: the chat turn it belongs to (a new, empty one when None)."""
+        if turn is None:
+            turn = ChatTurn()
         from . import sget
 
         if name in sget.TOOLS:
@@ -1128,14 +1155,14 @@ class ChatService:
                 if args.get("constraints"):
                     body["constraints"] = list(args["constraints"])
                 # the model's engine, else the chat's planner toggle
-                engine = args.get("engine") or self._chosen_engine()
+                engine = args.get("engine") or self._chosen_engine(turn)
                 if engine:
                     body["engine"] = engine
             else:
                 body = {"points": list(args.get("points") or [])}
             target = str(args.get("robot") or "").strip() or robot
             if kind == "pddl":
-                return self._propose_team_goal(body, target, src, message)
+                return self._propose_team_goal(body, target, src, message, turn)
             goal = {"type": "goal", "kind": kind, "body": body, "robot": target}
             return [goal], {
                 "proposed": True,
@@ -1153,13 +1180,13 @@ class ChatService:
                     regions = self.edits.regions(csrc.id)
                 except Exception:  # noqa: BLE001
                     regions = None
-            return llm_planner.run_tool(args, self._mission_ctx(), self.missions, src, message, regions,
-                                        getattr(self._ctx, "history", None))  # fmt: skip
+            return llm_planner.run_tool(args, turn.mission, self.missions, src, message, regions,
+                                        turn.history)  # fmt: skip
         if name == "plan_ground_mission" and self.missions is not None:
             from .mission import llm_planner
 
-            return llm_planner.run_plan_tool(args, self._mission_ctx(), self.missions, src, message,
-                                             getattr(self._ctx, "history", None))  # fmt: skip
+            return llm_planner.run_plan_tool(args, turn.mission, self.missions, src, message,
+                                             turn.history)  # fmt: skip
         return [], {"error": f"unknown tool {name}"}
 
     def _goal_problems(self, goal: str, constraints, src) -> str:
@@ -1186,7 +1213,9 @@ class ChatService:
             log.warning("goal check skipped (%s): %s", csrc.id, e)
             return ""
 
-    def _propose_team_goal(self, body, target, src=None, message: str = ""):
+    def _propose_team_goal(
+        self, body, target, src=None, message: str = "", turn: ChatTurn | None = None
+    ):
         """A PDDL proposal: one team goal. It is sent once, through ``via`` (a robot
         it names, else the selected robot; goal_manager plans the whole team), and
         the card lists the team it may use. A goal heracles_agents' goal check finds
@@ -1228,7 +1257,7 @@ class ChatService:
                 "do not resend it unchanged. Ask the operator only when you cannot fix it."
             }
         tasks = goal_atoms(goal)
-        earlier = getattr(self._ctx, "pddl_goals", None)
+        earlier = turn.pddl_goals if turn is not None else None
         replaces = False
         if earlier:
             missing = sorted(goal_atoms(earlier[-1]) - tasks)
@@ -1439,17 +1468,24 @@ class ChatService:
 
     # ---------------------------------------------------------------- Anthropic
     def _llm_anthropic(
-        self, client, message, robot, src, history=(), requested_model=None
+        self,
+        client,
+        message,
+        robot,
+        src,
+        history=(),
+        requested_model=None,
+        turn: ChatTurn | None = None,
     ):
         """Anthropic tool loop; tools run through ``_run_tool`` (shared with OpenAI)."""
         import anthropic
 
         model = self.model(requested_model)
-        turn = self._turn(message)
+        items = self._turn(message)
         origin = self._robot_pos(robot)
-        tools = self._tools(src)
-        system = self._system(src, robot)
-        rounds = self._tool_rounds()
+        tools = self._tools(src, turn)
+        system = self._system(src, robot, turn)
+        rounds = self._tool_rounds(turn)
         try:
             for i in range(rounds):
                 if self.ledger.remaining() <= 0:
@@ -1464,7 +1500,7 @@ class ChatService:
                     max_tokens=4000,
                     system=system + ("\n\n" + LAST_ROUND_NOTE if last else ""),
                     tools=tools,
-                    messages=to_anthropic(list(history) + turn),
+                    messages=to_anthropic(list(history) + items),
                     # server-side refusal fallback; the installed SDK predates the
                     # typed params, so they travel in extra_body
                     betas=["server-side-fallback-2026-07-01"],
@@ -1513,23 +1549,23 @@ class ChatService:
                                 "args": dict(block.input or {}),
                             }
                         )
-                turn.append({"role": "assistant", "text": text, "calls": calls})
+                items.append({"role": "assistant", "text": text, "calls": calls})
                 if not calls:
                     return
                 for c in calls:
                     events, out = self._run_tool(
-                        c["name"], c["args"], message, robot, src, origin
+                        c["name"], c["args"], message, robot, src, origin, turn
                     )
                     yield from events
-                    turn.append({"role": "tool", "id": c["id"], "name": c["name"],
+                    items.append({"role": "tool", "id": c["id"], "name": c["name"],
                                  "content": _clip(json.dumps(out, default=str))})  # fmt: skip
                 if resp.stop_reason != "tool_use":
                     return
         finally:
-            yield {"type": "transcript", "items": turn}
+            yield {"type": "transcript", "items": items}
 
     # ------------------------------------------------------------------ OpenAI
-    def _openai_tools(self, src=None):
+    def _openai_tools(self, src=None, turn: ChatTurn | None = None):
         return [
             {
                 "type": "function",
@@ -1539,20 +1575,27 @@ class ChatService:
                     "parameters": t["input_schema"],
                 },
             }
-            for t in self._tools(src)
+            for t in self._tools(src, turn)
         ]
 
     def _llm_openai(
-        self, client, message, robot, src, history=(), requested_model=None
+        self,
+        client,
+        message,
+        robot,
+        src,
+        history=(),
+        requested_model=None,
+        turn: ChatTurn | None = None,
     ):
         import openai
 
         model = self.model(requested_model)
-        turn = self._turn(message)
+        items = self._turn(message)
         origin = self._robot_pos(robot)
-        tools = self._openai_tools(src)
-        system = self._system(src, robot)
-        rounds = self._tool_rounds()
+        tools = self._openai_tools(src, turn)
+        system = self._system(src, robot, turn)
+        rounds = self._tool_rounds(turn)
         try:
             for i in range(rounds):
                 if self.ledger.remaining() <= 0:
@@ -1563,14 +1606,14 @@ class ChatService:
                     return
                 last = i == rounds - 1
                 try:
-                    budget = 4000 if self._mission_ctx() is not None else 1500
+                    budget = 4000 if self._mission_ctx(turn) is not None else 1500
                     sys_text = system + ("\n\n" + LAST_ROUND_NOTE if last else "")
-                    effort = getattr(self._ctx, "reasoning", None) or "fast"
+                    effort = (turn.reasoning if turn is not None else None) or "fast"
                     if is_reasoning_model(model) and (
                         uses_responses_api(model) or effort != "fast"
                     ):
                         resp = _ResponsesReply(client.responses.create(
-                            model=model, instructions=sys_text, input=to_responses(list(history) + turn),
+                            model=model, instructions=sys_text, input=to_responses(list(history) + items),
                             tools=[{"type": "function", **t["function"]} for t in tools],
                             tool_choice="none" if last else "auto",
                             max_output_tokens=budget * (8 if effort in ("medium", "high") else 4),
@@ -1588,7 +1631,7 @@ class ChatService:
                         resp = client.chat.completions.create(
                             model=model,
                             messages=[{"role": "system", "content": sys_text}]
-                            + to_openai(list(history) + turn),
+                            + to_openai(list(history) + items),
                             tools=tools,
                             tool_choice="none" if last else "auto",
                             **knobs,
@@ -1627,20 +1670,20 @@ class ChatService:
                     except ValueError:
                         args = {}
                     calls.append({"id": c.id, "name": c.function.name, "args": args})
-                turn.append(
+                items.append(
                     {"role": "assistant", "text": msg.content or "", "calls": calls}
                 )
                 if not calls:
                     return
                 for c in calls:
                     events, out = self._run_tool(
-                        c["name"], c["args"], message, robot, src, origin
+                        c["name"], c["args"], message, robot, src, origin, turn
                     )
                     yield from events
-                    turn.append({"role": "tool", "id": c["id"], "name": c["name"],
+                    items.append({"role": "tool", "id": c["id"], "name": c["name"],
                                  "content": _clip(json.dumps(out, default=str))})  # fmt: skip
         finally:
-            yield {"type": "transcript", "items": turn}
+            yield {"type": "transcript", "items": items}
 
 
 class _ResponsesReply:

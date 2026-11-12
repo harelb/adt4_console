@@ -4,7 +4,7 @@ gauss tasks and the card said "Send to team (euclid, gauss, hamilton)")."""
 
 from __future__ import annotations
 
-from adt4_console.chat import ChatService, fleet_roster, operator_named_robots
+from adt4_console.chat import ChatService, ChatTurn, fleet_roster, operator_named_robots
 from tests.conftest import needs_heracles_agents
 from tests.test_chat_roster import Ros, topology
 
@@ -35,7 +35,7 @@ def chat(live=None):
     from types import SimpleNamespace as NS
 
     c = ChatService(NS(llm=False), None, live or Live(), Ros(topology()))
-    c._ctx.pddl_goals = []  # a new turn
+    c.turn = ChatTurn()  # a new turn
     return c
 
 
@@ -43,7 +43,7 @@ def propose(c, goal, message="", constraints=None, selected="euclid"):
     args = {"kind": "pddl", "pddl_goal": goal}
     if constraints:
         args["constraints"] = constraints
-    return c._run_tool("propose_goal", args, message, selected, None, None)
+    return c._run_tool("propose_goal", args, message, selected, None, None, turn=c.turn)
 
 
 def test_roster_marks_gauss_offline_and_the_team_is_the_online_robots():

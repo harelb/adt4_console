@@ -61,7 +61,7 @@ def neo4j_chat(robot_engine=None):
         id="neo4j:live", uri="bolt://fake:7687", creds=("u", "p")
     )
     c._schema = NS(text=lambda src: "Database contents now: (fake)")
-    c._ctx.pddl_goals = []  # a new turn, as ChatService.stream starts one
+    c.turn.pddl_goals = []  # a new turn, as ChatService.stream starts one
     return c
 
 
@@ -69,7 +69,9 @@ def propose(c, goal, constraints=None, selected="euclid"):
     args = {"kind": "pddl", "pddl_goal": goal}
     if constraints:
         args["constraints"] = constraints
-    return c._run_tool("propose_goal", args, "", selected, "neo4j:live", None)
+    return c._run_tool(
+        "propose_goal", args, "", selected, "neo4j:live", None, turn=c.turn
+    )
 
 
 # ------------------------------------------------------------ prompt source
@@ -78,7 +80,7 @@ def test_goal_prompt_comes_from_heracles_agents(monkeypatch):
     assert not hasattr(chat_mod, "TEAM_GOALS")
     c = neo4j_chat()
     assert c.goal_prompts is prompts and c.goal_check is sge.goal_problems
-    system = c._system("neo4j:live", "euclid")
+    system = c._system("neo4j:live", "euclid", turn=c.turn)
     assert (
         prompts.repair_goal_prompt("fast_downward", names=GOAL_PROMPT_NAMES) in system
     )
@@ -88,17 +90,19 @@ def test_goal_prompt_comes_from_heracles_agents(monkeypatch):
     monkeypatch.setattr(
         prompts, "repair_goal_prompt", lambda engine, names=None: f"<<RULES {engine}>>"
     )
-    system = c._system("neo4j:live", "euclid")
+    system = c._system("neo4j:live", "euclid", turn=c.turn)
     assert "<<RULES fast_downward>>" in system
     assert "Never pick a robot yourself" not in system  # the rules came only from there
-    assert "<<RULES fast_downward>>" in c._system(None, "euclid")  # without Neo4j too
+    assert "<<RULES fast_downward>>" in c._system(
+        None, "euclid", turn=c.turn
+    )  # without Neo4j too
 
 
 def test_goal_rules_follow_the_goal_managers_engine():
     c = neo4j_chat()
     c.ros.available = True
     c.ros.goal_manager_engine = lambda: "grstaps"
-    system = c._system("neo4j:live", "euclid")
+    system = c._system("neo4j:live", "euclid", turn=c.turn)
     assert prompts.repair_goal_prompt("grstaps", names=GOAL_PROMPT_NAMES) in system
     assert "The rules above are for grstaps" in system
 
@@ -129,7 +133,7 @@ def test_prompt_has_the_rules_in_the_consoles_names():
 def test_selected_robot_is_not_a_task_assignment():
     c = neo4j_chat()
     c._robot_pos = lambda robot: (1.0, 2.0, 0.0)
-    system = c._system("neo4j:live", "euclid")
+    system = c._system("neo4j:live", "euclid", turn=c.turn)
     line = next(x for x in system.splitlines() if "Selected robot: euclid" in x)
     assert "not a robot assignment for PDDL goals" in line and "point({x: 1.00" in line
     assert (
@@ -148,13 +152,19 @@ def test_without_heracles_agents_pddl_goals_are_off(monkeypatch, caplog):
     with caplog.at_level("ERROR"):
         c = neo4j_chat()
     assert "PDDL goals are OFF" in caplog.text
-    system = c._system("neo4j:live", "euclid")
+    system = c._system("neo4j:live", "euclid", turn=c.turn)
     assert "PDDL GOALS ARE OFF" in system and "TEAM GOALS" not in system
     events, out = propose(c, "(visited-object o1)")
     assert events == [] and out["error"].startswith("NOT PROPOSED: PDDL goals are off")
     # goto still works
     [card], _ = c._run_tool(
-        "propose_goal", {"kind": "goto", "points": ["O1"]}, "", "euclid", None, None
+        "propose_goal",
+        {"kind": "goto", "points": ["O1"]},
+        "",
+        "euclid",
+        None,
+        None,
+        turn=c.turn,
     )
     assert card["kind"] == "goto"
 
@@ -229,18 +239,18 @@ def test_goal_check_failure_does_not_block(monkeypatch):
 def test_without_neo4j_the_goal_is_not_checked(monkeypatch):
     monkeypatch.setattr(sge, "_connect", lambda conf: pytest.fail("no map to check"))
     c = chat()
-    c._ctx.pddl_goals = []
+    c.turn.pddl_goals = []
     [card], _ = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(visited-object o2)"},
-                            "", "euclid", None, None)  # fmt: skip
+                            "", "euclid", None, None, turn=c.turn)  # fmt: skip
     assert card["body"]["goal"] == "(visited-object o2)"
 
 
 def test_image_tools_are_unchanged():
     c = neo4j_chat()
-    names = [t["name"] for t in c._tools("neo4j:live")]
+    names = [t["name"] for t in c._tools("neo4j:live", turn=c.turn)]
     assert "search_robot_images" in names and "show_object_images" in names
     assert ChatService._T_SEARCH_IMAGES["input_schema"]["required"] == ["query"]
-    assert "look in the map FIRST" in c._system("neo4j:live", "euclid")
+    assert "look in the map FIRST" in c._system("neo4j:live", "euclid", turn=c.turn)
 
 
 # ------------------------------------------------------- planner toggle
@@ -248,8 +258,8 @@ def test_toggle_engine_sets_the_rules_and_the_proposal(fake_map):
     """The chat's planner toggle (ChatBody.engine) picks the engine's goal rules and
     the engine the proposed goal (and so its card and send) carries."""
     c = neo4j_chat()
-    c._ctx.engine = "grstaps"  # what stream(engine="grstaps") sets for the turn
-    system = c._system("neo4j:live", "euclid")
+    c.turn.engine = "grstaps"  # what stream(engine="grstaps") sets for the turn
+    system = c._system("neo4j:live", "euclid", turn=c.turn)
     assert prompts.repair_goal_prompt("grstaps", names=GOAL_PROMPT_NAMES) in system
     assert (
         prompts.repair_goal_prompt("fast_downward", names=GOAL_PROMPT_NAMES)
@@ -262,31 +272,44 @@ def test_toggle_engine_sets_the_rules_and_the_proposal(fake_map):
     [card], _ = propose(c, "(visited-object o21)")
     assert card["body"]["engine"] == "grstaps"
     # the model's explicit engine still wins
-    c._ctx.pddl_goals = []
+    c.turn.pddl_goals = []
     [card], _ = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(visited-object o21)", "engine": "fast_downward"},
-                            "", "euclid", "neo4j:live", None)  # fmt: skip
+                            "", "euclid", "neo4j:live", None, turn=c.turn)  # fmt: skip
     assert card["body"]["engine"] == "fast_downward"
-    c._ctx.engine, c._ctx.pddl_goals = "fast_downward", []
+    c.turn.engine, c.turn.pddl_goals = "fast_downward", []
     assert prompts.repair_goal_prompt(
         "fast_downward", names=GOAL_PROMPT_NAMES
-    ) in c._system("neo4j:live", "euclid")
+    ) in c._system("neo4j:live", "euclid", turn=c.turn)
     [card], _ = propose(c, "(visited-object o21)")
     assert card["body"]["engine"] == "fast_downward"
 
 
 def test_no_toggle_keeps_the_body_as_before(fake_map):
     c = neo4j_chat()
-    c._ctx.engine = None
+    c.turn.engine = None
     [card], _ = propose(c, "(visited-object o21)")
     assert card["body"] == {"goal": "(visited-object o21)"}
 
 
+def _turns_of(c):
+    """The ChatTurn each ``stream`` call hands the LLM loop."""
+    seen = []
+    c.llm_client, c._client_provider = (lambda: object()), "anthropic"
+
+    def llm(client, message, robot, src, history, model, turn):
+        seen.append(turn)
+        yield from ()
+
+    c._llm_anthropic = llm
+    return seen
+
+
 def test_stream_takes_the_toggle_for_the_turn():
     c = chat()
+    turns = _turns_of(c)
     list(c.stream("hello", "euclid", src="file:none", engine="grstaps"))
-    assert c._ctx.engine == "grstaps"
     list(c.stream("hello", "euclid", src="file:none", engine="bogus"))
-    assert c._ctx.engine is None
+    assert [t.engine for t in turns] == ["grstaps", None]
 
 
 def test_grstaps_is_offered_only_when_the_base_runs_it():

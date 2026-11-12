@@ -10,7 +10,7 @@ from types import SimpleNamespace as NS
 import pytest
 import yaml
 
-from adt4_console.chat import ChatService, fleet_roster
+from adt4_console.chat import ChatService, ChatTurn, fleet_roster
 from adt4_console.goal_tracker import GoalTracker
 from adt4_console.ros_bridge import RosBridge
 
@@ -59,6 +59,7 @@ class Live:
 
 def chat(live=None):
     c = ChatService(NS(llm=False), None, live, Ros(topology()))
+    c.turn = ChatTurn()  # the turn the tests' calls belong to (ChatService.stream makes one per turn)
     return c
 
 

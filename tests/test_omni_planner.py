@@ -11,6 +11,8 @@ Downward (a sourced ADT4 workspace); skips otherwise.
 
 import pytest
 
+from adt4_console.chat import ChatTurn
+
 from .conftest import make_client
 from .test_mission import LABELS, build_grid_run
 
@@ -290,8 +292,8 @@ def test_chat_offers_the_tool_and_forces_it(svc):
     chat = _chat(client)
 
     def names(ctx):
-        chat._ctx.value = ctx
-        return {t["name"] for t in chat._tools(None)}
+        chat.turn = ChatTurn(mission=ctx)
+        return {t["name"] for t in chat._tools(None, turn=chat.turn)}
 
     both = names({"roster": [SPOT1], "omniplanner": chat._omniplanner_ok()})
     assert {"propose_mission", "plan_ground_mission"} <= both
