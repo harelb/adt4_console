@@ -16,12 +16,30 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from .. import run_layout
 from ..graph_service import FileSource, NotFound
 from . import services
 
 router = APIRouter(prefix="/api/maps")
 
-BAG_EXCLUDES = ["recorded_data/"]
+# bags and ROS logs are not part of a map (at any depth: <exp>/runs/<run_id>/...);
+# include_bags sends the bags (never the ROS logs)
+BAG_EXCLUDES = ["recorded_data/", "mission_bag/"]
+ALWAYS_EXCLUDES = ["ros_log/"]
+# A robot never reads a map's image store (only the base's heracles and console do),
+# and it is most of a map's size: a copy to a robot leaves it out
+# (as fleet.launch_workflow.ROBOT_PRIOR_EXCLUDES does for the launch's prior).
+ROBOT_EXCLUDES = ["image_store/", "image_store.partial/"]
+
+
+def _is_robot(svc, m: dict) -> bool:
+    """``m`` is a robot (topology role), not a base station / this host."""
+    if m.get("role"):
+        return m.get("role") == "robot"
+    try:
+        return m.get("name") in svc.fleet.robots()
+    except Exception:  # noqa: BLE001 - fleet without a topology: not a robot
+        return False
 
 
 def _bump_fn():
@@ -150,7 +168,11 @@ def _local_dirs(svc) -> list[pathlib.Path]:
         if root.is_dir()
         else []
     )
-    extra = [s.run_dir for s in svc.graph.sources.values() if isinstance(s, FileSource)]
+    extra = [
+        getattr(s, "exp_dir", s.run_dir)
+        for s in svc.graph.sources.values()
+        if isinstance(s, FileSource)
+    ]
     return dirs + [d for d in extra if d not in dirs and d.is_dir()]
 
 
@@ -319,12 +341,16 @@ STORE_DIR = "image_store"
 # transfer sends the indexed store built from them (7x smaller than the zips, no
 # re-index at the destination), so they stay behind; the small event logs and the
 # save-time files (hydra/) still go with the rsync. A plain transfer copies all.
-RAW_LOG_EXCLUDES = [
-    "/keyframes/",
-    "/tracks/",
-    "/hydra/keyframes/",
-    "/hydra/tracks/",
-    "/khronos/tracks/",
+_RAW_LOG_DIRS = [
+    "keyframes/",
+    "tracks/",
+    "hydra/keyframes/",
+    "hydra/tracks/",
+    "khronos/tracks/",
+]
+# anchored at the experiment dir: a flat run's own dirs, and each runs/<run_id>/'s
+RAW_LOG_EXCLUDES = [f"/{d}" for d in _RAW_LOG_DIRS] + [
+    f"/{run_layout.RUNS_DIR}/*/{d}" for d in _RAW_LOG_DIRS
 ]
 # Store pack/unpack runs as ``python -m fleetlink.image_pack`` (the reader it uses,
 # hydra_image_store, comes from the same workspace); building a run's store from its
@@ -664,10 +690,9 @@ def plan_transfer(
             None,
         )
         if same is not None:
-            same["manifest"] = manifest(same["path"])
-            same["dsg_mtime"] = _mtime_of(
-                pathlib.Path(same["path"]) / "hydra/backend/dsg.json"
-            )
+            data = run_layout.resolve_run_dir(same["path"])
+            same["manifest"] = manifest(str(data))
+            same["dsg_mtime"] = _mtime_of(data / "hydra/backend/dsg.json")
     copy, how = ri.find_copy(source, src["name"], dests)
     robot = (source.get("identity") or {}).get("robot") or src["name"]
     plain = images == "all" and compression == "none"
@@ -823,12 +848,22 @@ def transfer(body: TransferBody, request: Request):
             }
         if body.bwlimit_kbps:
             job.log("warn", "bwlimit_kbps is not supported by rsync_transfer; ignoring")
-        exclude = [] if body.include_bags else list(BAG_EXCLUDES)
-        if not plain:
-            exclude.append(f"/{STORE_DIR}/")
+        exclude = list(ALWAYS_EXCLUDES) + ([] if body.include_bags else BAG_EXCLUDES)
+        to_robot = _is_robot(svc, dst)
+        if not plain:  # the store goes packed (pipe_store), not with the rsync
+            exclude += [f"/{STORE_DIR}/", f"/{run_layout.RUNS_DIR}/*/{STORE_DIR}/"]
             exclude += RAW_LOG_EXCLUDES
+        if to_robot:
+            exclude += ROBOT_EXCLUDES
+            if body.images != "none":
+                job.log(
+                    "dim", f"{dst['name']} is a robot: the image store stays behind"
+                )
         send_store = (
-            not plain and body.images != "none" and (plan["send_store"] or body.force)
+            not plain
+            and not to_robot
+            and body.images != "none"
+            and (plan["send_store"] or body.force)
         )
         job.log(
             "info",
@@ -863,20 +898,23 @@ def transfer(body: TransferBody, request: Request):
             "status": plan["status"],
             "run_id": plan["run_id"],
         }
-        if not plain and body.images != "none" and not send_store:
+        if not plain and body.images != "none" and not send_store and not to_robot:
             job.log("dim", "image store unchanged since the last copy; not re-packed")
             result["image_store"] = "unchanged"
         if send_store:
             job.log(
                 "info", f"Packing image store ({body.images}, {body.compression}) ..."
             )
+            # the store lives in the experiment's run (<exp>/runs/<run_id>, which the
+            # rsync above reproduced under the copy) or in a flat dir itself
+            sub = run_layout.run_subpath(plan["source"])
             ok, msg = pipe_store(
                 job,
                 svc,
                 src,
                 dst,
-                f"{root}/{body.experiment}",
-                f"{root}/{dest_name}",
+                run_layout.entry_run_dir(plan["source"]) or f"{root}/{body.experiment}",
+                f"{root}/{dest_name}" + (f"/{sub}" if sub else ""),
                 body.images,
                 body.compression,
             )
@@ -897,7 +935,11 @@ def transfer(body: TransferBody, request: Request):
                 result["image_store"] = msg
         previous = (plan.get("copy") or {}).get("origin")
         origin = ri.make_origin(
-            plan["source"], src["name"], body.images, body.compression, previous
+            plan["source"],
+            src["name"],
+            "none" if to_robot else body.images,
+            body.compression,
+            previous,
         )
         if body.include_bags:
             origin["include_bags"] = True
@@ -1050,7 +1092,10 @@ def index_images(body: IndexImagesBody, request: Request):
         raise HTTPException(
             400, f"{m['name']}:{body.name} has no raw image logs (keyframes/, tracks/)"
         )
-    run_dir = entry.get("abs_path") or f"{svc.settings.output_root}/{body.name}"
+    # per-run layout: the store is built in the experiment's latest run
+    run_dir = (
+        run_layout.entry_run_dir(entry) or f"{svc.settings.output_root}/{body.name}"
+    )
     key = (m["name"], body.name)
 
     def run(job):
@@ -1081,7 +1126,7 @@ def index_images(body: IndexImagesBody, request: Request):
             rc, tail = stream_command(job, cmd, env)
             if rc != 0:
                 job.log("warn", f"info failed (rc {rc}): {tail[-400:]}")
-            _forget_sizes(m["name"], [body.name, run_dir])
+            _forget_sizes(m["name"], [body.name, run_dir, entry.get("abs_path") or ""])
             try:
                 after = _scan_one(svc, m, body.name) or {}
             except Exception as e:  # noqa: BLE001 - the store is built either way

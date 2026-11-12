@@ -156,7 +156,7 @@ def test_reloc_gate_state_machine(tmp_path, evroot):
     assert lb.gate()["ok"]
     m = lb.start_mission("first")
     assert m["mission_id"].startswith("m") and m["session_id"] == sid
-    base = tmp_path / "out" / "exp1__base"
+    base = tmp_path / "out" / "exp1"
     rel = json.loads((base / "sessions" / sid / "reloc.json").read_text())
     assert rel["robots"]["euclid"]["state"] == "relocalized"
     assert (base / "missions" / m["mission_id"] / "reloc.json").is_file()
@@ -222,7 +222,7 @@ def test_auto_open_on_goal_sent_and_restart(tmp_path, evroot):
     assert lb2.mission["mission_id"] == m["mission_id"] and lb2.session["session_id"] == lb.session["session_id"]
     assert "console.restart" in types(evroot, "console")
     lb2.end_mission()
-    d = tmp_path / "out" / "exp1__base" / "missions" / m["mission_id"] / "mission.json"
+    d = tmp_path / "out" / "exp1" / "missions" / m["mission_id"] / "mission.json"
     assert json.loads(d.read_text())["end_reason"] == "operator"
 
 
@@ -266,7 +266,7 @@ def test_goal_images_copied(tmp_path, evroot):
     eventlog.emit("console", "goal.sent", {"robot": "euclid", "payload": {"goal": {"pddl_goal": "(visited-object o12)"}}},
                   goal_id="g7")  # fmt: skip
     lb._last_image_thread.join(5)
-    files = list((tmp_path / "out" / "exp1__base" / "missions" / lb.mission["mission_id"] / "images" / "goals" / "g7").iterdir())
+    files = list((tmp_path / "out" / "exp1" / "missions" / lb.mission["mission_id"] / "images" / "goals" / "g7").iterdir())
     assert [f.read_bytes() for f in files] == [b"\xff\xd8jpeg"]
     ev = [e for e in events(evroot, "console") if e["type"] == "goal.images"][0]
     assert ev["payload"]["refs"][0]["sym"] == "O(12)" and ev["goal_id"] == "g7"
@@ -444,7 +444,11 @@ def test_launch_passes_session_id(settings, tmp_path, evroot):
     launched = ssh.ran("run-adt4")
     assert len(launched) == 2
     assert all(c.startswith(f"export ADT4_SESSION_ID={sid} && ") for c in launched)
+    # the base station's run-adt4 -o is the logbook's base experiment dir
+    base_cmd = [c for c in launched if "base_station_web-default" in c]
+    assert len(base_cmd) == 1 and f"-o {settings.output_root}/exp9 " in base_cmd[0]
+    assert svc.logbook.base_dir() == pathlib.Path(settings.output_root) / "exp9"
     assert svc.logbook.session["session_id"] == sid and svc.logbook.session["experiment"] == "exp9"
-    s = json.loads((pathlib.Path(settings.output_root) / "exp9__base" / "sessions" / sid / "session.json").read_text())
+    s = json.loads((pathlib.Path(settings.output_root) / "exp9" / "sessions" / sid / "session.json").read_text())
     assert s["reloc"] == {"euclid": "not_required"} and "env" not in s
     time.sleep(0)

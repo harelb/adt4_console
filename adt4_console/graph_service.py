@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 import msgpack
 import numpy as np
 
+from . import run_layout
+
 log = logging.getLogger(__name__)
 
 AGENT_LAYER, AGENT_PART = 2, 97
@@ -1084,7 +1086,12 @@ class FileSource(Source):
         super().__init__(name)
         self.path = pathlib.Path(os.path.expanduser(str(path)))
         self.dsg_path, self.run_dir = self._resolve(self.path)
-        self.label = f"{name} ({self.run_dir.name})"
+        # the experiment dir (per-run layout: <exp>/runs/<run_id> -> <exp>)
+        self.exp_dir = (
+            self.path if self.path.is_dir() and self.path != self.run_dir
+            else run_layout.experiment_of(self.run_dir)
+        )  # fmt: skip
+        self.label = f"{name} ({run_layout.display_name(self.run_dir)})"
         self._mtime = None
         self._version = 0
         self._store = None  # <run>/image_store, opened (indexed) lazily
@@ -1093,20 +1100,18 @@ class FileSource(Source):
 
     @staticmethod
     def _resolve(path: pathlib.Path):
+        """``(dsg file, run dir)``.  ``path`` is a DSG file, a run dir, a flat legacy
+        run dir, or an experiment dir (``<exp>/latest``, else its newest run with a
+        map; run_layout)."""
         if path.is_file():
             run = path.parents[2] if path.parent.name == "backend" else path.parent
             return path, run
-        for rel in (
-            "hydra/backend/dsg.json",
-            "hydra/backend/dsg_with_mesh.json",
-            "backend/dsg.json",
-            "dsg.json",
-            "dsg_with_mesh.json",
-        ):
-            if (path / rel).is_file():
-                return path / rel, path
+        found = run_layout.find_dsg(path)
+        if found is not None:
+            return found
         raise FileNotFoundError(
-            f"no DSG under {path} (expected hydra/backend/dsg.json)"
+            f"no DSG under {path} (expected hydra/backend/dsg.json, "
+            "or latest/hydra/backend/dsg.json)"
         )
 
     def version(self) -> int:
