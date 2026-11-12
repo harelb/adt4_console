@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import pathlib
 import re
 import time
@@ -14,6 +15,7 @@ from ..ros_bridge import RosUnavailable
 from . import services
 
 router = APIRouter(prefix="/api")
+log = logging.getLogger(__name__)
 
 
 class LaunchPlanBody(BaseModel):
@@ -27,6 +29,12 @@ class LaunchPlanBody(BaseModel):
     sessions: dict[str, str] = {}
     # launch only the base station (robots are ignored); remembered by the form
     base_only: bool = False
+    # (re)launch only ``robots``: the base station's session, zenoh config and
+    # fleetlink router/bridge are not touched (``base_station`` is only the
+    # reference for the checks); a robot's running session is stopped cleanly
+    robots_only: bool = False
+    # robots only: Stop & save each robot first (hydra / ROMAN save, then teardown)
+    save_first: bool = False
     mode: str | None = None
     prior_path: str = ""
     prior_source: str | None = None
@@ -54,7 +62,7 @@ def _with_link_mode(topo: dict, mode: str | None) -> dict:
     return topo
 
 
-def _plan(body: LaunchPlanBody, topo: dict | None = None):
+def _plan(body: LaunchPlanBody, topo: dict | None = None, runtime_config: dict | None = None):
     import dataclasses
 
     from dcist_launch_system.fleet.launch_workflow import LaunchError, LaunchPlan
@@ -69,15 +77,28 @@ def _plan(body: LaunchPlanBody, topo: dict | None = None):
         except LaunchError as e:
             raise HTTPException(400, str(e)) from None
     fields = body.model_dump()
+    fields.pop("save_first", None)
+    if body.base_only and body.robots_only:
+        raise HTTPException(400, "Pick either base station only or robots only")
     if body.base_only:
         if not (body.base_station and body.bs_session):
             raise HTTPException(400, "Base station only: pick a base station and its session")
         fields.update(robots=[], session="", sessions={})
+    if body.robots_only:
+        if not body.robots:
+            raise HTTPException(400, "Robots only: pick the robot(s) to (re)launch")
+        fields.update(bs_session=None)
     fields["sessions"] = {p: s for p, s in (fields.get("sessions") or {}).items() if s}
+    if runtime_config is not None:
+        fields["sessions"] = resolve_platform_sessions(fields, topo, runtime_config)
     if dataclasses.is_dataclass(LaunchPlan):
         # older fleet tooling plans have fewer options (no link network / mode,
         # no per-platform sessions)
         known = {f.name for f in dataclasses.fields(LaunchPlan)}
+        if body.robots_only and "robots_only" not in known:
+            raise HTTPException(
+                400, "Robots only: this workspace's fleet tooling cannot relaunch robots alone"
+            )
         if "sessions" not in known and not fields["session"] and fields["sessions"]:
             fields["session"] = next(iter(fields["sessions"].values()))
         fields = {k: v for k, v in fields.items() if k in known}
@@ -95,8 +116,94 @@ def _validate(plan, runtime_config, output_root, topo=None):
         cmds = fn(plan, runtime_config, output_root, topo)
     else:
         cmds = lw.build_robot_commands(plan, runtime_config, output_root)
+    check_session_platforms(plan, runtime_config, topo)
     check_session_modes(plan, runtime_config, topo)
     return cmds
+
+
+def session_platform(session: str | None) -> str | None:
+    """``"spot"`` | ``"phoenix"`` | ``None``: the platform a robot session is for
+    (``launch_workflow.session_platform``, else by its experiment name)."""
+    from dcist_launch_system.fleet import launch_workflow as lw
+
+    fn = getattr(lw, "session_platform", None)
+    if fn is not None:
+        return fn(session)
+    exp = str(session or "").partition("-")[0]
+    return next((p for p in ("spot", "phoenix") if exp.startswith(p)), None)
+
+
+def platform_equivalent(session, platform, topo, mode, available) -> str | None:
+    """``session`` for a robot of ``platform``: itself when it fits, else the
+    other platform's twin (spot_relocalize-X <-> phoenix_relocalize-X) when that
+    session exists, else the platform's preset for the mode; None without one."""
+    own = session_platform(session)
+    if own is None or own == platform:
+        return session
+    swapped = platform + str(session)[len(own):]
+    if swapped in available:
+        return swapped
+    presets = (((topo or {}).get("fleet_defaults") or {}).get("sessions") or {})
+    preset = (presets.get(session_mode(session) or mode) or {}).get(platform)
+    return preset if preset and session_platform(preset) in (None, platform) else None
+
+
+def resolve_platform_sessions(fields: dict, topo: dict | None, runtime_config: dict) -> dict:
+    """Fill ``sessions`` (platform -> session) for every selected robot's platform
+    from a single ``session`` (older clients, legacy launch memory): a robot never
+    gets another platform's session (2026-11-11: gauss, a phoenix, was sent the
+    Spot session spot_relocalize-relocalize_awcd).  A platform without an
+    equivalent is left out (the launch then refuses it)."""
+    from dcist_launch_system.fleet.launch_workflow import list_sessions
+
+    from .. import fleet_compat as fc
+
+    session = fields.get("session") or ""
+    sessions = dict(fields.get("sessions") or {})
+    if not session or not fields.get("robots"):
+        return sessions
+    machines = (topo or {}).get("machines") or {}
+    available = None
+    for r in fields["robots"]:
+        if r not in runtime_config:
+            continue
+        p = fc.platform_of(machines.get(r) or runtime_config[r])
+        if sessions.get(p):
+            continue
+        if available is None:
+            available = set(list_sessions())
+        s = platform_equivalent(session, p, topo, fields.get("mode"), available)
+        if s:
+            sessions[p] = s
+    return sessions
+
+
+def check_session_platforms(plan, runtime_config: dict, topo: dict | None) -> None:
+    """Raise ``LaunchError`` for a robot session of another platform (a phoenix
+    robot running spot_*, a Spot running phoenix_*): ``launch_workflow.
+    check_session_platforms`` when the fleet tooling has it."""
+    from dcist_launch_system.fleet import launch_workflow as lw
+
+    from .. import fleet_compat as fc
+
+    fn = getattr(lw, "check_session_platforms", None)
+    if fn is not None:
+        return fn(plan, runtime_config, topo)
+    robot_session = getattr(lw, "robot_session", None)
+    machines = (topo or {}).get("machines") or {}
+    bad = []
+    for r in plan.robots:
+        if r not in runtime_config:
+            continue
+        s = robot_session(plan, runtime_config[r], topo) if robot_session else plan.session
+        sp, rp = session_platform(s), fc.platform_of(machines.get(r) or runtime_config[r])
+        if sp and sp != rp:
+            bad.append(f"{r} (platform {rp}) would run {s} (a {sp} session)")
+    if bad:
+        raise lw.LaunchError(
+            "Session does not match the robot's platform: " + "; ".join(bad)
+            + ". Pick a session of each robot's platform."
+        )
 
 
 _RELOCALIZE = re.compile(r"(^|_)(bag_)?relocalize$")
@@ -245,7 +352,7 @@ def launch_dry_run(body: LaunchPlanBody, request: Request):
     svc = services(request)
     try:
         with svc.fleet.lock:
-            plan = _plan(body, svc.fleet.topo)
+            plan = _plan(body, svc.fleet.topo, svc.fleet.runtime_config)
             lines = dry_run_lines(
                 plan,
                 svc.fleet.runtime_config,
@@ -253,6 +360,7 @@ def launch_dry_run(body: LaunchPlanBody, request: Request):
                 svc.fleet.topo,
                 svc.fleet.network,
             )
+            check_session_platforms(plan, svc.fleet.runtime_config, svc.fleet.topo)
             check_session_modes(plan, svc.fleet.runtime_config, svc.fleet.topo)
     except LaunchError as e:
         raise HTTPException(400, str(e)) from None
@@ -272,13 +380,13 @@ def launch_preflight(body: LaunchPlanBody, request: Request):
     with fleet.lock:
         topo = fleet.topo
         runtime_config = {k: dict(v) for k, v in fleet.runtime_config.items()}
-    plan = _plan(body, topo)
+    plan = _plan(body, topo, runtime_config)
     unknown = [r for r in plan.robots if r not in runtime_config]
     if unknown:
         raise HTTPException(400, f"unknown robot(s): {', '.join(unknown)}")
     machines = [runtime_config[r] for r in plan.robots]
     bs = runtime_config.get(plan.base_station) if plan.base_station else None
-    if bs and bs["name"] not in plan.robots:
+    if bs and bs["name"] not in plan.robots and not body.robots_only:
         machines.append(bs)
     checks = pf.run_checks(
         machines,
@@ -301,19 +409,47 @@ def launch(body: LaunchPlanBody, request: Request):
 
     svc = services(request)
     fleet = svc.fleet
-    plan = _plan(body, fleet.topo)
+    with fleet.lock:
+        plan = _plan(body, fleet.topo, fleet.runtime_config)
     try:  # validate up front so the UI gets a 400, not a failed job
         with fleet.lock:
             _validate(plan, fleet.runtime_config, svc.settings.output_root, fleet.topo)
     except LaunchError as e:
         raise HTTPException(400, str(e)) from None
     # the next launch (a relaunch after Stop & save) starts from these choices,
-    # prior map included
+    # prior map included; a robots-only relaunch keeps the full launch's robots
+    # and base station session
     if getattr(svc, "launch_memory", None) is not None:
-        svc.launch_memory.remember(body.model_dump())
+        remember_launch(svc.launch_memory, body, plan)
+    if body.robots_only:
+        log.info(
+            "launch: robots only %s (experiment %s, sessions %s, save_first=%s); "
+            "base station %s not touched",
+            ",".join(plan.robots), plan.experiment, plan.sessions or plan.session,
+            body.save_first, plan.base_station,
+        )  # fmt: skip
 
     def run(job):
         cb = JobLaunchCallbacks(job, fleet.zenohd_state)
+        if body.robots_only:
+            # the operator asked to restart these robots: their running session
+            # is stopped without a second question
+            cb = _AutoStop(cb)
+            if body.save_first:
+                for r in plan.robots:
+                    job.log("heading", f"Stop & save {r} before the relaunch ...")
+                    res = stop_save_run(svc, job, r, teardown=True)
+                    if res is False:
+                        job.log("error", f"ABORT: Stop & save failed on {r}; not relaunched")
+                        return False
+                    if isinstance(res, dict) and res.get("teardown") is False:
+                        # killing the session now would cut hydra's save short
+                        job.log(
+                            "error",
+                            f"ABORT: {r} is still saving (or its session did not stop); "
+                            "relaunch it once the save is done",
+                        )
+                        return False
         with fleet.lock:
             topo = fleet.topo
             network = fleet.network
@@ -327,20 +463,76 @@ def launch(body: LaunchPlanBody, request: Request):
             callbacks=cb,
             deps=svc.launch_deps,
         )
-        if ok:
+        if ok and body.robots_only:
+            _robots_rejoined(svc, plan)
+        elif ok:
             try:
                 attach_prior(svc, plan, job)
             except Exception as e:  # noqa: BLE001 - the launch itself succeeded
                 job.log("warn", f"could not register the prior map in the viewer: {e}")
         return ok
 
-    title = (
-        f"Launch {plan.experiment} on {', '.join(plan.robots)}"
-        if plan.robots
-        else f"Launch {plan.experiment}: base station {plan.base_station} only"
-    )
+    if body.robots_only:
+        title = f"Relaunch {', '.join(plan.robots)} ({plan.experiment}), robots only"
+    elif plan.robots:
+        title = f"Launch {plan.experiment} on {', '.join(plan.robots)}"
+    else:
+        title = f"Launch {plan.experiment}: base station {plan.base_station} only"
     job = svc.jobs.start("launch", title, run)
     return {"job_id": job.id}
+
+
+class _AutoStop:
+    """Launch callbacks that answer the "stop the running session" question yes
+    (a robots-only relaunch the operator asked for); every other one is asked."""
+
+    def __init__(self, cb):
+        self._cb = cb
+
+    def __getattr__(self, name):
+        return getattr(self._cb, name)
+
+    def confirm(self, request):
+        if getattr(request, "kind", None) == "kill_sessions":
+            machines = (getattr(request, "detail", None) or {}).get("machines") or []
+            self._cb.log("dim", f"stopping the running session on {', '.join(machines)} (restart)")
+            return True
+        return self._cb.confirm(request)
+
+
+def remember_launch(memory, body: LaunchPlanBody, plan) -> dict:
+    """Remember the Launch form's choices; a robots-only relaunch only adds its
+    robots and their platforms' sessions to the last full launch."""
+    fields = body.model_dump()
+    if body.robots_only:
+        prev = memory.get(body.base_station) or {}
+        robots = list(prev.get("robots") or [])
+        robots += [r for r in plan.robots if r not in robots]
+        fields.update(
+            robots=robots,
+            session=prev.get("session") or body.session,
+            sessions={**(prev.get("sessions") or {}), **(plan.sessions or {})},
+            bs_session=prev.get("bs_session"),
+            base_only=False,
+            experiment=prev.get("experiment") or body.experiment,
+        )
+    return memory.remember(fields)
+
+
+def _robots_rejoined(svc, plan) -> None:
+    """A robots-only relaunch: the active launch record keeps its prior and base
+    and lists the relaunched robots too."""
+    from ..launch_state import new_state
+
+    if svc.launch_state is None:
+        return
+    prev = svc.launch_state.get()
+    if not prev:
+        svc.launch_state.set(new_state(plan, None, None))
+        return
+    robots = list(prev.get("robots") or [])
+    robots += [r for r in plan.robots if r not in robots]
+    svc.launch_state.set({**prev, "robots": robots})
 
 
 def attach_prior(svc, plan, job) -> dict | None:
@@ -521,10 +713,10 @@ class StopSaveBody(BaseModel):
     teardown: bool = True
 
 
-@router.post("/robots/{robot}/stop_save")
-def stop_save(robot: str, request: Request, body: StopSaveBody | None = None):
-    svc = services(request)
-    teardown = body.teardown if body else True
+def stop_save_run(svc, job, robot: str, teardown: bool = True):
+    """Stop & save ``robot`` inside ``job``: hydra / ROMAN save their maps, then
+    (``teardown``) the robot's ADT4 session is stopped.  The job result: False on
+    failure, else a dict (``teardown`` False when the stack was left running)."""
 
     def finish(job, result, hydra_exited):
         """Tear the stack down once hydra's save is known to be done."""
@@ -632,7 +824,16 @@ def stop_save(robot: str, request: Request, body: StopSaveBody | None = None):
         job.log("ok" if ok else "error", f"{robot}: {msg}")
         return finish(job, {"method": "tmux", "detail": msg}, None) if ok else False
 
-    job = svc.jobs.start("stop_save", f"Stop & save {robot}", run)
+    return run(job)
+
+
+@router.post("/robots/{robot}/stop_save")
+def stop_save(robot: str, request: Request, body: StopSaveBody | None = None):
+    svc = services(request)
+    teardown = body.teardown if body else True
+    job = svc.jobs.start(
+        "stop_save", f"Stop & save {robot}", lambda job: stop_save_run(svc, job, robot, teardown)
+    )
     return {"job_id": job.id}
 
 

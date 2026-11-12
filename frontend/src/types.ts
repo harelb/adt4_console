@@ -622,6 +622,10 @@ export interface LaunchPlan {
   sessions?: Record<string, string>;
   /** launch only the base station's session (robots ignored) */
   base_only?: boolean;
+  /** (re)launch only `robots`; the base station's session is not touched */
+  robots_only?: boolean;
+  /** robots only: Stop & save each robot before it is relaunched */
+  save_first?: boolean;
   /** network the robot <-> base links use; null = the topology default */
   link_network?: string | null;
   /** "router" | "fleetlink" for this launch; null = the topology default */

@@ -185,7 +185,8 @@ describe("Launch form: robot session follows the launch mode", () => {
   it("the picker lists only the mode's sessions, with a show-all escape hatch", async () => {
     mount(FIELD_RUN_MEMORY);
     await settle();
-    expect((await pickerOptions("Robot session")).sort()).toEqual(["phoenix_relocalize-relocalize", "spot_relocalize-relocalize", "spot_relocalize-relocalize_awcd"]);
+    // Spot robots only: the mode's Spot sessions
+    expect((await pickerOptions("Robot session")).sort()).toEqual(["spot_relocalize-relocalize", "spot_relocalize-relocalize_awcd"]);
     const toggle = [...document.querySelectorAll("label.toggle")].find(l => l.textContent?.includes("Show all sessions"))!;
     expect(toggle.textContent).toContain("relocalize sessions only");
     await act(async () => toggle.querySelector("input")!.click());
