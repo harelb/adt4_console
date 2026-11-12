@@ -616,6 +616,11 @@ class RosBridge:
         # scene_repair.SceneRepair (the app binds it): fed applied scene changes,
         # omniplanner replan requests / map versions and the goals sent
         self.scene_repair = None
+        # what the planner says it believes (planner_state): goal_manager's
+        # robot_plan_states, omniplanner's plan_robots / map_version / map_epoch
+        self._planner: dict = {}
+        # planner_state.PlannerState (set by build_services): told when that changes
+        self.planner_state = None
         # manipulation_service.ManipulationApprovalService (set by build_services):
         # gets every robot's ManipulationApprovalRequest
         self.manipulation = None
@@ -667,6 +672,7 @@ class RosBridge:
             self.call(self._subscribe_status).result(5)
             self.call(self._subscribe_link_status).result(5)
             self.call(self._subscribe_scene_changes).result(5)
+            self.call(self._subscribe_planner_state).result(5)
             self.call(self._subscribe_awcd).result(5)
             for r in robots or []:
                 self.ensure_robot(r)
@@ -885,9 +891,94 @@ class RosBridge:
         )  # fmt: skip
         n.create_subscription(
             import_type("std_msgs/msg/Int64"), f"/{self.planner_ns}/omniplanner_node/map_version",
-            lambda m: self.scene_repair is not None and self.scene_repair.on_map_version(m.data),
+            self._on_planner_map_version,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL),
         )  # fmt: skip
+
+    def _on_planner_map_version(self, msg) -> None:
+        self._planner_set(map_version=int(msg.data))
+        if self.scene_repair is not None:
+            self.scene_repair.on_map_version(msg.data)
+
+    # ------------------------------------------------------ planner state view
+    def robot_plan_states_topic(self) -> str:
+        return f"/{self.planner_ns}/goal_manager/robot_plan_states"
+
+    def _subscribe_planner_state(self) -> None:
+        """goal_manager's per-robot plan states and omniplanner's plan robots and
+        map epoch (all latched), for the Planner state view."""
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+        latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        string = import_type("std_msgs/msg/String")
+        n = self.node
+        n.create_subscription(string, self.robot_plan_states_topic(), self._on_robot_plan_states, latched)
+        n.create_subscription(string, f"/{self.planner_ns}/omniplanner_node/plan_robots", self._on_plan_robots, latched)
+        n.create_subscription(string, f"/{self.planner_ns}/omniplanner_node/map_epoch",
+                              lambda m: self._planner_set(map_epoch=str(m.data)), latched)  # fmt: skip
+
+    def _planner_set(self, **kw) -> None:
+        with self._lock:
+            self._planner.update(kw)
+        ps = getattr(self, "planner_state", None)
+        if ps is not None:
+            ps.notify()
+
+    @_logged_callback
+    def _on_robot_plan_states(self, msg) -> None:
+        """goal_manager's ``{robot: {status, plan_id, done, total, conjuncts, remaining}}``."""
+        try:
+            states = json.loads(msg.data)
+        except ValueError:
+            return
+        if isinstance(states, dict):
+            self._planner_set(robot_plan_states=states, robot_plan_states_t=time.time())
+
+    @_logged_callback
+    def _on_plan_robots(self, msg) -> None:
+        """omniplanner's JSON list of the robots in the plan it dispatched last."""
+        try:
+            robots = json.loads(msg.data)
+        except ValueError:
+            return
+        if isinstance(robots, list):
+            self._planner_set(plan_robots=[str(r) for r in robots], plan_robots_t=time.time())
+
+    def planner_view(self) -> dict:
+        with self._lock:
+            return dict(self._planner)
+
+    def last_plan_errors(self) -> dict[str, dict]:
+        """{robot: its most recent plan failure {t, text, source}}: omniplanner
+        ~/plan_status refusals and ~/plan_failed."""
+        out: dict[str, dict] = {}
+        for robot, st in list(self._plan.items()):
+            cands = [
+                {"t": e.get("t"), "text": str(e.get("error") or "planning failed"),
+                 "source": f"plan_status {e.get('plugin') or ''}".strip()}
+                for e in list(st.status) if e.get("ok") is False
+            ] + [
+                {"t": a.get("t"), "text": a.get("text", ""), "source": "plan_failed"}
+                for a in list(st.repair_alerts) if a.get("kind") == "plan_failed"
+            ]  # fmt: skip
+            if cands:
+                best = max(cands, key=lambda e: e.get("t") or 0)
+                out[robot] = {**best, "robot": robot}
+        return out
+
+    def update_holding_state(self, robot: str, obj: str, is_holding: bool, position=None,
+                             timeout: float = 10.0) -> dict:  # fmt: skip
+        """heracles_state_updater's ``/<robot>/update_holding_state``: the path the
+        executors' picks and places take. A release at ``position`` (x, y, z)
+        puts the object there; without one the updater uses the robot's pose."""
+        from .planner_state import HOLDING_SERVICE_TYPE, holding_service
+
+        fields = {"id": obj, "is_holding": bool(is_holding)}
+        if position is not None and not is_holding:
+            point = import_type("geometry_msgs/msg/Point")
+            fields["has_position"] = True
+            fields["position"] = point(x=float(position[0]), y=float(position[1]), z=float(position[2]))
+        return self.call_service(holding_service(robot), HOLDING_SERVICE_TYPE, fields, timeout=timeout)
 
     def _on_scene_changes(self, msg) -> None:
         if self.scene_repair is None:
@@ -1344,6 +1435,8 @@ class RosBridge:
             }
         )
         self._publish_plan(robot)
+        if getattr(self, "planner_state", None) is not None:
+            self.planner_state.notify()
 
     @_logged_callback
     def _on_plan_status(self, default_robot, msg) -> None:
@@ -1356,6 +1449,8 @@ class RosBridge:
         self._plan[robot].status.append(st)
         self.goals.on_plan_status(st)
         self._publish_plan(robot)
+        if st.get("ok") is False and getattr(self, "planner_state", None) is not None:
+            self.planner_state.notify()
 
     @_logged_callback
     def _on_schedule(self, default_robot, msg) -> None:
@@ -1568,6 +1663,7 @@ class RosBridge:
                     cur.append(f)
             out = list(cur)
         self._publish_plan(robot)
+        self._planner_set()
         return out
 
     def clear_constraints(self, robot: str, facts=None) -> list[dict]:
@@ -1578,6 +1674,7 @@ class RosBridge:
             cur[:] = [] if drop is None else [f for f in cur if f not in drop]
             out = list(cur)
         self._publish_plan(robot)
+        self._planner_set()
         return out
 
     def goal_manager_engine(self) -> str | None:

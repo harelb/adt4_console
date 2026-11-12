@@ -18,6 +18,7 @@ import {PhoenixChips} from "./PhoenixStatus";
 import {DirectRouteButtons} from "./DirectRoute";
 import {usePlanPreview} from "../stores/planPreview";
 import {ClearRobotPaths} from "./ClearPaths";
+import {PlannerStatePanel} from "./PlannerState";
 
 /** "O(12)" -> "o12" (omniplanner lower-cases NodeSymbol names in PDDL). */
 export function pddlSymbol(sym: string): string {
@@ -289,6 +290,7 @@ export function PlanPanel() {
       {msg && <div className={`inline-msg tone-${msg.tone}`} role={msg.tone === "ok" ? "status" : "alert"}>{msg.text}</div>}
       <LeaseRefusalNotice robot={planRobot} />
 
+      <PlannerStatePanel />
       <CurrentPlan robot={planRobot} plan={plan} />
     </div>
   );

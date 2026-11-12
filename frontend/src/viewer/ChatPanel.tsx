@@ -30,6 +30,7 @@ import {useRobotColor3D} from "./background";
 import {ENGINE_LABEL, refreshEngines, useEngines, type EngineId} from "../stores/engines";
 import {chatEngineNow, useChatEngine, type ChatEngineInfo} from "../stores/chatEngine";
 import {ChatEnginePicker} from "./ChatEnginePicker";
+import {PlannerStatePanel} from "./PlannerState";
 import type {FastDownwardInfo} from "../lib/fastDownward";
 import {decideMapEdit, MapEditCard, mapEditNote, statusOf, toMapEditItem, type MapEditItem} from "./MapEditCard";
 import {decideSceneEdit, SceneEditCard, sceneEditNote, sceneEditStatus, toSceneEditItem, undoSceneEdit, type SceneEditItem} from "./SceneEditCard";
@@ -764,6 +765,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           {missionMode ? "Clear" : "New chat"}
         </button>
       </div>
+      <PlannerStatePanel compact />
       {missionMode && (
         <div className="chat-engine">
           <EnginePicker label="planner" />
