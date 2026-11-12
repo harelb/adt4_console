@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import collections
 import concurrent.futures
+import copy
+import functools
 import importlib
 import itertools
 import json
@@ -31,6 +33,22 @@ from .awcd_changes import RECONCILED_SUFFIX as AWCD_RECONCILED_SUFFIX
 from .awcd_changes import ROBOT_TOPIC as AWCD_ROBOT_TOPIC
 
 log = logging.getLogger(__name__)
+
+
+def _logged_callback(fn):
+    """A ROS subscription callback that logs its exception instead of raising
+    it: an exception out of a callback ends MultiThreadedExecutor.spin(), and
+    with it every subscription and every ``call()`` on the executor."""
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        except Exception:  # noqa: BLE001
+            log.exception("ROS callback %s failed", fn.__name__)
+            return None
+
+    return wrapper
 
 STATUS_TABLE_TOPIC = "/global/ros_system_monitor/table_in"
 # fleetlink-bridge (fleetlink mode): one std_msgs/String JSON per robot,
@@ -657,11 +675,18 @@ class RosBridge:
         return True
 
     def _spin(self) -> None:
-        try:
-            self._executor.spin()
-        except Exception:  # noqa: BLE001
-            if self.available:
-                log.exception("ROS executor stopped")
+        # spin() returns on shutdown; a callback's exception ends it too, so log
+        # it and spin on (one failing callback must not stop every subscription
+        # and every call() for the rest of the session)
+        while True:
+            try:
+                self._executor.spin()
+                return
+            except Exception:  # noqa: BLE001
+                if not self.available:
+                    return
+                log.exception("ROS callback failed; the executor spins on")
+                time.sleep(0.05)
 
     def stop(self) -> None:
         if not self.available:
@@ -728,7 +753,11 @@ class RosBridge:
 
         def go():
             msg = cls()
-            set_message_fields(msg, fields)  # nested fields (ConstrainedPddlGoalMsg)
+            # a copy: set_message_fields (rosidl_runtime_py 0.13) puts message
+            # objects in the caller's nested lists (ConstrainedPddlGoalMsg's
+            # constraints become ConstraintFact), and the caller keeps fields for
+            # the hub (msgpack) and the plan view
+            set_message_fields(msg, copy.deepcopy(fields))
             pub.publish(msg)
 
         self.run(go)
@@ -771,7 +800,7 @@ class RosBridge:
 
         def go():
             msg = cls()
-            set_message_fields(msg, fields)
+            set_message_fields(msg, copy.deepcopy(fields))  # a copy: see publish()
             self._publisher(topic, cls).publish(msg)
 
         self.run(go, timeout=1.0)
@@ -1274,11 +1303,13 @@ class RosBridge:
             out["manual_mode"] = self._plan[robot].manual_mode
         return out
 
+    @_logged_callback
     def _on_plan(self, robot, msg) -> None:
         self._plan[robot].plan = action_sequence_to_dict(msg)
         self.goals.on_plan(robot, self._plan[robot].plan)
         self._publish_plan(robot)
 
+    @_logged_callback
     def _on_path_plan(self, robot, msg) -> None:
         self._plan[robot].plan = path_to_dict(msg, robot)
         self.goals.on_plan(robot, self._plan[robot].plan)
@@ -1299,6 +1330,7 @@ class RosBridge:
         if getattr(self, "hub", None) is not None:
             self.hub.publish(f"goal_track/{gid}", view)
 
+    @_logged_callback
     def _on_repair_alert(self, default_robot, kind: str, text: str) -> None:
         """goal_manager's operator alert or a planner failure, attributed to the
         robot of the most recent goal (both are planner-wide)."""
@@ -1313,6 +1345,7 @@ class RosBridge:
         )
         self._publish_plan(robot)
 
+    @_logged_callback
     def _on_plan_status(self, default_robot, msg) -> None:
         try:
             st = json.loads(msg.data)
@@ -1324,6 +1357,7 @@ class RosBridge:
         self.goals.on_plan_status(st)
         self._publish_plan(robot)
 
+    @_logged_callback
     def _on_schedule(self, default_robot, msg) -> None:
         sched = schedule_from_msg(msg)
         robots = {r["robot"] for r in sched["rows"] if r["robot"]} or {
@@ -1333,6 +1367,7 @@ class RosBridge:
             self._plan[robot].schedule = sched
             self._publish_plan(robot)
 
+    @_logged_callback
     def _on_guards(self, robot, msg) -> None:
         st = self._plan[robot]
         new = lease_from_guards(msg)
@@ -1348,10 +1383,12 @@ class RosBridge:
         else:
             new["_pub"] = old.get("_pub", 0.0)
 
+    @_logged_callback
     def _on_llm(self, robot, msg) -> None:
         self._plan[robot].llm.append(msg.data)
         self._publish_plan(robot)
 
+    @_logged_callback
     def _on_result(self, robot, msg) -> None:
         res = {
             "plan_id": msg.plan_id,
