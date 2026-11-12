@@ -39,3 +39,35 @@ export function platformSession(platform: string, picked: Record<string, string>
   if (session && session.startsWith(platform)) return session;
   return presets?.[platform] ?? "";
 }
+
+/** session -> "mapping" | "relocalize" (GET api/launch/defaults → session_modes,
+ * from the experiment manifest).  Sessions without an entry (base station,
+ * planning sims, hand-made) belong to neither mode. */
+export type SessionModes = Record<string, string>;
+
+/** The session's launch mode, if it has one. */
+export const sessionModeOf = (s: string | null | undefined, modes: SessionModes | undefined): string | undefined => (s ? modes?.[s] : undefined);
+
+/** A session of the *other* launch mode: a mapping session in relocalize mode
+ * never loads the prior; the backend refuses it. */
+export function sessionMismatch(s: string | null | undefined, mode: string, modes: SessionModes | undefined): boolean {
+  const m = sessionModeOf(s, modes);
+  return !!m && m !== mode;
+}
+
+/** The robot session picker's options: only `mode`'s sessions, unless `showAll`
+ * (or the backend sent no modes); the current value stays listed. */
+export function sessionsForMode(all: string[], mode: string, modes: SessionModes | undefined, showAll: boolean, current?: string): string[] {
+  if (showAll || !modes || !Object.keys(modes).length) return all;
+  const own = all.filter(s => modes[s] === mode);
+  return current && !own.includes(current) && all.includes(current) ? [...own, current] : own;
+}
+
+/** `s` when it fits `mode`, else `fallback` (the mode's preset). */
+export const sessionForMode = (s: string | null | undefined, mode: string, modes: SessionModes | undefined, fallback: string): string =>
+  s && !sessionMismatch(s, mode, modes) ? s : fallback;
+
+/** Per-platform picks that fit `mode` (the others fall back to the mode's preset). */
+export function picksForMode(picks: Record<string, string> | null | undefined, mode: string, modes: SessionModes | undefined): Record<string, string> {
+  return Object.fromEntries(Object.entries(picks ?? {}).filter(([, s]) => s && !sessionMismatch(s, mode, modes)));
+}

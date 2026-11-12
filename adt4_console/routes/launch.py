@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 import time
 
 from fastapi import APIRouter, HTTPException, Request
@@ -85,13 +86,79 @@ def _plan(body: LaunchPlanBody, topo: dict | None = None):
 
 def _validate(plan, runtime_config, output_root, topo=None):
     """``launch_workflow.validate_plan`` (base-station-only aware); older fleet
-    tooling has only ``build_robot_commands`` (robots required)."""
+    tooling has only ``build_robot_commands`` (robots required).  A robot session
+    of the other launch mode is refused either way (:func:`check_session_modes`)."""
     from dcist_launch_system.fleet import launch_workflow as lw
 
     fn = getattr(lw, "validate_plan", None)
     if fn is not None:
-        return fn(plan, runtime_config, output_root, topo)
-    return lw.build_robot_commands(plan, runtime_config, output_root)
+        cmds = fn(plan, runtime_config, output_root, topo)
+    else:
+        cmds = lw.build_robot_commands(plan, runtime_config, output_root)
+    check_session_modes(plan, runtime_config, topo)
+    return cmds
+
+
+_RELOCALIZE = re.compile(r"(^|_)(bag_)?relocalize$")
+
+
+def session_mode(session: str | None) -> str | None:
+    """``"relocalize"`` | ``"mapping"`` | ``None`` for a session file name:
+    ``launch_workflow.session_mode`` (from experiment_manifest.yaml), else, on
+    fleet tooling without it, by name (``<experiment>-<config>``: a spot*/phoenix*
+    experiment ending in ``relocalize`` relocalizes, other spot*/phoenix* ones map,
+    except the prior-map planning sims)."""
+    from dcist_launch_system.fleet import launch_workflow as lw
+
+    fn = getattr(lw, "session_mode", None)
+    if fn is not None:
+        return fn(session)
+    exp, sep, _ = (session or "").partition("-")
+    if not sep or not exp.startswith(("spot", "phoenix")):
+        return None
+    if _RELOCALIZE.search(exp):
+        return "relocalize"
+    if "prior_dsg" in exp or "grstaps" in exp:
+        return None
+    return "mapping"
+
+
+def session_modes(sessions) -> dict[str, str]:
+    """session -> mode for the robot sessions among ``sessions`` (the Launch
+    form's pickers list the selected mode's)."""
+    out = {}
+    for s in sessions:
+        m = session_mode(s)
+        if m:
+            out[s] = m
+    return out
+
+
+def check_session_modes(plan, runtime_config: dict, topo: dict | None) -> None:
+    """Raise ``LaunchError`` for a robot session of the other launch mode (a
+    relocalize launch running a mapping session never loads the prior):
+    ``launch_workflow.check_session_modes`` when the fleet tooling has it."""
+    from dcist_launch_system.fleet import launch_workflow as lw
+
+    fn = getattr(lw, "check_session_modes", None)
+    if fn is not None:
+        return fn(plan, runtime_config, topo)
+    mode = getattr(plan, "mode", None)
+    if mode not in ("mapping", "relocalize"):
+        return
+    robot_session = getattr(lw, "robot_session", None)
+    bad = []
+    for r in plan.robots:
+        if r not in runtime_config:
+            continue
+        s = robot_session(plan, runtime_config[r], topo) if robot_session else plan.session
+        m = session_mode(s)
+        if m and m != mode:
+            bad.append(f"{r} would run {s} (a {m} session)")
+    if bad:
+        raise lw.LaunchError(
+            f"Launch mode is {mode} but " + "; ".join(bad) + f". Pick a {mode} session."
+        )
 
 
 def platform_choices(topo: dict | None, runtime_config: dict, mode: str) -> dict:
@@ -140,12 +207,16 @@ def launch_defaults(request: Request, mode: str = "mapping"):
         )
         links = link_choices(fleet.topo, fleet.network)
         platforms = platform_choices(fleet.topo, fleet.runtime_config, mode)
+    sessions = list_sessions()
     return {
         **sel,
         **links,
         **platforms,
         "mode": mode,
-        "sessions": list_sessions(),
+        "sessions": sessions,
+        # session -> "mapping" | "relocalize" (robot sessions only): the robot
+        # session pickers list the selected mode's
+        "session_modes": session_modes(sessions),
         "last": last_launch(svc, sel.get("base_station")),
     }
 
@@ -174,13 +245,15 @@ def launch_dry_run(body: LaunchPlanBody, request: Request):
     svc = services(request)
     try:
         with svc.fleet.lock:
+            plan = _plan(body, svc.fleet.topo)
             lines = dry_run_lines(
-                _plan(body, svc.fleet.topo),
+                plan,
                 svc.fleet.runtime_config,
                 svc.settings.output_root,
                 svc.fleet.topo,
                 svc.fleet.network,
             )
+            check_session_modes(plan, svc.fleet.runtime_config, svc.fleet.topo)
     except LaunchError as e:
         raise HTTPException(400, str(e)) from None
     return {"lines": lines}
