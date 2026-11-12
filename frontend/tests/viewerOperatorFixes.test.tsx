@@ -164,10 +164,11 @@ describe("chat tab without the pinned camera", () => {
   const base = {drive: true, isPhone: false, rightOpen: true, cameraFloats: false, camOverChat: false, grasping: false};
 
   it("drive layout: Chat folds the camera; Teleop keeps it pinned", () => {
-    expect(cameraPlacement({...base, dockTab: "chat"})).toEqual({pinned: false, folded: true, pip: false});
-    expect(cameraPlacement({...base, dockTab: "teleop"})).toEqual({pinned: true, folded: false, pip: false});
+    // folded keeps the camera mounted: hiding it must not stop the video stream
+    expect(cameraPlacement({...base, dockTab: "chat"})).toEqual({pinned: false, folded: true, pip: false, mounted: true});
+    expect(cameraPlacement({...base, dockTab: "teleop"})).toEqual({pinned: true, folded: false, pip: false, mounted: true});
     // no drive layout: no pinned camera anywhere
-    expect(cameraPlacement({...base, drive: false, dockTab: "chat"})).toEqual({pinned: false, folded: false, pip: false});
+    expect(cameraPlacement({...base, drive: false, dockTab: "chat"})).toEqual({pinned: false, folded: false, pip: false, mounted: false});
   });
 
   it("the operator can re-show it over Chat; a grasp always shows it", () => {

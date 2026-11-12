@@ -464,7 +464,7 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   // the Chat tab gets the whole panel: the drive layout's pinned camera folds to
   // a one-line strip while Chat is open (unless the operator asked for it there,
   // remembered per browser; a grasp's hand camera always shows)
-  const {pinned: camPinned, folded: camFolded, pip: camPip} = cameraPlacement({
+  const {pinned: camPinned, folded: camFolded, pip: camPip, mounted: camMounted} = cameraPlacement({
     drive,
     isPhone,
     rightOpen,
@@ -473,8 +473,11 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
     camOverChat,
     grasping: !!graspRobot,
   });
-  const mounted = (t: Tab) => floats(t) || (rightOpen && t === dockTab) || (t === "camera" && (camPinned || camPip));
-  const cameraShown = mounted("camera") || (v.driveFull && !!focused);
+  const shown = (t: Tab) => floats(t) || (rightOpen && t === dockTab) || (t === "camera" && (camPinned || camPip));
+  // folded under Chat the camera stays mounted (its host is just detached from
+  // the page): hiding it must not stop / restart the video stream
+  const mounted = (t: Tab) => shown(t) || (t === "camera" && camMounted);
+  const cameraShown = shown("camera") || (v.driveFull && !!focused);
   const graspTab = useRef<{tab: Tab; open: boolean} | null>(null);
   const tabRef = useRef(tab);
   tabRef.current = tab;

@@ -2,7 +2,8 @@
 // (API.md §12). WebCodecs VideoDecoder for h264 / vp8 drawn to a canvas, an
 // <img> per frame for jpeg. Without WebCodecs (plain-http pages opened from
 // another machine) h264 decodes in a WASM worker instead, drawn with WebGL;
-// `?h264=wasm` forces that path. Keepalive every 2 s while the tab is visible.
+// `?h264=wasm` forces that path. Keepalive every 2 s while the tab is visible;
+// unmounting releases the stream with a grace period (releaseStream).
 import {useEffect, useRef, useState} from "react";
 import {getToken} from "../lib/auth";
 import {ws} from "../ws";
@@ -53,6 +54,15 @@ export async function detail(res: Response): Promise<string> {
     /* not JSON */
   }
   return `HTTP ${res.status}`;
+}
+
+/** A view unmounted (side-tab switch, focus / camera change, drive layout,
+ *  hidden page): a deferred stop. The console keeps the stream alive for its
+ *  grace period (10 s), so a view that comes back within it picks up the
+ *  running stream (and its cached GOP) instead of restarting the robot encoder
+ *  and waiting for the next key frame. */
+export function releaseStream(base: string, viewer: string) {
+  void post(`${base}/stop`, {viewer, grace: true}, true).catch(() => undefined);
 }
 
 export const usePageVisible = () => {
@@ -131,7 +141,7 @@ export function VideoView({robot, cam, bare = false, initialFps = 5, tune}: {rob
   const startRef = useRef<(() => Promise<void>) | null>(null);
   const lastStartRef = useRef(0); // the console rate-limits parameter changes to 1/s
 
-  // stream lifecycle: start + keepalive every 2 s; stop when hidden or closed
+  // stream lifecycle: start + keepalive every 2 s; release (deferred stop) when hidden or closed
   useEffect(() => {
     if (!ready || !visible) return;
     let alive = true;
@@ -179,7 +189,7 @@ export function VideoView({robot, cam, bare = false, initialFps = 5, tune}: {rob
       startRef.current = null;
       window.clearInterval(id);
       window.clearTimeout(timer);
-      void post(`${base}/stop`, {viewer: viewer.current}, true).catch(() => undefined);
+      releaseStream(base, viewer.current);
     };
   }, [base, ready, visible]);
 
