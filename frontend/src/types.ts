@@ -48,8 +48,25 @@ export interface FleetMachines {
   machines: Machine[];
 }
 
+/** A robot's rosbag recording, from the status poll (`ros2 bag record` found by process). */
+export interface RecordingStatus {
+  active: boolean;
+  /** tmux pane id (`%12`) that owns the recorder; null when it is not in tmux */
+  pane: string | null;
+  output: string | null;
+  /** epoch seconds */
+  started: number | null;
+  size_bytes: number | null;
+  pid?: number;
+  /** `session:window.pane` */
+  target?: string | null;
+  count?: number;
+  error?: string;
+}
+
 export interface RemoteStatus {
   tmux_sessions?: string;
+  recording?: RecordingStatus;
   ros2_procs?: string;
   load?: string;
   mem?: string;

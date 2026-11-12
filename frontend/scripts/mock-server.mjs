@@ -82,12 +82,14 @@ const machines = [
   {name: "lewis", role: "robot", ip: "198.51.100.81", user: "swarm", desc: "Husky Jockey", platform_id: "samoyed", platform_type: "phoenix", online: true, ping: 6.1, ssh: true, local: false},
   {name: "russell", role: "base_station", ip: "198.51.100.166", user: "rrg", desc: "Aaron's laptop", platform_id: "", online: false, ping: null, ssh: null, local: false},
 ];
+// hamilton records a bag (run-adt4 -r) until "Stop bag"
+let hamiltonRec = {active: true, pane: "%7", target: "adt4_system:9.0", output: "/home/swarm/adt4_output/courtyard_1112/recorded_data", started: now() - 1260, size_bytes: 14_200_000_000, pid: 48812, count: 1};
 const fleetStatus = () => ({
   updated: now() - 4,
   machines: {
     willow: {tmux_sessions: "adt4_base, neo4j", ros2_procs: "14", load: "1.12/0.98/0.85", mem: "11Gi/62Gi", gpu: "23% 3120/24564M", disk: "412G / 1.8T (77% used)", battery: "N/A", radio: "Bat: N/A, Mesh: 3"},
     euclid: {tmux_sessions: "adt4_system", ros2_procs: "38", load: "4.71/4.20/3.90", mem: "21Gi/31Gi", gpu: "61% 5210/7982M", disk: "88G / 468G (81% used)", battery: "64% (Discharging)", radio: "Bat: 71%, Mesh: 3"},
-    hamilton: {tmux_sessions: "adt4_system", ros2_procs: "35", load: "3.10/3.33/3.01", mem: "18Gi/31Gi", gpu: "44% 4410/7982M", disk: "201G / 468G (57% used)", battery: "17% (Discharging)", radio: "Bat: 38%, Mesh: 3"},
+    hamilton: {tmux_sessions: "adt4_system", ros2_procs: "35", load: "3.10/3.33/3.01", mem: "18Gi/31Gi", gpu: "44% 4410/7982M", disk: "201G / 468G (57% used)", battery: "17% (Discharging)", radio: "Bat: 38%, Mesh: 3", recording: hamiltonRec},
     lewis: {tmux_sessions: "adt4_system, husky", ros2_procs: "29", load: "2.40/2.10/1.95", mem: "9Gi/31Gi", gpu: "35% 2900/7982M", disk: "120G / 468G (26% used)", battery: "47% (Discharging)", radio: "Bat: 80%, Mesh: 3"},
   },
 });
@@ -423,6 +425,16 @@ route("POST", "/api/robots/([^/]+)/stop_save", (q, r, m) => {
     c.log("ok", "Scene graph saved, stack stopped");
   });
   json(r, 200, {job_id: id});
+});
+route("POST", "/api/robots/([^/]+)/recording/stop", (q, r, m) => {
+  const rb = m[1];
+  const id = newJob("recording_stop", `Stop bag on ${rb}`, async c => {
+    c.log("info", `Sent Ctrl-C to pane ${hamiltonRec.pane}; waiting up to 30 s for ros2 bag to close the bag ...`);
+    await c.sleep(1500);
+    c.log("ok", `${rb}: bag closed: ${hamiltonRec.output} (14.2 GB), metadata.yaml written`);
+    hamiltonRec = {active: false, pane: null, output: null, started: null, size_bytes: null};
+  });
+  json(r, 200, {ok: true, robot: rb, job_id: id});
 });
 route("POST", "/api/robots/([^/]+)/save_dsg", (q, r, m) => json(r, 200, {job_id: newJob("save_dsg", `Save DSG ${m[1]}`, async c => c.log("ok", "saved"))}));
 

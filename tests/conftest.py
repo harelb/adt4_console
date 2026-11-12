@@ -115,6 +115,7 @@ def fake_fleet_deps(**over) -> FleetDeps:
             "load": "0/0/0",
         },
         get_local_ips=lambda: ["127.0.0.1"],
+        probe_recording=lambda user, ip: [],
     )
     kw.update(over)
     return FleetDeps(**kw)

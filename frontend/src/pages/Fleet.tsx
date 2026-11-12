@@ -2,9 +2,9 @@ import {useState} from "react";
 import {useFleet} from "../stores/fleet";
 import {trackJob} from "../stores/jobs";
 import {errorText, postJSON, useApi} from "../lib/api";
-import {fmtAgo} from "../lib/fuzzy";
+import {fmtAgo, fmtBytes} from "../lib/fuzzy";
 import {shortBattery, shortDisk, shortGpu, shortLoad} from "../lib/fleetFormat";
-import type {ConsoleConfig, Machine, NodeStatus, RemoteStatus, RobotNodes} from "../types";
+import type {ConsoleConfig, Machine, NodeStatus, RecordingStatus, RemoteStatus, RobotNodes} from "../types";
 import {TerminalModal} from "../components/Terminal";
 import {Badge, Card, Dot, Empty, ErrorBox, Loading, Modal, PageHeader, Spinner, type Tone} from "../components/ui";
 
@@ -63,6 +63,23 @@ interface TermTarget {
   m: Machine;
   session: string | null;
 }
+interface BagTarget {
+  m: Machine;
+  rec: RecordingStatus;
+}
+
+/** The robot's recording while one runs (status poll), else null. */
+export function activeRecording(m: Machine, st?: RemoteStatus): RecordingStatus | null {
+  const rec = st?.recording;
+  return m.role === "robot" && rec?.active ? rec : null;
+}
+
+function recTitle(rec: RecordingStatus): string {
+  const since = rec.started ? `since ${fmtAgo(rec.started)}` : "";
+  return [`recording ${rec.output ?? "(unknown path)"}`, rec.size_bytes !== null ? fmtBytes(rec.size_bytes) : "", since, rec.target ? `in ${rec.target}` : ""]
+    .filter(Boolean)
+    .join(" · ");
+}
 
 const TERMINAL_OFF = "browser terminals are off: start the console without --no-terminal (ADT4_CONSOLE_TERMINAL=0)";
 
@@ -73,6 +90,7 @@ function MachineRow({
   onStop,
   onSession,
   onTerminal,
+  onStopBag,
 }: {
   m: Machine;
   st?: RemoteStatus;
@@ -80,6 +98,7 @@ function MachineRow({
   onStop: (m: Machine) => void;
   onSession: (t: SessionTarget) => void;
   onTerminal: (t: TermTarget) => void;
+  onStopBag: (t: BagTarget) => void;
 }) {
   const reachable = !!m.online && (!!m.ssh || !!m.local);
   const canShell = terminal && reachable;
@@ -90,6 +109,7 @@ function MachineRow({
   const mem = st?.mem && st.mem !== "N/A" ? st.mem : null;
   const disk = shortDisk(st?.disk);
   const battery = shortBattery(st?.battery);
+  const rec = activeRecording(m, st);
   return (
     <tr className={m.online ? "" : "row-dim"} data-testid={`machine-${m.name}`}>
       <td className="cell-title">
@@ -97,6 +117,13 @@ function MachineRow({
           <Dot tone={m.online ? "ok" : "err"} title={m.online ? "online" : "offline"} />
           <strong>{m.name}</strong>
           {m.local && <Badge tone="info">this machine</Badge>}
+          {rec && (
+            <span className="rec-badge" data-testid={`rec-${m.name}`}>
+              <Badge tone="err" title={recTitle(rec)}>
+                ● REC
+              </Badge>
+            </span>
+          )}
         </div>
         <div className="muted small fleet-sub" title={[m.role.replace("_", " "), m.platform_id, m.desc].filter(Boolean).join(" · ")}>
           <span className="mono">{m.ip}</span> · {m.role.replace("_", " ")}
@@ -174,6 +201,20 @@ function MachineRow({
                 Terminal
               </button>
             )}
+            {rec && (
+              <button
+                className="btn btn-xs btn-danger-outline"
+                disabled={!m.online || !rec.pane}
+                title={
+                  rec.pane
+                    ? `Stop bag on ${m.name}: Ctrl-C the recorder's pane (${rec.target ?? rec.pane}) so ros2 bag closes ${rec.output ?? "the bag"}`
+                    : `the recorder on ${m.name} is not in a tmux pane; stop it on the robot`
+                }
+                onClick={() => onStopBag({m, rec})}
+              >
+                Stop bag
+              </button>
+            )}
             {m.role === "robot" && (
               <button
                 className="btn btn-xs btn-danger-outline"
@@ -245,6 +286,7 @@ export function FleetPage() {
   const [actionErr, setActionErr] = useState<string | null>(null);
   const [sessionTarget, setSessionTarget] = useState<SessionTarget | null>(null);
   const [termTarget, setTermTarget] = useState<TermTarget | null>(null);
+  const [bagTarget, setBagTarget] = useState<BagTarget | null>(null);
   const [teardown, setTeardown] = useState(true);
   const config = useApi<ConsoleConfig>("api/config");
   const terminal = !!config.data?.terminal;
@@ -285,6 +327,20 @@ export function FleetPage() {
       if (id) trackJob(id, `Stop ${session} on ${m.name}`);
       // the session list refreshes with the next status poll; ask for one now
       setTimeout(() => void load(), action === "kill" ? 1500 : 20000);
+    } catch (e) {
+      setActionErr(errorText(e));
+    }
+  };
+
+  const stopBag = async ({m, rec}: BagTarget) => {
+    setBagTarget(null);
+    setActionErr(null);
+    try {
+      const r = await postJSON(`api/robots/${encodeURIComponent(m.name)}/recording/stop`, {pane: rec.pane});
+      // a job: Ctrl-C the recorder's pane, wait for ros2 bag to close the bag
+      const id = jobIdOf(r);
+      if (id) trackJob(id, `Stop bag on ${m.name}`);
+      setTimeout(() => void load(), 15000);
     } catch (e) {
       setActionErr(errorText(e));
     }
@@ -342,6 +398,7 @@ export function FleetPage() {
                       onStop={setStopTarget}
                       onSession={setSessionTarget}
                       onTerminal={setTermTarget}
+                      onStopBag={setBagTarget}
                     />
                   ))}
               </tbody>
@@ -389,6 +446,34 @@ export function FleetPage() {
               Hydra and ROMAN do not save their maps on Ctrl-C or kill. Use <strong>Stop &amp; Save</strong> first if this run's map matters.
             </p>
           )}
+        </Modal>
+      )}
+      {bagTarget && (
+        <Modal
+          title={`Stop the bag recording on ${bagTarget.m.name}?`}
+          tone="warn"
+          onClose={() => setBagTarget(null)}
+          footer={
+            <>
+              <button className="btn" onClick={() => setBagTarget(null)}>
+                Cancel
+              </button>
+              <button className="btn btn-danger" onClick={() => stopBag(bagTarget)}>
+                Stop bag
+              </button>
+            </>
+          }
+        >
+          <p>
+            Stops the recording of <span className="mono">{bagTarget.rec.output ?? "(unknown path)"}</span>
+            {bagTarget.rec.size_bytes !== null ? ` (${fmtBytes(bagTarget.rec.size_bytes)} so far)` : ""} on <strong>{bagTarget.m.name}</strong>.
+          </p>
+          <p>
+            Sends Ctrl-C to the recorder's pane <span className="mono">{bagTarget.rec.target ?? bagTarget.rec.pane}</span> only, so ros2 bag closes the
+            mcap and writes <span className="mono">metadata.yaml</span>, and waits up to 30 s. The rest of the robot's stack keeps running. If the
+            recorder hangs, the job offers to stop it harder (a second Ctrl-C, then SIGTERM). Progress is in the job log.
+          </p>
+          {(bagTarget.rec.count ?? 1) > 1 && <p className="tone-warn">{bagTarget.rec.count} recordings are running on this robot; this stops the one above.</p>}
         </Modal>
       )}
       {termTarget && <TerminalModal machine={termTarget.m.name} session={termTarget.session} onClose={() => setTermTarget(null)} />}
