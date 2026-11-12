@@ -654,7 +654,9 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
     try {
       const body: Record<string, unknown> = {goal: q.goal};
       if (q.constraints) body.constraints = q.constraints;
-      if (q.engine === "grstaps") body.engine = "grstaps";
+      // always the engine: in a GRSTAPS-X plan repair session goal_manager plans a goal
+      // with no engine with GRSTAPS-X, so a Fast Downward goal must say so
+      body.engine = q.engine ?? useEngines.getState().engine;
       const r = await sendGoal(plan.via, "pddl", body);
       result = goalSendMessage(`Sent through ${plan.via}`, r);
       track = r?.track;
