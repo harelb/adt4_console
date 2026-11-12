@@ -1616,6 +1616,44 @@ The card shows the reason, the changes, the original and proposed goals, and the
 robot" checkbox). Below it is a feed of the last 6 batches (source chip awcd / sget / console,
 kind, symbol, class, map version).
 
+## 21. Planner state (`planner_state.py`, `routes/planner_state.py`)
+
+What the planner believes before it plans the next goal, in one view, and a way to correct
+what a robot holds.
+
+**Sources.** Holding comes from the live Neo4j target's `(:Robot)-[:HOLDS]->(:Object)` edges.
+The heracles publisher writes the same edges into the published map's metadata
+(`heracles.holding`), and omniplanner plans from that (`world_state.holding_from_dsg`). A robot
+holding an object the next goal does not keep puts it down first. The robot's pose is
+`Robot.position`, written by heracles_state_updater. The planner keeps no at-* facts: it plans
+from the robot's pose. The map version, epoch and rebuild state come from `_MapState`.
+
+The bridge subscribes to three latched topics, all planner-wide:
+`/<planner_ns>/goal_manager/robot_plan_states` (String JSON `{robot: {status, plan_id, done,
+total, conjuncts, remaining}}`), `/<planner_ns>/omniplanner_node/plan_robots` (String JSON list)
+and `/<planner_ns>/omniplanner_node/map_epoch`, next to the `map_version` it already takes. A
+robot's last plan error is its newest `plan_status` refusal or `plan_failed` alert. The
+constraints are the persistent ones from §9.
+
+| Method | Path | Body / notes |
+|---|---|---|
+| GET | `/plan/planner_state` | `{t, ros, map: {source, error, version, epoch, rebuilding, rebuild_failed}, planner: {map_version, map_epoch, plan_robots, plan_robots_t, robot_plan_states_t, goal_manager}, robots: [{robot, holding[], position, in_plan, plan_state, constraints[], last_error}], last_error, corrections[], holding_source}`. Robots: `--robots` (or the fleet), plus any robot that holds something, has a plan state or an error |
+| POST | `/plan/planner_state/holding` | `{robot, object: "O22" \| null, confirm: true}`. Makes the map say `robot` holds `object` (null: nothing). Each other object the robot holds is released where the map has it (`has_position` = the object's center, so no robot pose is needed). An object held by another robot is released from that robot first, and then `object` is held. Each step is one `heracles_ros_interfaces/UpdateHoldingState` call on `/<robot>/update_holding_state` (heracles_state_updater, which bumps the map version, so the publisher republishes and the planner replans on the new holding). → `{ok, request, steps[{robot, object, action hold\|release, ok, error?, service}], holding, noop}`. 400 without `confirm`, for an unknown object or a bad symbol; 503 ROS down; 502 a step failed (the steps stop there) |
+
+Every correction is logged on the console's logger (`Planner state: <operator> set holding
+'euclid holds nothing' (done); before ..., after ...`), with the operator taken from
+`X-Operator`, and kept in `corrections` (the last 20). Hub topic `plan/planner_state` (`{t}`)
+says the state may have changed (the view refetches; it also polls every 5 s). It is pushed on
+a plan_robots / robot_plan_states / map_version / map_epoch message, a plan error, a
+constraint change and a correction.
+
+**UI:** the Plan panel's Planner state section (above the current plan) is a table: robot (map
+pose), holds, plan status (`running 1/4`, the goal conjuncts and what remains), constraints,
+and a **Correct** button. Correct opens "holds nothing / holds [O22]", then **Apply…**, then a
+confirm with **Confirm** / **Cancel**. Above the table are the map and planner versions and
+epochs (flagged when the epochs differ), and the last plan error. The Chat panel shows the
+same view folded under one line (`Planner believes: euclid holds O11 · hamilton —`).
+
 ## Deviations
 
 ### fleetlink (§8)
