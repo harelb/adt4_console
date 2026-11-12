@@ -68,6 +68,14 @@ describe("chat planner toggle", () => {
     expect(chatEngineNow()).toBe("fast_downward");
   });
 
+  it("names the session's plan repair engine in the tooltip", () => {
+    useChatEngine.setState({engine: "fast_downward", engines: [{...FD, repair: false}, {...GR_ON, repair: true}]});
+    const el = render(<ChatEnginePicker />);
+    const sel = el.querySelector<HTMLSelectElement>('[data-testid="chat-engine"]')!;
+    expect(sel.title).toContain("Plan repair in this session: GRSTAPS-X");
+    expect([...sel.options].find(o => o.value === "grstaps")!.title).toBe("plan repair in this session");
+  });
+
   it("is hidden without the backend's engine list", () => {
     const el = render(<ChatEnginePicker />);
     expect(el.querySelector('[data-testid="chat-engine"]')).toBeNull();

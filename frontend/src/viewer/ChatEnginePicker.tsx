@@ -9,6 +9,7 @@ export function ChatEnginePicker({onOpen}: {onOpen?: () => void}) {
   if (!engines.length) return null;
   const now = effectiveChatEngine(engine, engines) ?? "fast_downward";
   const off = engines.find(e => !e.available);
+  const repair = engines.find(e => e.repair);
   return (
     <select
       className="input input-sm"
@@ -19,11 +20,12 @@ export function ChatEnginePicker({onOpen}: {onOpen?: () => void}) {
       data-testid="chat-engine"
       title={
         "Planner for the goals the chat proposes: the assistant writes goals for it and the goal cards send with it" +
-        (off ? `. ${off.label} is off: ${off.reason}` : "")
+        (off ? `. ${off.label} is off: ${off.reason}` : "") +
+        (repair ? `. Plan repair in this session: ${ENGINE_LABEL[repair.id] ?? repair.label} (goals for the other planner go to it directly, not repair-tracked)` : "")
       }
     >
       {engines.map(e => (
-        <option key={e.id} value={e.id} disabled={!e.available} title={e.available ? undefined : (e.reason ?? undefined)}>
+        <option key={e.id} value={e.id} disabled={!e.available} title={e.available ? (e.repair ? "plan repair in this session" : undefined) : (e.reason ?? undefined)}>
           {`Planner: ${ENGINE_LABEL[e.id] ?? e.label}${e.available ? "" : " (off)"}`}
         </option>
       ))}

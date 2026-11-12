@@ -11,6 +11,9 @@ export interface ChatEngineInfo {
   label: string;
   available: boolean;
   reason: string | null;
+  /** plan repair (goal_manager) in this session forwards to this engine; the
+   *  other engine's goals go to its planner directly (not repair-tracked) */
+  repair?: boolean;
 }
 
 interface ChatEngineStore {

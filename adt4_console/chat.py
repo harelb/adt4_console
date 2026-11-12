@@ -868,7 +868,8 @@ class ChatService:
     # ---------------------------------------------------------------- shared
     def chat_engines(self) -> list[dict]:
         """The chat's planner toggle: Fast Downward always; GRSTAPS-X only when the
-        base runs it (goal_manager forwards to it, or a GRSTAPS-X plugin is up)."""
+        base runs it (goal_manager forwards to it, or a GRSTAPS-X plugin is up in
+        the live ROS graph or the console's config)."""
         from .ros_bridge import NO_GRSTAPS
 
         fd = {
@@ -878,12 +879,22 @@ class ChatService:
             "reason": None,
         }
         ros = self.ros
+        repair = None  # the engine plan repair (goal_manager) runs in this session
         if ros is None or not getattr(ros, "available", False):
             why = "ROS is not running on this console, so it cannot see a GRSTAPS-X planner"
         else:
             try:
+                repair = ros.goal_manager_engine()
+            except Exception:  # noqa: BLE001 — a ROS graph query; unknown
+                repair = None
+            try:
+                # the live ROS graph decides, not the console's own config: the
+                # planning session (e.g. grstaps_repair) may run another config
+                # and start after the console; grstaps_live is cached briefly
+                live = getattr(ros, "grstaps_live", None)
                 running = (
-                    ros.goal_manager_engine() == "grstaps"
+                    repair == "grstaps"
+                    or (live is not None and live() is not None)
                     or ros.find_plugin("grstaps") is not None
                 )
             except Exception:  # noqa: BLE001 — a ROS graph query; unknown = not offered
@@ -895,6 +906,9 @@ class ChatService:
             "available": why is None,
             "reason": why,
         }
+        # the other engine's goals bypass plan repair (sent to that planner directly)
+        fd["repair"] = repair == "fast_downward"
+        gr["repair"] = repair == "grstaps"
         return [fd, gr]
 
     def _chosen_engine(self) -> str | None:

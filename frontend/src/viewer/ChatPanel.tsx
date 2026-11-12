@@ -260,6 +260,7 @@ export function looksTabular(text: string): boolean {
 }
 
 const MODEL_KEY = "adt4.chat.model";
+const USAGE_REFRESH_MS = 20_000; // re-read the planner toggle's engines (GRSTAPS-X may start later)
 const REASONING_KEY = "adt4.chat.reasoning";
 export const REASONING_LEVELS = ["fast", "low", "medium", "high"] as const;
 /** GPT-5 / 6 (and o-series) take a reasoning effort. */
@@ -379,6 +380,9 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
       .catch(() => undefined);
   useEffect(() => {
     void loadUsage();
+    // ... and every 20 s: the planning session (GRSTAPS-X) may start or stop after the console
+    const id = window.setInterval(() => void loadUsage(), USAGE_REFRESH_MS);
+    return () => window.clearInterval(id);
   }, []);
   const setModel = (m: string) => {
     setModelRaw(m);

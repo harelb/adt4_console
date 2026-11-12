@@ -72,6 +72,35 @@ GRSTAPS_POINTS = (
 ENGINE_KIND = {"fast_downward": "pddl_constrained", "grstaps": "grstaps"}
 NO_GRSTAPS = ("no GRSTAPS-X planner is running (start the base station with a grstaps "
               "session, e.g. base_station_web_grstaps_repair)")  # fmt: skip
+GRSTAPS_GRAPH_TTL_S = 3.0  # cache of the live-graph GRSTAPS-X lookup
+
+
+# engine -> what its constrained-PDDL plugin's name contains (the plugin names
+# of config/*/omniplanner_plugins.yaml: grstaps_planner, multi_robot_pddl_constrained)
+ENGINE_PLUGIN_MARK = {"grstaps": "grstaps", "fast_downward": "pddl_constrained"}
+ENGINE_NAME = {"grstaps": "GRSTAPS-X", "fast_downward": "Fast Downward"}
+
+
+def plugin_topic_candidates(names_and_types, planner_ns: str, engine: str = "grstaps") -> list[str]:
+    """Topics of an engine's constrained-PDDL plugin in the ROS graph, independent
+    of the console's own omniplanner config: ``.../<plugin>/pddl_goal`` whose
+    plugin name has :data:`ENGINE_PLUGIN_MARK` (e.g. goal_manager's
+    ``planner_goal_topic:=grstaps_planner/pddl_goal``), the planner's own
+    namespace first."""
+    mark = ENGINE_PLUGIN_MARK[engine]
+    out = []
+    for name, types in names_and_types:
+        parts = name.strip("/").split("/")
+        if len(parts) < 2 or parts[-1] != "pddl_goal" or mark not in parts[-2].lower():
+            continue
+        if types and not any(t.endswith("ConstrainedPddlGoalMsg") for t in types):
+            continue
+        out.append(name)
+    return sorted(out, key=lambda n: (not n.startswith(f"/{planner_ns}/"), n))
+
+
+def grstaps_topic_candidates(names_and_types, planner_ns: str) -> list[str]:
+    return plugin_topic_candidates(names_and_types, planner_ns, "grstaps")
 # plan repair v3: goal_manager (master.launch.yaml, launch_omniplanner_repair)
 # takes operator goals on /<planner_ns>/commanded_goal, pauses the running plan,
 # skips replanning when it already satisfies the goal, else forwards to
@@ -551,6 +580,8 @@ class RosBridge:
         self.error: str | None = None if settings.ros else "ROS disabled (--no-ros)"
         self.plugins = load_plugins()
         self.planner_ns = settings.planner_ns or default_planner_ns(fleet)
+        # engine -> (time, live plugin) cache of the ROS graph lookup
+        self._plugin_graph: dict[str, tuple[float, dict | None]] = {}
         self._last_goal_robot: str | None = None
         # plan_status entries get a console-wide ``seq`` (the UI toasts new refusals)
         self._status_seq = itertools.count(1)
@@ -1529,9 +1560,68 @@ class RosBridge:
             return None
 
         try:
-            return self.run(find)
+            engine = self.run(find)
         except Exception:  # noqa: BLE001 — a graph query; unknown is fine
-            return None
+            engine = None
+        if engine is None:
+            # the planning session may run another config than the console's
+            # (grstaps_repair vs default): look at the live graph too
+            for eng in ENGINE_KIND:
+                g = self.live_plugin(eng)
+                if g is not None and g["goal_manager"]:
+                    return eng
+        return engine
+
+    def live_plugin(self, engine: str, now: float | None = None) -> dict | None:
+        """An engine's constrained-PDDL plugin running in the live ROS graph
+        (whatever omniplanner config the console itself was started with):
+        ``{topic, goal_manager, subscribers}`` (``goal_manager``: goal_manager
+        forwards there), or None.  Cached ``GRSTAPS_GRAPH_TTL_S``."""
+        now = time.monotonic() if now is None else now
+        cached = self._plugin_graph.get(engine)
+        if cached is not None and now - cached[0] < GRSTAPS_GRAPH_TTL_S:
+            return cached[1]
+
+        def find():
+            names = self.node.get_topic_names_and_types()
+            best = None
+            for topic in plugin_topic_candidates(names, self.planner_ns, engine):
+                gm = any(
+                    "goal_manager" in i.node_name
+                    for i in self.node.get_publishers_info_by_topic(topic)
+                )
+                subs = int(self.node.count_subscribers(topic))
+                if not (gm or subs):
+                    continue  # a stale name (e.g. our own publisher): nobody plans there
+                cand = {"topic": topic, "goal_manager": gm, "subscribers": subs}
+                if best is None or (gm and not best["goal_manager"]):
+                    best = cand
+            return best
+
+        try:
+            found = self.run(find) if getattr(self, "node", None) is not None else None
+        except Exception:  # noqa: BLE001 — a graph query; unknown = not running
+            found = None
+        self._plugin_graph[engine] = (now, found)
+        return found
+
+    def grstaps_live(self, now: float | None = None) -> dict | None:
+        """A running GRSTAPS-X plugin in the live ROS graph (:meth:`live_plugin`)."""
+        return self.live_plugin("grstaps", now)
+
+    def engine_plugin(self, engine: str) -> dict | None:
+        """The engine's constrained-PDDL plugin to send to straight: the one running
+        in the live graph (``topic`` set), else the console's config's."""
+        g = self.live_plugin(engine)
+        if g is None:
+            return self.find_plugin(ENGINE_KIND[engine])
+        name = g["topic"].strip("/").split("/")[-2]
+        msg_type = PLUGIN_TYPES["Grstaps" if engine == "grstaps" else "MultiRobotPddlConstrained"][2]
+        return {"name": name, "kind": ENGINE_KIND[engine], "suffix": "pddl_goal",
+                "msg_type": msg_type, "topic": g["topic"]}  # fmt: skip
+
+    def grstaps_plugin(self) -> dict | None:
+        return self.engine_plugin("grstaps")
 
     def active_goals(self) -> dict[str, dict]:
         """robot -> the last PDDL goal the console sent it (see RobotPlanState)."""
@@ -1593,6 +1683,9 @@ class RosBridge:
             else self.constraints(robot)
         )
         gm = self.goal_manager_subscribers() if route != "planner" else 0
+        if gm > 0 and engine == "fast_downward" and self.goal_manager_engine() == "grstaps":
+            # plan repair here runs GRSTAPS-X: never let it plan a Fast Downward goal
+            return self._send_engine_direct(robot, goal, "fast_downward", active + per_goal, route)
         if gm > 0:
             fields = {
                 "goal": {"robot_id": robot, "pddl_goal": goal},
@@ -1620,6 +1713,28 @@ class RosBridge:
             {"via": "planner", "warning": warning, "constraints": active, "plugin": p["name"]},
         )  # fmt: skip
 
+    def _send_engine_direct(self, robot, goal, engine, constraints, route) -> dict:
+        """``engine`` was asked for but goal_manager (plan repair) forwards to the
+        other engine: straight to ``engine``'s constrained-PDDL plugin (with the
+        constraints), or refuse when that plugin is not loaded."""
+        other = ENGINE_NAME["grstaps" if engine == "fast_downward" else "fast_downward"]
+        name = ENGINE_NAME[engine]
+        if route == "goal_manager":
+            raise LookupError(f"goal_manager runs {other} in this session, not {name}")
+        # it must be loaded in the running session (the console's own config
+        # may list it, but the planning session can run another one)
+        live = self.live_plugin(engine)
+        p = self.engine_plugin(engine) if live is not None or getattr(self, "node", None) is None else None
+        if p is None:
+            raise LookupError(f"{name} is not loaded in this session and plan repair (goal_manager) runs "
+                              f"{other}: pick {other}, or start a session that runs {name}")  # fmt: skip
+        warning = (f"sent to {name} directly; plan repair (goal_manager) runs {other} in this session, "
+                   "so this goal is not repair-tracked")  # fmt: skip
+        fields = {"goal": {"robot_id": robot, "pddl_goal": goal}, "constraints": list(constraints)}
+        return self._send(robot, "pddl", p.get("topic") or goal_topic(self.planner_ns, p), p["msg_type"], fields,
+                          {"via": "planner", "engine": engine, "warning": warning,
+                           "constraints": list(constraints), "plugin": p["name"]})  # fmt: skip
+
     def _send_grstaps(self, robot, goal, constraints, route) -> dict:
         """GRSTAPS-X: ``before`` is per goal (an ordering of this goal's targets),
         so it never joins the robot's persistent constraint set."""
@@ -1633,8 +1748,10 @@ class RosBridge:
         }
         # GRSTAPS-X plans every robot with a pose; only -by forms bind a robot
         note = "GRSTAPS-X does not apply use-robots: it may give tasks to any robot" if use_robots(order) else None
+        gm_engine = None
         if route != "planner" and self.goal_manager_subscribers() > 0:
-            if self.goal_manager_engine() == "grstaps":
+            gm_engine = self.goal_manager_engine()
+            if gm_engine == "grstaps":
                 return self._send(robot, "pddl", self.commanded_goal_topic(), COMMANDED_GOAL_TYPE, fields,
                                   {"via": "goal_manager", "engine": "grstaps", "constraints": active + order,
                                    "warning": note})  # fmt: skip
@@ -1644,14 +1761,18 @@ class RosBridge:
                 )
         elif route == "goal_manager":
             raise LookupError(NO_GOAL_MANAGER_WARNING.split(";")[0])
-        p = self.find_plugin("grstaps")
+        p = self.grstaps_plugin()
         if p is None:
             raise LookupError(NO_GRSTAPS)
-        warning = ("sent straight to GRSTAPS-X: goal_manager (plan repair) is not driving it, so a goal "
-                   "the running plan already covers is planned again")  # fmt: skip
+        if gm_engine == "fast_downward":
+            warning = ("sent to GRSTAPS-X directly; plan repair (goal_manager) runs Fast Downward in this "
+                       "session, so this goal is not repair-tracked")  # fmt: skip
+        else:
+            warning = ("sent straight to GRSTAPS-X: goal_manager (plan repair) is not driving it, so a goal "
+                       "the running plan already covers is planned again")  # fmt: skip
         if note:
             warning += "; " + note
-        return self._send(robot, "pddl", goal_topic(self.planner_ns, p), p["msg_type"], fields,
+        return self._send(robot, "pddl", p.get("topic") or goal_topic(self.planner_ns, p), p["msg_type"], fields,
                           {"via": "planner", "engine": "grstaps", "warning": warning,
                            "constraints": active + order, "plugin": p["name"]})  # fmt: skip
 
