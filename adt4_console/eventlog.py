@@ -455,6 +455,33 @@ class EventLog:
         return {"$file": rel_ref(dest), "bytes": len(data)}
 
 
+def append_raw(relpath: str, lines) -> int:
+    """Queue already-formed JSONL ``lines`` (str or dict records) to
+    ``<root>/events/<relpath>``: the robots' live C7 events land in
+    ``events/live/<robot>.jsonl`` as the robots wrote them (their own envelope).
+    Returns how many were queued (0 while logging is off)."""
+    r = root()
+    if not _enabled or r is None:
+        return 0
+    parts = [_safe_name(x) for x in str(relpath).split("/") if x not in ("", ".", "..")]
+    if not parts:
+        return 0
+    path = r.joinpath("events", *parts)
+    w = _get_writer()
+    n = 0
+    for ln in lines or []:
+        if isinstance(ln, dict):
+            ln = json.dumps(redact(ln), default=str, separators=(",", ":"))
+        ln = str(ln).rstrip("\n")
+        if not ln:
+            continue
+        if "sk-" in ln or "Bearer" in ln:
+            ln = SECRET_VALUE.sub(REDACTED, ln)
+        w.put(path, ln + "\n")
+        n += 1
+    return n
+
+
 def rel_ref(path: pathlib.Path) -> str:
     r = root()
     try:

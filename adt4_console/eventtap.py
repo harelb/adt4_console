@@ -3,7 +3,9 @@
 * :class:`HubTap` watches hub publishes (cheap, on the publishing thread; the
   writes are queued by :mod:`eventlog`), throttled per robot: ``link.stats``
   every 5 s, ``clock.offset`` every 30 s, ``robot.pose`` at 1 Hz,
-  ``reloc.state`` on change (checked at most 1 Hz), ``awcd.changes`` on change.
+  ``reloc.state`` on change (checked at most 1 Hz), ``awcd.changes`` on change,
+  ``mission.ack`` when a robot's fleetlink agent acknowledges a new mission id
+  (C1 state ``mission``; its ``run`` is kept for the mission's run ids).
   Video and graph deltas are ignored.
 * :class:`RestTap` is an ASGI middleware logging operator REST actions
   (``op.take_lease``, ``op.pause/resume/stop``, ``op.scene_repair``,
@@ -55,6 +57,8 @@ class HubTap:
         self._reloc: dict[str, tuple] = {}
         self._awcd: str | None = None
         self.link: dict[str, dict] = {}  # robot -> latest link stats (clock offsets for missions)
+        self.runs: dict[str, dict] = {}  # robot -> its fleetlink agent's run (run_id, session_id)
+        self._acked: dict[str, tuple] = {}  # robot -> (mission_id, state) it last acknowledged
 
     def _due(self, key, period) -> bool:
         now = self.clock()
@@ -99,6 +103,17 @@ class HubTap:
     def _on_state(self, robot: str, data) -> None:
         if not isinstance(data, dict):
             return
+        run = data.get("run")
+        if isinstance(run, dict) and run.get("run_id"):
+            self.runs[robot] = run
+        m = data.get("mission")
+        if isinstance(m, dict):
+            key = (m.get("mission_id") or "", m.get("state") or "")
+            if self._acked.get(robot) != key:
+                self._acked[robot] = key
+                eventlog.emit(SOURCE, "mission.ack", {"robot": robot, "mission_id": key[0], "state": key[1],
+                                                      "session_id": m.get("session_id"), "t_ack_robot": m.get("t_ack"),
+                                                      "run_id": (run or {}).get("run_id")}, robot=robot)  # fmt: skip
         p = data.get("pose")
         if isinstance(p, dict) and self._due(("pose", robot), POSE_S):
             out = {k: p.get(k) for k in ("x", "y", "z") if k in p}
@@ -148,6 +163,7 @@ RULES = [
     ("POST", r"/api/jobs/([^/]+)/(confirm|cancel)", "op.job", ("job_id", "action")),
     ("DELETE", r"/api/launch/active", "op.launch_clear", ()),
     ("POST", r"/api/missions/([^/]+)/(execute|abort)", "op.mission_plan", ("plan_mission", "action")),
+    ("POST", r"/api/logbook/missions/([^/]+)/(collect|export)", "op.mission_{1}", ("mission", "action")),
     ("POST", r"/api/robots/([^/]+)/goal/(language|goto|tsp|pddl)", "goal", ("robot", "kind")),
     ("POST", r"/api/robots/([^/]+)/path/direct", "goal", ("robot",)),
 ]

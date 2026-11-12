@@ -184,6 +184,14 @@ class LiveService:
                 self.hub.publish(f"grid/{robot}", data)
             elif kind == "paths" and self.hub is not None:
                 self.hub.publish(f"robot/{robot}/paths", data)
+            elif kind == "events":
+                # live mission events (fleetlink C7): the robot's own JSONL lines
+                from . import eventlog
+
+                lines = (data or {}).get("lines") or []
+                eventlog.append_raw(f"live/{robot}.jsonl", lines)
+                if self.hub is not None and lines:
+                    self.hub.publish(f"robot/{robot}/events", {"n": len(lines), "dropped": (data or {}).get("dropped")})
         except Exception:  # noqa: BLE001
             log.exception("live update %s/%s failed", robot, kind)
 
