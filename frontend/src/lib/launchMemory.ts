@@ -15,6 +15,10 @@ export interface LastLaunch {
   bs_session?: string | null;
   link_network?: string | null;
   link_mode?: string | null;
+  /** platform -> robot session */
+  sessions?: Record<string, string> | null;
+  /** the last launch started only the base station */
+  base_only?: boolean | null;
   saved_at?: number | null;
 }
 

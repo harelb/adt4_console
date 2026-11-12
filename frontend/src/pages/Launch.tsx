@@ -2,6 +2,7 @@ import {useEffect, useMemo, useRef, useState} from "react";
 import {useSearchParams} from "react-router";
 import {parseLaunchPreset} from "../lib/launchLink";
 import {defaultExperiment, isLaunchMode, lastPriorValue, nextExperimentName, type LastLaunch} from "../lib/launchMemory";
+import {platformLabel, platformOf, platformSession, platformsOf, sessionsFor} from "../lib/launchSessions";
 import {preferBaseCopy, priorAvailability} from "../lib/runCopies";
 import {useFleet} from "../stores/fleet";
 import {trackJob} from "../stores/jobs";
@@ -31,6 +32,10 @@ export function LaunchPage() {
 
   const [robots, setRobots] = useState<string[]>([]);
   const [session, setSession] = useState("");
+  // platform -> session picked in the per-platform pickers (robots of 2+ platforms)
+  const [platformPicks, setPlatformPicks] = useState<Record<string, string>>({});
+  // launch only the base station's session (no robots)
+  const [baseOnly, setBaseOnly] = useState(false);
   const [baseStation, setBaseStation] = useState<string>("");
   const [bsSession, setBsSession] = useState("");
   const [experiment, setExperiment] = useState(defaultExperiment("mapping"));
@@ -68,6 +73,8 @@ export function LaunchPage() {
   const applyLast = (l: LastLaunch, m: Mode, withPrior: boolean) => {
     if (l.robots?.length) setRobots(l.robots);
     if (l.session) setSession(l.session);
+    setPlatformPicks(l.sessions ?? {});
+    setBaseOnly(!!l.base_only);
     setBaseStation(l.base_station ?? "");
     setBsSession(l.bs_session ?? "");
     setLinkNet(l.link_network ?? "");
@@ -104,6 +111,7 @@ export function LaunchPage() {
     }
     setRobots(d.robots ?? []);
     setSession(d.session ?? "");
+    setPlatformPicks({});
     setBaseStation(d.base_station ?? "");
     setBsSession(d.bs_session ?? "");
     setDry(null);
@@ -120,6 +128,12 @@ export function LaunchPage() {
   const allMachines = machines?.machines ?? [];
   const robotMachines = allMachines.filter(m => m.role === "robot");
   const baseStations = allMachines.filter(m => m.role === "base_station");
+  const robotPlatforms = defaults.data?.robot_platforms as Record<string, string> | undefined;
+  const presets = defaults.data?.platform_sessions as Record<string, string> | undefined;
+  const platformOfRobot = (r: string) => platformOf(r, robotPlatforms, allMachines.find(m => m.name === r)?.platform_type);
+  const selPlatforms = platformsOf(robots, platformOfRobot);
+  const perPlatform = selPlatforms.length > 1;
+  const sessionOf = (p: string) => platformSession(p, platformPicks, session, presets);
 
   const priorOptions = useMemo<PriorOption[]>(() => {
     const out: PriorOption[] = [];
@@ -132,9 +146,13 @@ export function LaunchPage() {
 
   const plan = (): LaunchPlan => {
     const [src, path] = prior ? prior.split("\u0000") : [null, ""];
+    const sessions = perPlatform && !baseOnly ? Object.fromEntries(selPlatforms.map(p => [p, sessionOf(p)])) : {};
     return {
-      robots,
-      session,
+      robots: baseOnly ? [] : robots,
+      // old backends: one session (the first robot's platform's)
+      session: baseOnly ? "" : perPlatform ? sessions[selPlatforms[0]] : session,
+      sessions,
+      base_only: baseOnly,
       experiment: experiment.trim(),
       mode,
       prior_path: path ?? "",
@@ -148,8 +166,15 @@ export function LaunchPage() {
   };
 
   const problems: string[] = [];
-  if (!robots.length) problems.push("Select at least one robot");
-  if (!session) problems.push("Pick a robot session");
+  if (baseOnly) {
+    if (!baseStation) problems.push("Base station only: pick the base station");
+    else if (!bsSession) problems.push("Base station only: pick the base station session");
+  } else {
+    if (!robots.length) problems.push("Select at least one robot (or Robots: none for the base station only)");
+    if (perPlatform) {
+      for (const p of selPlatforms) if (!sessionOf(p)) problems.push(`Pick a ${platformLabel(p)} session`);
+    } else if (!session) problems.push("Pick a robot session");
+  }
   if (!experiment.trim()) problems.push("Name the experiment");
   else if (!/^[\w.-]+$/.test(experiment.trim())) problems.push("Experiment name: letters, digits, . _ - only");
   if (mode === "relocalize" && !prior) problems.push("Relocalize needs a prior map");
@@ -184,7 +209,7 @@ export function LaunchPage() {
     try {
       const r = await postJSON("api/launch", plan());
       const id = jobIdOf(r);
-      if (id) trackJob(id, `Launch ${experiment}`);
+      if (id) trackJob(id, baseOnly ? `Launch ${experiment} (base station only)` : `Launch ${experiment}`);
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -235,7 +260,24 @@ export function LaunchPage() {
       {defaults.loading && !defaults.data && <Loading label="Loading presets" />}
       <div className="launch-grid">
         <Card title="Robots">
-          {robotMachines.length === 0 && <Empty title="No robots in topology" />}
+          <Field label="Robots" hint={baseOnly ? "Only the base station's adt4_system session is (re)started; robots already running are left alone." : undefined}>
+            <Segmented<"robots" | "none">
+              ariaLabel="Robots"
+              value={baseOnly ? "none" : "robots"}
+              onChange={v => {
+                setBaseOnly(v === "none");
+                setDry(null);
+                setChecks(null);
+              }}
+              options={[
+                {value: "robots", label: "Selected robots"},
+                {value: "none", label: "None (base station only)"},
+              ]}
+            />
+          </Field>
+          {!baseOnly && robotMachines.length === 0 && <Empty title="No robots in topology" />}
+          {!baseOnly && (
+          <>
           <div className="robot-pick">
             {robotMachines.map(m => (
               <label key={m.name} className={`pick ${robots.includes(m.name) ? "on" : ""} ${m.online ? "" : "offline"}`}>
@@ -243,19 +285,37 @@ export function LaunchPage() {
                 <Dot tone={m.online ? "ok" : "err"} />
                 <span className="pick-name">{m.name}</span>
                 <span className="muted small mono">{m.ip}</span>
+                <span className="muted small">{platformLabel(platformOfRobot(m.name))}</span>
                 {!m.online && <Badge tone="err">offline</Badge>}
               </label>
             ))}
           </div>
-          <Field label="Robot session">
-            <FuzzyPicker ariaLabel="Robot session" value={session} options={sessions} onChange={setSession} placeholder="type to filter sessions" />
-          </Field>
+          {perPlatform ? (
+            selPlatforms.map(p => (
+              <Field key={p} label={`${platformLabel(p)} session`} hint={`Runs on ${robots.filter(r => platformOfRobot(r) === p).join(", ")}`}>
+                <FuzzyPicker
+                  ariaLabel={`${platformLabel(p)} session`}
+                  value={sessionOf(p)}
+                  options={sessionsFor(sessions, p)}
+                  onChange={v => setPlatformPicks(cur => ({...cur, [p]: v}))}
+                  placeholder="type to filter sessions"
+                />
+              </Field>
+            ))
+          ) : (
+            <Field label="Robot session">
+              <FuzzyPicker ariaLabel="Robot session" value={session} options={sessions} onChange={setSession} placeholder="type to filter sessions" />
+            </Field>
+          )}
+          </>
+          )}
         </Card>
 
         <Card title="Base station">
           <Field label="Machine">
             <select className="input" value={baseStation} onChange={e => setBaseStation(e.target.value)} aria-label="Base station">
-              <option value="">none (robots only)</option>
+              {!baseOnly && <option value="">none (robots only)</option>}
+              {baseOnly && !baseStation && <option value="">pick a base station</option>}
               {baseStations.map(m => (
                 <option key={m.name} value={m.name}>
                   {m.name} {m.online ? "" : "(offline)"} {m.local ? "(this machine)" : ""}
@@ -346,8 +406,14 @@ export function LaunchPage() {
           {problems.length ? (
             <span className="tone-warn">{problems[0]}</span>
           ) : (
+            baseOnly ? (
             <span>
-              <strong>{mode}</strong> on <span className="mono">{robots.join(", ")}</span> with <span className="mono">{session}</span>
+              <strong>{mode}</strong>: base station only, <span className="mono">{baseStation}</span> with <span className="mono">{bsSession}</span>
+            </span>
+            ) : (
+            <span>
+              <strong>{mode}</strong> on <span className="mono">{robots.join(", ")}</span> with{" "}
+              <span className="mono">{perPlatform ? selPlatforms.map(p => `${platformLabel(p)}: ${sessionOf(p)}`).join(", ") : session}</span>
               {baseStation && (
                 <>
                   {" "}
@@ -355,20 +421,21 @@ export function LaunchPage() {
                 </>
               )}
             </span>
+            )
           )}
         </div>
-        <button className="btn" onClick={doChecks} disabled={!!busy || !robots.length} title="Read-only checks on every selected machine (also run at launch)">
+        <button className="btn" onClick={doChecks} disabled={!!busy || (baseOnly ? !baseStation : !robots.length)} title="Read-only checks on every selected machine (also run at launch)">
           {busy === "checks" && <Spinner />} Run checks
         </button>
         <button className="btn" onClick={doDry} disabled={!!busy || problems.length > 0}>
           {busy === "dry" && <Spinner />} Dry run
         </button>
         <button className="btn btn-primary btn-lg" onClick={doLaunch} disabled={!!busy || problems.length > 0}>
-          {busy === "launch" && <Spinner />} Launch
+          {busy === "launch" && <Spinner />} {baseOnly ? "Launch base station" : "Launch"}
         </button>
       </div>
       {err && <ErrorBox error={err} compact />}
-      {checks && <PreflightPanel result={checks} order={[...robots, baseStation].filter(Boolean)} onClear={() => setChecks(null)} />}
+      {checks && <PreflightPanel result={checks} order={[...(baseOnly ? [] : robots), baseStation].filter(Boolean)} onClear={() => setChecks(null)} />}
       {dry && (
         <Card title="Dry run: commands that would run" actions={<button className="btn btn-sm" onClick={() => setDry(null)}>Clear</button>}>
           <pre className="dryrun mono">{dry.lines.join("\n") || "(nothing to do)"}</pre>

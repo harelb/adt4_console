@@ -618,6 +618,10 @@ export interface LaunchPlan {
   record: boolean;
   base_station: string | null;
   bs_session: string | null;
+  /** platform (spot | phoenix) -> robot session; overrides `session` per platform */
+  sessions?: Record<string, string>;
+  /** launch only the base station's session (robots ignored) */
+  base_only?: boolean;
   /** network the robot <-> base links use; null = the topology default */
   link_network?: string | null;
   /** "router" | "fleetlink" for this launch; null = the topology default */
@@ -662,5 +666,9 @@ export interface LaunchDefaults {
   link_mode?: string | null;
   /** base station that runs the fleetlink router */
   fleetlink_base?: string | null;
+  /** robot -> platform (spot | phoenix) */
+  robot_platforms?: Record<string, string>;
+  /** the mode's preset robot session per platform (fleet_defaults.sessions) */
+  platform_sessions?: Record<string, string>;
   [k: string]: unknown;
 }
