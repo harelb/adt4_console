@@ -49,7 +49,7 @@ class Settings:
     static_dir: pathlib.Path = STATIC_DIR
 
     # mission logging (eventlog / logbook): JSONL events under $ADT4_RUN_DIR (else
-    # the base experiment dir <output_root>/<experiment>__base), sessions/ and
+    # the base experiment dir <output_root>/<experiment>, the base's run-adt4 -o), sessions/ and
     # missions/ under the base experiment dir.  Off in tests; the CLI turns it on.
     mission_log: bool = False
     # the open session / mission survive a console restart through this pointer;

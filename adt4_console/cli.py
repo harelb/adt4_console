@@ -130,7 +130,7 @@ def parse_args(argv=None):
         "--no-mission-log",
         action="store_true",
         help="do not write mission event logs / console.log / sessions / missions "
-        "($ADT4_RUN_DIR, else <output-root>/<experiment>__base)",
+        "($ADT4_RUN_DIR, else <output-root>/<experiment>)",
     )
     p.add_argument("--log-level", default="info")
     return p.parse_args(argv)

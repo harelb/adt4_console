@@ -1621,7 +1621,8 @@ kind, symbol, class, map version).
 Events are JSONL with one envelope (`v, t_wall, t_mono, t_ros, machine, robot, run_id,
 session_id, mission_id, goal_id, plan_id, source, type, seq, payload`) in
 `$ADT4_RUN_DIR/events/<source>.jsonl` (else the base experiment dir
-`<output_root>/<experiment>__base/events/`), written from one queue thread, fsynced every
+`<output_root>/<experiment>/events/`, the base station's `run-adt4 -o` dir; its runs are
+in `runs/<run_id>/` beside `sessions/` and `missions/`), written from one queue thread, fsynced every
 2 s, rotated at 200 MB (`<source>.<n>.jsonl`), redacted by key (api keys, passwords,
 tokens, authorization; never the env); strings over 64 KB go to `blobs/` as
 `{"$file": ...}`.  `console.log` (rotating) sits next to `events/`.  `--no-mission-log`

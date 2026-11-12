@@ -27,6 +27,8 @@ import pathlib
 import threading
 import time
 
+from . import run_layout
+
 log = logging.getLogger(__name__)
 
 STAGES = (
@@ -111,7 +113,7 @@ class MapLoader:
             if rec and rec[0]["p"]:
                 dsg = pathlib.Path(rec[0]["p"])
                 run = dsg.parents[2] if dsg.parent.name == "backend" else dsg.parent
-                out.update(dsg=str(dsg), run=str(run), name=run.name, ready=out["nodes"] > 0,
+                out.update(dsg=str(dsg), run=str(run), name=run_layout.display_name(run), ready=out["nodes"] > 0,
                            has_images=bool(t.image_store_paths()),
                            has_features=bool(t.query("MATCH (n:MeshPlace) WHERE n.siglip2_emb IS NOT NULL "
                                                      "RETURN count(n) > 0 AS f")[0]["f"]))  # fmt: skip
@@ -206,7 +208,7 @@ class MapLoader:
         image_store = image_root or run_image_store(run)
         feats = run / "hydra" / "backend" / "semantic_features.npz"
         sam3 = bool(image_store and self._sam3_reads(t))
-        status = {"target": t.name, "uri": t.uri, "run": str(run), "name": run.name, "dsg": str(dsg),
+        status = {"target": t.name, "uri": t.uri, "run": str(run), "name": run_layout.display_name(run), "dsg": str(dsg),
                   "nodes": None, "has_images": bool(image_store), "has_features": feats.is_file(),
                   "ready": False, "job_id": None,
                   "stages": [_stage(i, lbl, "pending" if (i == "graph" or (i in ("images", "keyframes") and image_store)
@@ -229,7 +231,9 @@ class MapLoader:
         with self._lock:
             self._status = status
             job = self.jobs.start(
-                "map", f"Load {run.name} into neo4j:{t.name}", run_job
+                "map",
+                f"Load {run_layout.display_name(run)} into neo4j:{t.name}",
+                run_job,
             )
             self._job_id = job.id
             self._status["job_id"] = job.id

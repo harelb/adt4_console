@@ -17,9 +17,11 @@
   open mission is reloaded after a console restart (``console.restart``).
 
 Everything lives under the **base experiment dir**:
-``<output_root>/<experiment>__base`` for the session's experiment, else the
-experiment dir of ``$ADT4_RUN_DIR`` (``<exp>/runs/<id>``), else
-``<output_root>/console``.  Pure Python: the evidence comes from a
+``<output_root>/<experiment>`` for the session's experiment (the dir the console's
+Launch gives the base station's ``run-adt4 -o``: its runs are in ``runs/<run_id>``,
+next to ``sessions/`` and ``missions/``), else the experiment dir of
+``$ADT4_RUN_DIR`` (``<exp>/runs/<id>``), else ``<output_root>/console``.  Robot
+maps copied to the base land beside it as ``<experiment>__<robot>``.  Pure Python: the evidence comes from a
 ``live_state(robot)`` callable (the fleetlink C1 state), events go to
 :mod:`eventlog`, the UI state to the hub topic ``logbook/state``.
 """
@@ -186,7 +188,8 @@ class Logbook:
         root = pathlib.Path(os.path.expanduser(self.settings.output_root))
         exp = self._experiment or (self.session or {}).get("experiment")
         if exp:
-            return root / f"{exp}__base"
+            # = the base station's run-adt4 -o (launch_workflow.build_base_station_command)
+            return root / exp
         rd = os.environ.get("ADT4_RUN_DIR")
         if rd:
             p = pathlib.Path(os.path.expanduser(rd))
