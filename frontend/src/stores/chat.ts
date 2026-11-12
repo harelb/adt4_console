@@ -17,6 +17,11 @@ interface ChatStore {
   turnStart: number;
   /** text to put in the message box (e.g. "Re-plan in chat"); the panel takes it */
   prefill: string | null;
+  /** the unsent message box text: here, not in the panel, because the Chat tab
+   *  unmounts when a click on the map brings Inspect forward (and on any other
+   *  tab / pane switch); the docked tab and the mission planner's chat pane
+   *  are the same conversation, so they share one draft */
+  draft: string;
 }
 
 /** What is kept on disk: no busy flag, and no embedded candidate images (data
@@ -36,7 +41,11 @@ function load(): Pick<ChatStore, "items" | "transcript"> {
   return {items: [], transcript: []};
 }
 
-export const useChat = create<ChatStore>(() => ({...load(), busy: false, turnStart: 0, prefill: null}));
+export const useChat = create<ChatStore>(() => ({...load(), busy: false, turnStart: 0, prefill: null, draft: ""}));
+
+export function setChatDraft(draft: string): void {
+  useChat.setState({draft});
+}
 
 /** Put `text` in the chat's message box (the mission planner shows the chat pane). */
 export function prefillChat(text: string): void {

@@ -10,7 +10,7 @@ import {Badge, Spinner} from "../components/ui";
 import {sendGoal} from "./PlanPanel";
 import {goalSendMessage, type SendTone} from "./PlanRepair";
 import {LeaseRefusalNotice} from "./LeaseControl";
-import {chatAbort, clearChat, storable, useChat} from "../stores/chat";
+import {chatAbort, clearChat, setChatDraft, storable, useChat} from "../stores/chat";
 import {closeMission, fitMission, missionContext, openMission, saveCurrent, simCmd, useMission} from "../stores/mission";
 import {clearPreview, previewPddl, PreviewError, previewRobots, usePlanPreview, type PddlPreview} from "../stores/planPreview";
 import {FastDownwardDetails} from "./FastDownward";
@@ -332,7 +332,10 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
   const items = useChat(s => s.items);
   const autoOn = useAutoSend(s => s.on);
   const busy = useChat(s => s.busy);
-  const [input, setInput] = useState("");
+  // the unsent text is in the store: it survives the panel unmounting (a map
+  // click switches the side panel to Inspect)
+  const input = useChat(s => s.draft);
+  const setInput = setChatDraft;
   // "Re-plan in chat" (Mission tab): the text lands in the message box, unsent
   const prefill = useChat(s => s.prefill);
   const inputRef = useRef<HTMLTextAreaElement>(null);
