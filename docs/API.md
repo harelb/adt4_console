@@ -1506,6 +1506,8 @@ transient_local). In router mode they are plain ROS.
 | POST | `/robots/{robot}/change_detection/{start \| stop \| reset \| reset_start}` | `{override}` → `{ok, results: [{cmd, ok, message \| error}], override, state, relocalized}` |
 | POST | `/change_detection/clear` | `{robots: [] = all}`: AWCD base station `clear_robots` (discovered, base-local) |
 | GET | `/change_detection/changes` | the AWCD base station's merged change set (below) |
+| GET | `/change_detection/reset_all` | what the fleet-wide reset would do: `{available, robots: [{robot, state, reachable, reason}], map: {writer, running, keep_supported, reason}}` |
+| POST | `/change_detection/reset_all` | `{keep_applied = true, robots: [] = all}` → `{ok, keep_applied, map: {action: keep \| revert \| none, ok, message}, robots: [{robot, ok, skipped, message \| error}], base, scene_repair: {dropped}}`; **409** `{keep_unsupported}` when keeping was asked of a writer without `keep_detections` |
 
 - **Gate:** start and reset_start return **409** `{detail, not_relocalized: true, reason}` unless the
   robot is relocalized or `override` is set. Stop and reset are never gated.
@@ -1520,7 +1522,22 @@ transient_local). In router mode they are plain ROS.
   `not_relocalized` only when there is no `map -> odom` transform, or hydra_multi reports 0
   accepted; with no signal at all the state is `unknown` ("no relocalization signal from
   <robot>"), not ok. Agents without `reloc` and no hydra_multi count: the transform decides.
-- **UI:** the Live panel shows each robot's state badge and Start / Stop / Reset. Start
+- **Fleet-wide reset** (`reset_all`), in this order: (1) the map: with `keep_applied` (default)
+  plan repair's scene change writer is asked to keep what change detection already put in the map
+  (`<planner_ns>/scene_change_writer/keep_detections`, heracles_ros; its change log entries move to
+  `kept/<source>`), so the detectors' empty change sets no longer withdraw them; with
+  `keep_applied: false` they do, and the map is rebuilt from the prior plus operator / chat (SGET)
+  edits. A failed keep aborts before anything is reset. No writer: nothing to do there.
+  (2) every robot the console knows (topology / live / AWCD reports) that is reachable
+  (`change_detection_unreachable`: fleetlink link down or service not relayed, or nothing serves it
+  in router mode) gets `/<robot>/change_detection/reset` in parallel; a running detector keeps
+  running. Unreachable robots are listed as skipped, not failures. (3) the AWCD base station's
+  `clear_robots` for all robots (no base station is not a failure). (4) pending replan
+  recommendations caused only by change detection are superseded (scene_repair event
+  `detections_reset`). Logged to the console log as `op.awcd_reset`.
+- **UI:** the Live panel shows each robot's state badge and Start / Stop. The AWCD panel has
+  "Reset change detection (all robots)…", which shows the plan (robots reset / skipped, keep or
+  revert the map's applied changes) before it runs. Start
   (reset + start) is enabled only when the legend's relocalization status is **ok**. That status
   also checks the distance to a shown prior map. "Start anyway…" asks for confirmation and sends
   `override: true`.

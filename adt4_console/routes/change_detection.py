@@ -9,8 +9,10 @@ operator overrides.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -19,6 +21,7 @@ from pydantic import BaseModel
 from ..ros_bridge import CHANGE_DETECTION_CMDS, RosUnavailable
 from . import services
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 BIG_JUMP_M = 3.0  # frontend lib/frameAlign.ts BIG_JUMP_M / BIG_JUMP_DEG
@@ -233,3 +236,140 @@ def changes(request: Request):
         return {"available": False, "error": svc.ros.error or "ROS is off", "topic": None, "t": None,
                 "frame_id": None, "changes": [], "counts": {"added": 0, "removed": 0}, "robots": {}}  # fmt: skip
     return svc.ros.awcd_changes()
+
+
+# --------------------------------------------------- fleet-wide reset (§19.3)
+class ResetAllBody(BaseModel):
+    # keep what change detection already put in the map (scene change writer
+    # keep_detections); false: the detectors' empty sets revert it
+    keep_applied: bool = True
+    robots: list[str] = []  # empty: every robot the console knows
+
+
+def _candidates(svc) -> list[str]:
+    names = set(svc.settings.robots or svc.fleet.robots() or [])
+    try:
+        names |= set(svc.live.robots())
+    except Exception:  # noqa: BLE001
+        pass
+    if hasattr(svc.ros, "awcd_changes"):
+        try:
+            names |= set((svc.ros.awcd_changes() or {}).get("robots") or {})
+        except Exception:  # noqa: BLE001
+            pass
+    names.discard("reconciled")
+    return sorted(n for n in names if n)
+
+
+def _sget(svc):
+    return getattr(svc.chat, "sget", None)
+
+
+def _map_plan(svc) -> dict:
+    sg = _sget(svc)
+    if sg is None:
+        return {"writer": None, "running": False, "keep_supported": False, "reason": "no SGET service"}
+    return sg.detections_status()
+
+
+def _robot_plan(svc, robot: str) -> dict:
+    svc.ros.ensure_robot(robot)
+    why = svc.ros.change_detection_unreachable(robot)
+    return {"robot": robot, "state": svc.ros.change_detection(robot).get("state"), "reachable": why is None,
+            "reason": why}  # fmt: skip
+
+
+@router.get("/change_detection/reset_all")
+def reset_all_plan(request: Request):
+    """What the fleet-wide Reset would do: every robot (state, reachable or why
+    not) and the map side (scene change writer running, keep supported)."""
+    svc = services(request)
+    if not svc.ros.available:
+        return {"available": False, "error": svc.ros.error or "ROS is off", "robots": [], "map": _map_plan(svc)}
+    return {"available": True, "robots": [_robot_plan(svc, r) for r in _candidates(svc)], "map": _map_plan(svc)}
+
+
+@router.post("/change_detection/reset_all")
+def reset_all(request: Request, body: ResetAllBody | None = None):
+    """Reset change detection everywhere, in this order:
+
+    1. the map (plan repair's scene change writer, SGET): ``keep_applied`` asks
+       it to keep what change detection already put in the map
+       (``keep_detections``) before the empty change sets arrive; without it
+       they revert it.  Operator / chat edits are never touched;
+    2. every reachable robot's detector (``/<robot>/change_detection/reset``;
+       a running detector keeps running); unreachable robots are listed;
+    3. the AWCD base station's cached changes (``clear_robots``, all robots:
+       also an offline robot's last report);
+    4. the console: pending replan recommendations change detection alone
+       caused are superseded.
+    """
+    svc = services(request)
+    body = body or ResetAllBody()
+    if not svc.ros.available:
+        raise RosUnavailable(svc.ros.error or "ROS is off")
+    mp = _map_plan(svc)
+    out = {"keep_applied": body.keep_applied, "map": {**mp, "ok": True, "action": "none"}}
+    if mp["running"] and body.keep_applied:
+        if not mp["keep_supported"]:
+            return JSONResponse({"detail": f"the scene change writer ({mp['writer']}) cannot keep detected changes "
+                                           "(no keep_detections: older heracles); reset with keep_applied false to "
+                                           "revert them, or update heracles", "keep_unsupported": True,
+                                 "map": mp}, status_code=409)  # fmt: skip
+        kept = _sget(svc).keep_detections()
+        out["map"].update(action="keep", ok=kept["ok"], message=kept.get("message"), service=kept.get("service"))
+        if not kept["ok"]:  # resetting now would revert what the operator asked to keep
+            out.update(ok=False, robots=[], base=None, error=f"keeping detected changes failed: {kept.get('message')}")
+            log.warning("op.awcd_reset aborted: %s", out["error"])
+            return out
+    elif mp["running"]:
+        out["map"].update(action="revert", message="detected changes in the map are reverted when the detectors' "
+                                                   "empty change sets reach the scene change writer")  # fmt: skip
+    else:
+        out["map"]["message"] = mp.get("reason") or "no scene change writer: no map to update"
+
+    wanted = list(dict.fromkeys(body.robots)) or _candidates(svc)
+    plans = [_robot_plan(svc, r) for r in wanted]
+    todo = [p["robot"] for p in plans if p["reachable"]]
+    results = {}
+    if todo:
+        with ThreadPoolExecutor(max_workers=min(8, len(todo))) as pool:
+            for robot, res in zip(todo, pool.map(lambda r: _reset_one(svc, r), todo), strict=True):
+                results[robot] = res
+    robots = []
+    for p in plans:
+        r = results.get(p["robot"])
+        if r is None:
+            robots.append({"robot": p["robot"], "ok": False, "skipped": True, "error": p["reason"]})
+        else:
+            robots.append({"robot": p["robot"], "ok": bool(r.get("ok")), "skipped": False,
+                           "message": r.get("message"), "error": r.get("error"), "via": r.get("via")})  # fmt: skip
+    out["robots"] = robots
+    try:
+        base = svc.ros.clear_change_detection([])
+    except Exception as e:  # noqa: BLE001
+        base = {"ok": False, "error": str(e)}
+    out["base"] = base
+
+    done = [r["robot"] for r in robots if r["ok"]]
+    text = (f"change detection reset ({'kept' if out['map']['action'] == 'keep' else out['map']['action']} "
+            f"detected map changes): robots {', '.join(done) or 'none'}")  # fmt: skip
+    sr = svc.scene_repair
+    out["scene_repair"] = {"dropped": sr.on_detections_reset(text) if sr is not None else 0}
+    attempted = [r for r in robots if not r["skipped"]]
+    out["ok"] = bool(out["map"]["ok"] and all(r["ok"] for r in attempted) and (base.get("ok") or not _has_base(base)))
+    log.info("op.awcd_reset keep_applied=%s map=%s robots=%s base=%s", body.keep_applied, out["map"]["action"],
+             {r["robot"]: ("skipped" if r["skipped"] else r["ok"]) for r in robots}, base.get("ok"))  # fmt: skip
+    return out
+
+
+def _reset_one(svc, robot: str) -> dict:
+    try:
+        return svc.ros.change_detection_cmd(robot, "reset")
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+
+
+def _has_base(base: dict) -> bool:
+    """False when the base station simply is not running (not a failure)."""
+    return "no awcd_base_station" not in str(base.get("error") or "")

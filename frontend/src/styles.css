@@ -4863,6 +4863,19 @@ input[type="checkbox"] {
 .cd-gate {
   align-items: center;
 }
+.cd-fleet-reset {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cd-reset-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
 
 /* AWCD change list (Live tab) and its map labels */
 .awcd-panel {
