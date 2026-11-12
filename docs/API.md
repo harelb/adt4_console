@@ -1509,6 +1509,10 @@ transient_local). In router mode they are plain ROS.
 | GET | `/change_detection/reset_all` | what the fleet-wide reset would do: `{available, robots: [{robot, state, reachable, reason}], map: {writer, running, keep_supported, reason}}` |
 | POST | `/change_detection/reset_all` | `{keep_applied = true, robots: [] = all}` → `{ok, keep_applied, map: {action: keep \| revert \| none, ok, message}, robots: [{robot, ok, skipped, message \| error}], base, scene_repair: {dropped}}`; **409** `{keep_unsupported}` when keeping was asked of a writer without `keep_detections` |
 
+| GET | `/change_detection/fleet` | `{available, robots: [{robot, state, reachable, reason, relocalized}]}`: every robot's detector, for the fleet control |
+| POST | `/change_detection/start_all` | `{robots: [] = all, override = false}` → `{ok, cmd, robots: [{robot, ok, skipped, not_relocalized?, message \| error, state}], counts: {done, skipped, failed}}` |
+| POST | `/change_detection/stop_all` | `{robots: [] = all}` → the same shape |
+
 - **Gate:** start and reset_start return **409** `{detail, not_relocalized: true, reason}` unless the
   robot is relocalized or `override` is set. Stop and reset are never gated.
 - **What "relocalized" means on the server** (`relocalized()` →
@@ -1535,7 +1539,18 @@ transient_local). In router mode they are plain ROS.
   `clear_robots` for all robots (no base station is not a failure). (4) pending replan
   recommendations caused only by change detection are superseded (scene_repair event
   `detections_reset`). Logged to the console log as `op.awcd_reset`.
+- **Fleet-wide start / stop** (`start_all`, `stop_all`): the robots are those of the fleet-wide
+  reset. `start_all` runs each robot's own Start (reset, then start) in parallel, each call with
+  the bridge's timeout, so one robot failing or timing out does not hold the others. A robot is
+  **skipped**, not failed, when it is unreachable (as for the reset), already running, or, without
+  `override`, not relocalized (`not_relocalized: true`, `error` = the reason). `stop_all` is never
+  gated. `ok` is true when nothing failed; a partial failure is still HTTP 200. ROS off: 503.
+  Logged as `op.awcd_start_all` / `op.awcd_stop_all`.
 - **UI:** the Live panel shows each robot's state badge and Start / Stop. The AWCD panel has
+  "Start all" / "Stop all" with a fleet summary ("2 running, 1 paused, 1 not relocalized") and a
+  one-line result naming skipped and failed robots; "Start anyway (…)…" appears only after robots
+  were skipped as not relocalized, asks for confirmation and sends `override: true` for those
+  robots. It also has
   "Reset change detection (all robots)…", which shows the plan (robots reset / skipped, keep or
   revert the map's applied changes) before it runs. Start
   (reset + start) is enabled only when the legend's relocalization status is **ok**. That status

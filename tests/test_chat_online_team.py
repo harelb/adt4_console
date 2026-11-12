@@ -100,3 +100,45 @@ def test_operator_naming_the_offline_robot_gets_a_warning_card():
     assert out["warning"] == card["warning"]
     assert card["team"] == ["euclid", "hamilton"]  # the card's team / send label: online only
     assert card["robot"] == "euclid"  # never sent through the offline robot
+
+
+def test_the_roster_is_the_one_robot_list_and_offline_is_not_unknown():
+    """2026-11-11 rig: "visit O4 and O8 using only the spots" made the model say
+    apollo "is not in the fleet": the roster had six robots, the database three
+    Robot nodes, and the rules pointed at the database."""
+    text = chat()._system(None, "euclid")
+    head = next(x for x in text.splitlines() if x.startswith("Fleet roster"))
+    assert "This roster is the fleet, the one list of robots" in head
+    assert "even with no Robot node in the database" in head
+    team_line = next(x for x in text.splitlines() if x.startswith("The team now"))
+    assert '("the spots", "the huskies") the online robots of that platform' in team_line
+    assert "An offline robot is a known robot: say it is offline" in team_line
+    assert "never that it is unknown or not in the fleet" in team_line
+
+
+@needs_heracles_agents
+def test_the_rules_point_at_the_roster_not_at_the_database_for_who_is_in_the_fleet():
+    text = chat()._system(None, "euclid")
+    assert "The fleet is ONE list: the fleet roster in this prompt when it has one" in text
+    assert "are the robots of the fleet (MATCH (r:Robot)" not in text
+    assert "Use only robots of the fleet (MATCH (r:Robot)" not in text
+
+
+@needs_heracles_agents
+def test_two_by_atoms_for_one_target_make_one_card_for_both_robots():
+    """"hamilton and euclid go to O31": each robot its own -by atom, no use-robots."""
+    c = chat()
+    goal = "(and (visited-object-by hamilton o31) (visited-object-by euclid o31))"
+    [card], out = propose(c, goal, "hamilton and euclid go to O31")
+    assert card["body"]["goal"] == goal and not card["body"].get("constraints")
+    assert sorted(card["team"]) == ["euclid", "hamilton"] and out["proposed"]
+
+
+@needs_heracles_agents
+def test_all_robots_without_use_robots_keeps_the_offline_husky_off_the_team():
+    """"all robots visit the trash": a robot-free goal and no use-robots; the
+    card's team is the online robots, and gauss (offline husky) is not on it."""
+    c = chat()
+    [card], out = propose(c, "(and (visited-object o4) (visited-object o8))", "all robots visit the trash")
+    assert not card["body"].get("constraints")
+    assert "gauss" not in card["team"] and card["team"] == ["euclid", "hamilton"]

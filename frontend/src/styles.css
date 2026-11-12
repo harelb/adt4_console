@@ -4863,6 +4863,7 @@ input[type="checkbox"] {
 .cd-gate {
   align-items: center;
 }
+.cd-fleet,
 .cd-fleet-reset {
   display: flex;
   flex-direction: column;

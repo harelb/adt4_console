@@ -206,15 +206,21 @@ def command(robot: str, cmd: str, request: Request, body: CmdBody | None = None)
     if starts and not rel["ok"] and not (body and body.override):
         return JSONResponse({"detail": f"{robot} is not relocalized: {rel['reason']}", "not_relocalized": True,
                              "reason": rel["reason"]}, status_code=409)  # fmt: skip
-    steps = ("reset", "start") if cmd == "reset_start" else (cmd,)
+    results = _run(svc, robot, cmd)
+    return {"ok": all(r["ok"] for r in results), "results": results, "override": bool(starts and not rel["ok"]),
+            **_status(svc, robot)}  # fmt: skip
+
+
+def _run(svc, robot: str, cmd: str) -> list[dict]:
+    """One robot's command, step by step (reset_start: reset, then start),
+    stopping at the first step that fails."""
     results = []
-    for step in steps:
+    for step in ("reset", "start") if cmd == "reset_start" else (cmd,):
         out = svc.ros.change_detection_cmd(robot, step)
         results.append(out)
         if not out["ok"]:
             break
-    return {"ok": all(r["ok"] for r in results), "results": results, "override": bool(starts and not rel["ok"]),
-            **_status(svc, robot)}  # fmt: skip
+    return results
 
 
 @router.post("/change_detection/clear")
@@ -373,3 +379,80 @@ def _reset_one(svc, robot: str) -> dict:
 def _has_base(base: dict) -> bool:
     """False when the base station simply is not running (not a failure)."""
     return "no awcd_base_station" not in str(base.get("error") or "")
+
+
+# ------------------------------------------- fleet-wide start / stop (§19.4)
+class FleetCmdBody(BaseModel):
+    robots: list[str] = []  # empty: every robot the console knows
+    override: bool = False  # start robots that are not (known to be) relocalized too
+
+
+@router.get("/change_detection/fleet")
+def fleet_state(request: Request):
+    """Every robot's detector for the fleet control: state, reachable (or why
+    not) and the relocalization verdict that gates Start."""
+    svc = services(request)
+    if not svc.ros.available:
+        return {"available": False, "error": svc.ros.error or "ROS is off", "robots": []}
+    return {"available": True,
+            "robots": [{**_robot_plan(svc, r), "relocalized": relocalized(svc.live.state(r), r)}
+                       for r in _candidates(svc)]}  # fmt: skip
+
+
+@router.post("/change_detection/start_all")
+def start_all(request: Request, body: FleetCmdBody | None = None):
+    """Start change detection on every robot (each as its own Start: reset,
+    then start).  A robot that is unreachable, already running or, without
+    ``override``, not relocalized is skipped, not a failure."""
+    return _fleet_cmd(services(request), "start", body or FleetCmdBody())
+
+
+@router.post("/change_detection/stop_all")
+def stop_all(request: Request, body: FleetCmdBody | None = None):
+    """Stop change detection on every reachable robot (never gated)."""
+    return _fleet_cmd(services(request), "stop", body or FleetCmdBody())
+
+
+def _fleet_cmd(svc, cmd: str, body: FleetCmdBody) -> dict:
+    if not svc.ros.available:
+        raise RosUnavailable(svc.ros.error or "ROS is off")
+    rows, todo = [], []
+    for robot in list(dict.fromkeys(body.robots)) or _candidates(svc):
+        plan = _robot_plan(svc, robot)
+        row = {"robot": robot, "ok": False, "skipped": True}
+        rel = relocalized(svc.live.state(robot), robot) if cmd == "start" else None
+        if not plan["reachable"]:
+            row["error"] = plan["reason"]
+        elif cmd == "start" and plan["state"] == "running":
+            row["error"] = "already running"
+        elif rel is not None and not rel["ok"] and not body.override:
+            row.update(not_relocalized=True, error=rel["reason"])
+        else:
+            row["skipped"] = False
+            todo.append(robot)
+        rows.append(row)
+    results = {}
+    if todo:
+        # each call has the bridge's own timeout: one robot does not hold the others
+        step = "reset_start" if cmd == "start" else cmd
+        with ThreadPoolExecutor(max_workers=min(8, len(todo))) as pool:
+            for robot, res in zip(todo, pool.map(lambda r: _run_one(svc, r, step), todo), strict=True):
+                results[robot] = res
+    for row in rows:
+        res = results.get(row["robot"])
+        if res is not None:
+            row.update(ok=bool(res.get("ok")), message=res.get("message"), error=res.get("error"))
+        row["state"] = svc.ros.change_detection(row["robot"]).get("state")
+    counts = {"done": sum(r["ok"] for r in rows), "skipped": sum(r["skipped"] for r in rows),
+              "failed": sum(not r["ok"] and not r["skipped"] for r in rows)}  # fmt: skip
+    log.info("op.awcd_%s_all override=%s %s", cmd, body.override,
+             {r["robot"]: ("skipped" if r["skipped"] else r["ok"]) for r in rows})  # fmt: skip
+    return {"ok": counts["failed"] == 0, "cmd": cmd, "robots": rows, "counts": counts}
+
+
+def _run_one(svc, robot: str, cmd: str) -> dict:
+    """The last step's answer of one robot's command; an exception is its error."""
+    try:
+        return _run(svc, robot, cmd)[-1]
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}

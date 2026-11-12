@@ -148,20 +148,29 @@ def test_grstaps_system_presents_holding_and_use_robots_and_at_or_as_fast_downwa
     assert "GRSTAPS-X takes no or / at-* (use engine='fast_downward' for those)" in desc
 
 
+# Lines of the Fast Downward system prompt rewritten since the fixture (1e02705):
+# the engine bullet (842a522) and, in the 2026-11-12 follow-up, two team goal
+# rules (use-robots; robot names and the fleet) and the roster's heading.
+_REWRITTEN = ("- engine: ", '- "Both robots", "hamilton and euclid"', "- Robot names are lowercase",
+              "Fleet roster (platform from the fleet topology")  # fmt: skip
+
+
 @needs_heracles_agents
-def test_fast_downward_system_is_unchanged_apart_from_the_engine_bullet():
-    """The GRSTAPS-X holding / use-robots change (842a522) only rewrote the engine
-    bullet of the Fast Downward system prompt (fixture: 1e02705, bullet removed)."""
+def test_fast_downward_system_is_unchanged_apart_from_the_rewritten_lines():
+    """Every other line of the Fast Downward system prompt is as it was at
+    1e02705, in the same order; rules and examples were only added."""
     import json
     import os
 
     with open(os.path.join(os.path.dirname(__file__), "fixtures", "fd_system_1e02705.json"), encoding="utf-8") as f:
-        before = json.load(f)["text"]
+        before = json.load(f)["text"].splitlines()
     _, text = _system("fast_downward")
-    lines = text.splitlines(keepends=True)
-    bullets = [line for line in lines if line.startswith("- engine: ")]
-    assert len(bullets) == 1
-    assert "".join(line for line in lines if not line.startswith("- engine: ")) == before
+    now = text.splitlines()
+    assert len([line for line in now if line.startswith("- engine: ")]) == 1
+    kept = [line for line in before if not line.startswith(_REWRITTEN)]
+    assert len(before) - len(kept) == len(_REWRITTEN) - 1  # the fixture has no engine bullet
+    assert [line for line in kept if line not in now] == []
+    assert [line for line in now if line in kept] == kept
 
 
 @needs_heracles_agents

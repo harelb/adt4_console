@@ -1055,7 +1055,9 @@ class ChatService:
             lines.append(line)
         text = (
             "\nFleet roster (platform from the fleet topology; robot names are these, "
-            "not platform names):\n" + "\n".join(lines)
+            "not platform names). This roster is the fleet, the one list of robots: a robot "
+            "in it is a known robot even with no Robot node in the database (Robot nodes "
+            "only say where the robots that have a position are):\n" + "\n".join(lines)
         )
         online = [r["robot"] for r in rows if r["online"] is True]
         offline = [r["robot"] for r in rows if r["online"] is False]
@@ -1064,8 +1066,11 @@ class ChatService:
             text += (
                 f"\nThe team now (online, connected): {', '.join(online) or 'none'}. "
                 f"Offline — do not assign: {', '.join(offline)}. \"All robots\", \"the team\", "
-                "\"both robots\" and \"every robot\" mean the online robots; never put an offline "
-                "robot in a goal or use-robots unless the operator names it."
+                "\"both robots\" and \"every robot\" mean the online robots, and a platform word "
+                "(\"the spots\", \"the huskies\") the online robots of that platform; never put an "
+                "offline robot in a goal or use-robots unless the operator names it. An offline "
+                "robot is a known robot: say it is offline, never that it is unknown or not in "
+                "the fleet."
             )
         goals = getattr(self.ros, "goals", None)
         recent = goals.summary_lines(3) if goals is not None else []

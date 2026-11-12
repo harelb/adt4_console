@@ -1,9 +1,11 @@
 // The AWCD change list (Live tab): the base station's merged changes, a map
-// overlay switch, the fleet-wide change detection Reset (every robot, the base
-// station and plan repair's scene edits: ChangeDetectionReset), click a change
-// to fly to it. Starting / stopping detection is per robot
+// overlay switch, the fleet-wide change detection Start / Stop (every robot:
+// ChangeDetectionFleet) and Reset (every robot, the base station and plan
+// repair's scene edits: ChangeDetectionReset), click a change to fly to it.
+// One robot's detection is started / stopped in its robot card
 // (ChangeDetectionControl). Replan recommendations these changes cause are
 // reviewed in the Plan tab.
+import {FleetChangeDetectionControl} from "./ChangeDetectionFleet";
 import {FleetChangeDetectionReset} from "./ChangeDetectionReset";
 import {changeColor, countsText, fmtClock, fmtPos, shortId, type AwcdChange} from "../lib/awcd";
 import {saveBool, useAwcd, useAwcdFeed} from "../stores/awcd";
@@ -28,6 +30,7 @@ export function AwcdChangesPanel() {
     return (
       <section className="awcd-panel small muted" data-testid="awcd-off">
         Detected changes (AWCD): not available{st.error ? ` — ${st.error}` : ""}
+        <FleetChangeDetectionControl />
         <FleetChangeDetectionReset />
       </section>
     );
@@ -46,6 +49,7 @@ export function AwcdChangesPanel() {
           <Toggle checked={labels} onChange={v => (saveBool("adt4.awcd.labels", v), useAwcd.setState({labels: v}))} label="Labels" />
         </span>
       </header>
+      <FleetChangeDetectionControl />
       <FleetChangeDetectionReset />
       {!st.topic && <div className="small tone-warn">No AWCD base station seen (awcd_base_station/reconciled_changes): launch it with launch_awcd_base_station:=true.</div>}
       {reports.length > 0 && (

@@ -504,3 +504,200 @@ def test_bridge_change_detection_unreachable():
     assert "no change detection" in br.change_detection_unreachable("sequoia")
     br._plan["sequoia"].change_detection = {"state": "paused", "t": 1.0}
     assert br.change_detection_unreachable("sequoia") is None  # it reported a state
+
+
+# ------------------------------------- fleet-wide start / stop (start_all, stop_all)
+class StartRos(FakeRos):
+    """euclid / hamilton / hilbert paused, lewis running, gauss offline."""
+
+    states = {"lewis": "running"}
+
+    def __init__(self, fail=()):
+        super().__init__()
+        self.fail = set(fail)
+
+    def change_detection(self, robot):
+        return {"robot": robot, "state": self.states.get(robot, "paused"), "t": 1.0}
+
+    def change_detection_unreachable(self, robot):
+        return "offline (fleetlink link down)" if robot == "gauss" else None
+
+    def change_detection_cmd(self, robot, cmd):
+        self.calls.append((robot, cmd))
+        if robot in self.fail:
+            return {"ok": False, "cmd": cmd,
+                    "error": f"timed out (is change detection running on {robot}?)"}  # fmt: skip
+        return {"ok": True, "cmd": cmd, "message": cmd}
+
+
+RELOCALIZED = {"frame_align": FA_OK, "reloc": {"prior_lcs": 3}}
+NOT_RELOCALIZED = {"frame_align": FA_OK, "reloc": {"prior_lcs": 0}, "health": _hydra("0 / 3")}  # fmt: skip
+
+
+def _start_client(settings, ros, live):
+    settings.robots = ["euclid", "gauss", "hamilton", "hilbert", "lewis"]
+    client, svc = make_client(settings)
+    return client, svc
+
+
+def _by(r):
+    return {x["robot"]: x for x in r["robots"]}
+
+
+def test_start_all_starts_the_relocalized_and_skips_the_rest(settings):
+    live = {"euclid": RELOCALIZED, "hamilton": RELOCALIZED, "hilbert": NOT_RELOCALIZED,
+            "lewis": RELOCALIZED}  # fmt: skip
+    client, svc = _start_client(settings, None, live)
+    with client:
+        ros = StartRos()
+        svc.ros = ros
+        svc.live.state = lambda r: live.get(r)
+        fleet = client.get("/api/change_detection/fleet").json()
+        assert fleet["available"] and ros.calls == []  # looking changes nothing
+        rows = {x["robot"]: x for x in fleet["robots"]}
+        assert (
+            rows["lewis"]["state"] == "running" and rows["gauss"]["reachable"] is False
+        )
+        assert rows["hilbert"]["relocalized"]["ok"] is False
+        assert rows["euclid"]["relocalized"]["ok"] is True
+
+        r = client.post("/api/change_detection/start_all", json={})
+        assert r.status_code == 200
+        r = r.json()
+        by = _by(r)
+        # a start is the per-robot Start: reset, then start
+        for robot in ("euclid", "hamilton"):
+            assert by[robot]["ok"] and not by[robot]["skipped"]
+            assert [c for c in ros.calls if c[0] == robot] == [
+                (robot, "reset"),
+                (robot, "start"),
+            ]
+        assert by["hilbert"]["skipped"] and by["hilbert"]["not_relocalized"]
+        assert "no prior-map match" in by["hilbert"]["error"]
+        assert by["gauss"]["skipped"] and "offline" in by["gauss"]["error"]
+        assert "not_relocalized" not in by["gauss"]
+        assert by["lewis"]["skipped"] and by["lewis"]["error"] == "already running"
+        assert not any(c[0] in ("hilbert", "gauss", "lewis") for c in ros.calls)
+        assert r["counts"] == {"done": 2, "skipped": 3, "failed": 0}
+        assert r["ok"] is True  # a skipped robot is not a failure
+        assert r["cmd"] == "start"
+
+
+def test_start_all_override_also_starts_the_not_relocalized(settings):
+    live = {"euclid": RELOCALIZED, "hamilton": RELOCALIZED, "hilbert": NOT_RELOCALIZED}
+    client, svc = _start_client(settings, None, live)
+    with client:
+        ros = StartRos()
+        svc.ros = ros
+        svc.live.state = lambda r: live.get(r)
+        r = client.post("/api/change_detection/start_all",
+                        json={"robots": ["hilbert"], "override": True}).json()  # fmt: skip
+        assert [x["robot"] for x in r["robots"]] == ["hilbert"]
+        assert r["robots"][0]["ok"] and ros.calls == [
+            ("hilbert", "reset"),
+            ("hilbert", "start"),
+        ]
+        # never an offline robot, override or not
+        r = client.post("/api/change_detection/start_all",
+                        json={"robots": ["gauss"], "override": True}).json()  # fmt: skip
+        assert r["robots"][0]["skipped"] and r["counts"]["done"] == 0
+        assert ("gauss", "start") not in ros.calls
+
+
+def test_start_all_one_robot_failing_does_not_stop_the_others(settings):
+    live = {r: RELOCALIZED for r in ("euclid", "hamilton", "hilbert")}
+    client, svc = _start_client(settings, None, live)
+    with client:
+        ros = StartRos(fail=["hamilton"])
+        svc.ros = ros
+        svc.live.state = lambda r: live.get(r)
+        r = client.post("/api/change_detection/start_all", json={})
+        assert r.status_code == 200  # a partial failure is still an answer
+        r = r.json()
+        by = _by(r)
+        assert by["euclid"]["ok"] and by["hilbert"]["ok"]
+        assert not by["hamilton"]["ok"] and not by["hamilton"]["skipped"]
+        assert "timed out" in by["hamilton"]["error"]
+        # its reset failed, so its start was not tried
+        assert [c for c in ros.calls if c[0] == "hamilton"] == [("hamilton", "reset")]
+        assert (
+            r["counts"] == {"done": 2, "skipped": 2, "failed": 1} and r["ok"] is False
+        )
+
+
+def test_a_robot_whose_call_raises_is_a_failure_not_a_500(settings):
+    live = {r: RELOCALIZED for r in ("euclid", "hamilton")}
+    client, svc = _start_client(settings, None, live)
+    with client:
+        ros = StartRos()
+
+        def cmd(robot, step):
+            if robot == "euclid":
+                raise RuntimeError("bridge went away")
+            ros.calls.append((robot, step))
+            return {"ok": True, "cmd": step, "message": step}
+
+        ros.change_detection_cmd = cmd
+        svc.ros = ros
+        svc.live.state = lambda r: live.get(r)
+        r = client.post("/api/change_detection/start_all",
+                        json={"robots": ["euclid", "hamilton"]})  # fmt: skip
+        assert r.status_code == 200
+        by = _by(r.json())
+        assert not by["euclid"]["ok"] and "bridge went away" in by["euclid"]["error"]
+        assert by["hamilton"]["ok"]
+
+
+def test_stop_all_is_never_gated_and_skips_only_the_unreachable(settings):
+    client, svc = _start_client(settings, None, {})
+    with client:
+        ros = StartRos()
+        svc.ros = ros
+        svc.live.state = lambda r: None  # nobody is known to be relocalized
+        r = client.post("/api/change_detection/stop_all", json={}).json()
+        assert sorted(ros.calls) == [
+            (x, "stop") for x in ("euclid", "hamilton", "hilbert", "lewis")
+        ]
+        assert r["counts"] == {"done": 4, "skipped": 1, "failed": 0} and r["ok"]
+        assert _by(r)["gauss"]["skipped"] and r["cmd"] == "stop"
+
+
+def test_fleet_commands_with_no_robots_and_with_ros_off(settings):
+    settings.robots = []
+    client, svc = make_client(settings)
+    with client:
+        assert (
+            client.post("/api/change_detection/start_all", json={}).status_code == 503
+        )
+        assert client.post("/api/change_detection/stop_all", json={}).status_code == 503
+        assert client.get("/api/change_detection/fleet").json() == {
+            "available": False, "error": svc.ros.error or "ROS is off", "robots": []}  # fmt: skip
+        ros = StartRos()
+        svc.ros = ros
+        svc.fleet.robots = lambda: []
+        svc.live.robots = lambda: []
+        r = client.post("/api/change_detection/start_all", json={}).json()
+        assert r == {"ok": True, "cmd": "start", "robots": [],
+                     "counts": {"done": 0, "skipped": 0, "failed": 0}}  # fmt: skip
+        # the fleet routes did not take over the others
+        assert client.post("/api/change_detection/bogus_all", json={}).status_code in (
+            404,
+            405,
+        )
+        assert client.post("/api/change_detection/clear", json={"robots": []}).json()[
+            "ok"
+        ]
+
+
+def test_the_per_robot_routes_are_unchanged_by_the_fleet_ones(settings):
+    client, svc = make_client(settings)
+    ros = FakeRos()
+    with client:
+        svc.ros = ros
+        svc.live.state = lambda r: RELOCALIZED
+        r = client.post(
+            "/api/robots/euclid/change_detection/reset_start", json={}
+        ).json()
+        assert r["ok"] and [x["cmd"] for x in r["results"]] == ["reset", "start"]
+        assert ros.calls == [("euclid", "reset"), ("euclid", "start")]
+        assert r["state"] == "paused" and r["relocalized"]["ok"]
