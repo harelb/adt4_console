@@ -59,5 +59,11 @@ setup(
     description="ADT4 web console: base-station server and browser UI",
     license="Apache-2.0",
     tests_require=["pytest"],
-    entry_points={"console_scripts": ["adt4-console = adt4_console.cli:main"]},
+    entry_points={
+        "console_scripts": [
+            "adt4-console = adt4_console.cli:main",
+            "adt4-mission = adt4_console.mission_log.cli:main",
+            "adt4-mission-slice = adt4_console.mission_log.slicer:main",
+        ]
+    },
 )

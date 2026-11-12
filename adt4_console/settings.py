@@ -55,6 +55,12 @@ class Settings:
     # the open session / mission survive a console restart through this pointer;
     # None = memory only.  cli.py sets ~/.adt4_console/logbook.json
     logbook_state_path: str | None = None
+    # after mission.end: snapshot the base DSG (dsg_saver) and collect the mission
+    # (mission_log.collector): rsync at this bandwidth limit, deferred while a robot
+    # executes a goal; robots not reached are retried
+    mission_collect: bool = True
+    collect_bwlimit_kbps: int = 2000
+    collect_settle_s: float = 60.0
 
     # background work (tests switch these off)
     fleet_poll: bool = True

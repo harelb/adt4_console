@@ -128,6 +128,18 @@ def parse_args(argv=None):
         "(auto, default), always staged, or always applied immediately",
     )
     p.add_argument(
+        "--no-mission-collect",
+        action="store_true",
+        help="do not collect a mission (robot event slices, manifest, check) when it ends; "
+        "the Missions page still collects on request",
+    )
+    p.add_argument(
+        "--collect-bwlimit-kbps",
+        type=int,
+        default=2000,
+        help="rsync bandwidth limit for mission collection (KB/s, default 2000)",
+    )
+    p.add_argument(
         "--no-mission-log",
         action="store_true",
         help="do not write mission event logs / console.log / sessions / missions "
@@ -197,6 +209,8 @@ def settings_from_args(args):
         launch_state_path="~/.adt4_console/active_launch.json",
         launch_memory_path="~/.adt4_console/launch_memory.json",
         mission_log=not args.no_mission_log,
+        mission_collect=not args.no_mission_collect,
+        collect_bwlimit_kbps=args.collect_bwlimit_kbps,
         logbook_state_path="~/.adt4_console/logbook.json",
         geo_anchors=_pairs(args.geo_anchor, "--geo-anchor"),
         tiles_dir=args.tiles_dir,

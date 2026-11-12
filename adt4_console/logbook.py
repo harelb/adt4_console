@@ -161,6 +161,12 @@ class Logbook:
         self.ros_publish = None
         # (why) -> None at mission start / end: clock.offset samples of every robot
         self.on_mission_edge = None
+        # () -> {machine: run_id | [run_ids]}: the runs of this session (console, base
+        # station, robots' agents), merged into mission.json at start and end
+        self.run_ids_fn = None
+        # (mission, mission_dir) -> None after mission.end, on its own thread: the
+        # end-of-mission DSG snapshot and the collect job (app.wire_logbook)
+        self.on_mission_end = None
         self._mission_msg_sent: str | None = None
         self.clock = clock
         self.persist = eventlog.enabled() if persist is None else persist
@@ -530,7 +536,7 @@ class Logbook:
             "experiment": (s or {}).get("experiment"), "t_start": t, "t_end": None, "start_reason": reason,
             "end_reason": None, "operator": operator, "robots": list((s or {}).get("robots") or []), "goals": [],
             "chat_from": pull, "reloc": {r: v["state"] for r, v in self.reloc.items()},
-            "run_ids": {eventlog.CONTEXT.machine: eventlog.CONTEXT.run_id},
+            "run_ids": {eventlog.CONTEXT.machine: eventlog.CONTEXT.run_id, **self._run_ids()},
         }  # fmt: skip
         eventlog.set_ids(mission_id=mid)
         self._emit("mission.start", {"mission_id": mid, "name": name, "reason": reason, "operator": operator,
@@ -545,6 +551,15 @@ class Logbook:
             except OSError as e:
                 log.warning("mission reloc.json: %s", e)
         self._save_pointer()
+
+    def _run_ids(self) -> dict:
+        if self.run_ids_fn is None:
+            return {}
+        try:
+            return dict(self.run_ids_fn() or {})
+        except Exception:  # noqa: BLE001
+            log.exception("mission run ids")
+            return {}
 
     def _edge(self, why: str) -> None:
         if self.on_mission_edge is not None:
@@ -565,19 +580,29 @@ class Logbook:
         m = self.mission
         t = self.clock()
         m.update(state="ended", t_end=t, end_reason=reason)
+        m["run_ids"] = {**(m.get("run_ids") or {}), **self._run_ids()}
         if operator:
             m["ended_by"] = operator
         self._emit("mission.end", {"mission_id": m["mission_id"], "reason": reason, "operator": operator,
                                    "duration_s": round(t - m["t_start"], 1), "goals": list(m["goals"])})  # fmt: skip
         self._save_mission()
         self._edge("mission.end")
+        mdir = self.mission_dir()
         self.recent.append(dict(m))
         self.recent = self.recent[-20:]
         self.mission = None
         self.last_mission_end = t
         eventlog.set_ids(mission_id=None)
         self._save_pointer()
+        if self.on_mission_end is not None and mdir is not None:
+            threading.Thread(target=self._ended, args=(dict(m), mdir), name="mission-end", daemon=True).start()
         return m
+
+    def _ended(self, m: dict, mdir) -> None:
+        try:
+            self.on_mission_end(m, mdir)
+        except Exception:  # noqa: BLE001
+            log.exception("mission end hook")
 
     def _save_mission(self) -> None:
         d = self.mission_dir()

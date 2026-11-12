@@ -88,6 +88,7 @@ class Services:
     manipulation: ManipulationApprovalService | None = None
     logbook: object = None  # logbook.Logbook: sessions, relocalization gate, missions
     hub_tap: object = None  # eventtap.HubTap
+    collector: object = None  # mission_log.collector.Collector
 
     def start(self) -> None:
         if self.settings.fleet_poll:
@@ -104,9 +105,13 @@ class Services:
         if self.logbook is not None:
             self.logbook.start(_active_experiment(self))
             self.logbook.publish_mission(force=True)  # the ticker retries until ROS is up
+            if self.collector is not None and self.settings.mission_log:
+                # missions an earlier console left pending / deferred: keep retrying
+                self.collector.watch(pathlib.Path(self.logbook.base_dir()).glob("missions/*"))
 
     def stop(self) -> None:
         for svc in (
+            self.collector,
             self.logbook,
             self.missions,
             self.quad,
@@ -237,6 +242,112 @@ def wire_logbook(svc) -> None:
     svc.hub_tap = HubTap()
     svc.hub.taps.append(svc.hub_tap)
     lb.on_mission_edge = lambda why: [svc.hub_tap.clock_offset(r, why=why) for r in list(svc.hub_tap.link)]
+    lb.run_ids_fn = lambda: session_run_ids(svc)
+    svc.collector = make_collector(svc)
+    lb.on_mission_end = lambda m, mdir: on_mission_end(svc, m, mdir)
+
+
+def session_run_ids(svc) -> dict:
+    """{machine: [run_id]} of the open session: the base experiment's runs of this
+    session (run_info.json) and the run each robot's fleetlink agent reports."""
+    import pathlib
+
+    from .mission_log import read_json
+
+    lb = svc.logbook
+    sid = ((lb.session or {}) if lb is not None else {}).get("session_id")
+    out: dict = {}
+    if lb is not None and sid:
+        base = []
+        for p in sorted(pathlib.Path(lb.base_dir()).glob("runs/*/run_info.json")):
+            info = read_json(p) or {}
+            if info.get("session_id") == sid:
+                base.append(info.get("run_id") or p.parent.name)
+        if base:
+            out["base"] = base
+    for robot, run in dict(getattr(svc.hub_tap, "runs", {}) or {}).items():
+        if run.get("run_id") and (not sid or not run.get("session_id") or run.get("session_id") == sid):
+            out[robot] = [run["run_id"]]
+    return out
+
+
+def _executing_robots(svc) -> list[str]:
+    """Robots executing a goal now (the collector waits for them)."""
+    try:
+        goals = svc.ros.goals.recent(50) if svc.ros is not None else []
+    except Exception:  # noqa: BLE001
+        return []
+    busy = set()
+    for g in goals:
+        for r, v in (g.get("robots") or {}).items():
+            if v.get("stage") == "executing":
+                busy.add(r)
+    return sorted(busy)
+
+
+def _scene_run_read(svc):
+    """Read-only Cypher on the base map (the planner's Neo4j), or None."""
+    from . import cypher_tools
+
+    def run_read(q):
+        src = None
+        want = f"neo4j:{svc.settings.live_neo4j}" if svc.settings.live_neo4j else None
+        for s in svc.graph.list() if svc.graph is not None else []:
+            if s.get("kind") == "neo4j" and (want is None or s.get("id") == want):
+                src = svc.graph.get(s["id"])
+                break
+        if src is None:
+            return {"error": "no Neo4j map is connected"}
+        return cypher_tools.run_read(src, q, max_rows=20000)
+
+    return run_read
+
+
+def make_collector(svc):
+    from . import eventlog
+    from .mission_log.collector import Collector
+
+    s = svc.settings
+
+    def endpoint(name):
+        from .routes.maps import _endpoint
+
+        return _endpoint(svc, name)
+
+    def on_change(mid, st):
+        try:
+            svc.hub.publish("missions/collect", {"mission_id": mid, "state": st.get("state"),
+                                                 "machines": {k: v.get("state") for k, v in st["machines"].items()}})  # fmt: skip
+        except Exception:  # noqa: BLE001
+            pass
+
+    helpers = svc.helpers
+    return Collector(
+        ssh=getattr(helpers, "ssh_cmd", None), rsync=getattr(helpers, "rsync_transfer", None), endpoint=endpoint,
+        output_root=s.output_root, executing=lambda: _executing_robots(svc), run_read=_scene_run_read(svc),
+        live_root=eventlog.root, settle_s=s.collect_settle_s, bwlimit_kbps=s.collect_bwlimit_kbps,
+        on_change=on_change,
+    )  # fmt: skip
+
+
+def on_mission_end(svc, mission: dict, mdir) -> None:
+    """After mission.end: the base DSG snapshot (dsg_saver -> dsg_end.json), then
+    the collect job (unless --no-mission-collect)."""
+    from . import eventlog
+
+    ns = svc.settings.planner_ns
+    if ns and svc.ros is not None and getattr(svc.ros, "available", False):
+        path = str(pathlib.Path(mdir) / "dsg_end.json")
+        try:
+            res = svc.ros.call_service(f"/{ns}/dsg_saver/save_dsg", "dcist_launch_system_msgs/srv/SaveDsg",
+                                       {"save_path": path, "include_mesh": False}, timeout=60)  # fmt: skip
+            ok = bool((res or {}).get("success"))
+        except Exception as e:  # noqa: BLE001 — no dsg_saver in this session
+            ok, res = False, {"error": str(e)}
+        eventlog.emit("console", "mission.dsg_saved", {"mission_id": mission.get("mission_id"), "ok": ok,
+                                                        "path": path, "error": (res or {}).get("error")})  # fmt: skip
+    if svc.settings.mission_collect and svc.collector is not None and svc.settings.mission_log:
+        svc.collector.collect(mdir, auto=True)
 
 
 def _live_target(svc):
@@ -434,6 +545,7 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
         manipulation,
         maps,
         mission,
+        mission_records,
         network,
         plan,
         quad,
@@ -443,12 +555,11 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
         terminal,
         ws,
     )
-
     from .routes import logbook as logbook_routes
 
     for mod in (fleet, launch, jobs, network, maps, graph, plan, live, chat, sam3, teleop, terminal,
                 geo, mission, quad, edit, change_detection, scene_repair, manipulation, logbook_routes,
-                ws):  # fmt: skip
+                mission_records, ws):  # fmt: skip
         app.include_router(mod.router)
     app.include_router(live.robots_router)
 
