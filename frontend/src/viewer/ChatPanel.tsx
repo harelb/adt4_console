@@ -40,7 +40,7 @@ export type ChatItem =
   | {type: "user"; text: string; note?: boolean}
   | {type: "text"; text: string}
   | {type: "tool"; name: string; args: unknown; result: unknown}
-  | {type: "goal"; kind: string; body: Record<string, unknown>; robot?: string | null; team?: string[] | null; replaces?: boolean; superseded?: boolean; sent?: {tone: SendTone; text: string}; track?: string}
+  | {type: "goal"; kind: string; body: Record<string, unknown>; robot?: string | null; team?: string[] | null; warning?: string | null; replaces?: boolean; superseded?: boolean; sent?: {tone: SendTone; text: string}; track?: string}
   | {type: "error"; text: string}
   | MissionCardItem
   | CypherWrite
@@ -171,6 +171,7 @@ export function toChatItem(o: Record<string, unknown>): ChatItem | null {
         body: (o.body as Record<string, unknown>) ?? {},
         robot: typeof o.robot === "string" ? o.robot : null,
         team: Array.isArray(o.team) ? o.team.map(String) : null,
+        warning: typeof o.warning === "string" ? o.warning : null,
         replaces: o.replaces === true,
       };
     case "error":
@@ -1104,7 +1105,7 @@ function ImagesCard({it}: {it: ImagesItem}) {
 }
 
 
-function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"}>; robot: string | null; src: string | null; onSend: () => void}) {
+export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"}>; robot: string | null; src: string | null; onSend: () => void}) {
   const b = it.body as {goal?: string; points?: string[]; command?: string; engine?: string; constraints?: {predicate: string; symbols: string[]}[]};
   const sent = it.sent;
   const {engines, engine: chosen, loaded} = useEngines();
@@ -1159,7 +1160,12 @@ function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"
         </span>
       </div>
       {it.superseded && <div className="small tone-warn">replaced by the combined goal below (one goal covers the whole team)</div>}
-      {b.goal && <pre className="mono small">{b.goal}</pre>}
+      {it.warning && (
+        <div className="small tone-warn" data-testid="goal-warning">
+          ⚠ {it.warning}
+        </div>
+      )}
+      {b.goal && <pre className="mono small goal-text">{b.goal}</pre>}
       {b.points && <div className="mono small">{b.points.join(" → ")}</div>}
       {b.command && <div className="small">“{b.command}”</div>}
       {b.constraints && b.constraints.length > 0 && (

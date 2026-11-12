@@ -1028,6 +1028,16 @@ class ChatService:
             "\nFleet roster (platform from the fleet topology; robot names are these, "
             "not platform names):\n" + "\n".join(lines)
         )
+        online = [r["robot"] for r in rows if r["online"] is True]
+        offline = [r["robot"] for r in rows if r["online"] is False]
+        if offline:
+            # availability facts only; the goal rules themselves come from heracles_agents
+            text += (
+                f"\nThe team now (online, connected): {', '.join(online) or 'none'}. "
+                f"Offline — do not assign: {', '.join(offline)}. \"All robots\", \"the team\", "
+                "\"both robots\" and \"every robot\" mean the online robots; never put an offline "
+                "robot in a goal or use-robots unless the operator names it."
+            )
         goals = getattr(self.ros, "goals", None)
         recent = goals.summary_lines(3) if goals is not None else []
         if recent:
@@ -1120,7 +1130,7 @@ class ChatService:
                 body = {"points": list(args.get("points") or [])}
             target = str(args.get("robot") or "").strip() or robot
             if kind == "pddl":
-                return self._propose_team_goal(body, target, src)
+                return self._propose_team_goal(body, target, src, message)
             goal = {"type": "goal", "kind": kind, "body": body, "robot": target}
             return [goal], {
                 "proposed": True,
@@ -1171,14 +1181,19 @@ class ChatService:
             log.warning("goal check skipped (%s): %s", csrc.id, e)
             return ""
 
-    def _propose_team_goal(self, body, target, src=None):
+    def _propose_team_goal(self, body, target, src=None, message: str = ""):
         """A PDDL proposal: one team goal. It is sent once, through ``via`` (a robot
         it names, else the selected robot; goal_manager plans the whole team), and
         the card lists the team it may use. A goal heracles_agents' goal check finds
         wrong on the map is not proposed: the error goes back to the model. A second
         PDDL goal in the same reply would preempt the first when both are sent, so it
         is refused unless it keeps every task of the first (then it replaces that
-        proposal)."""
+        proposal).
+
+        Offline robots (fleetlink not connected: :func:`fleet_roster`) are never
+        on the team: a goal naming one (a conjunct or use-robots) is NOT PROPOSED,
+        unless the operator's own ``message`` names that robot; then the card
+        carries a warning."""
         from .ros_bridge import TEAM_TASK, goal_named_robots, is_team_goal, use_robots
 
         goal = str(body.get("goal") or "")
@@ -1186,6 +1201,20 @@ class ChatService:
             return [], {
                 "error": f"NOT PROPOSED: PDDL goals are off in this console ({self.goal_prompts_error}). "
                 "Tell the operator; goto / tsp / language goals still work."
+            }
+        roster = fleet_roster(self.ros, self.live)
+        offline = {r["robot"] for r in roster if r["online"] is False}
+        online = [r["robot"] for r in roster if r["online"] is True]
+        named = goal_named_robots(goal)
+        allowed = use_robots(body.get("constraints"))
+        asked = operator_named_robots(message, offline)
+        bad = [r for r in dict.fromkeys(allowed + named) if r in offline and r not in asked]
+        if bad:
+            return [], {
+                "error": f"NOT PROPOSED: {', '.join(bad)} {'is' if len(bad) == 1 else 'are'} offline "
+                f"(not connected); online robots: {', '.join(online) or 'none'}. Give the tasks to "
+                "the online robots only (\"all robots\" / \"the team\" means the online robots) "
+                "and call propose_goal again."
             }
         problems = self._goal_problems(goal, body.get("constraints"), src)
         if problems:
@@ -1209,26 +1238,36 @@ class ChatService:
             replaces = True
         if earlier is not None:
             earlier.append(goal)
-        named = goal_named_robots(goal)
-        allowed = use_robots(body.get("constraints"))
         team = list(dict.fromkeys(allowed + named))
         unnamed = bool(TEAM_TASK.search(goal)) and not allowed
         if unnamed:
             # robot-free tasks without use-robots: any robot of the fleet may get them
-            for r in fleet_roster(self.ros, self.live):
-                if r["robot"] not in team:
+            for r in roster:
+                if r["robot"] not in team and r["robot"] not in offline:
                     team.append(r["robot"])
+        # the card's team (and "Send to team (...)") is the online robots only;
+        # an offline robot the operator named themselves stays in the goal, flagged
+        warned = [r for r in team if r in offline]
+        team = [r for r in team if r not in offline]
         if team and target not in team:
             target = (allowed or named or team)[0]
+            if target in offline:
+                target = team[0]
         card = {"type": "goal", "kind": "pddl", "body": body, "robot": target}
         if is_team_goal(goal, body.get("constraints")):
             card["team"] = team
+        if warned:
+            card["warning"] = (f"{', '.join(warned)} {'is' if len(warned) == 1 else 'are'} offline "
+                               "(not connected): its tasks wait until it connects")  # fmt: skip
         if replaces:
             card["replaces"] = True
         note = "The operator approves and sends it once, to the whole team."
         if replaces:
             note += " It replaces the goal proposed earlier in this reply."
-        return [card], {"proposed": True, "note": note, "team": team, "sent_through": target}
+        out = {"proposed": True, "note": note, "team": team, "sent_through": target}
+        if warned:
+            out["warning"] = card["warning"]
+        return [card], out
 
     def _show_images(self, symbols, src):
         """``images`` event (URLs the chat renders) + per-node counts for the model."""
@@ -1688,11 +1727,19 @@ PLATFORM_CAN = {
 }
 
 
+def operator_named_robots(message: str, robots) -> set[str]:
+    """The ``robots`` the operator's message names as words."""
+    text = (message or "").lower()
+    return {r for r in robots if re.search(rf"(?<![a-z0-9_-]){re.escape(r.lower())}(?![a-z0-9_-])", text)}
+
+
 def fleet_roster(ros, live) -> list[dict]:
     """[{robot, platform, label, can, online, arm}] for every robot the console
     knows: the fleet topology's robots plus robots live over fleetlink. A
     Spot is assumed to have its arm (the topology has no arm flag); a live
-    camera named hand* confirms it."""
+    camera named hand* confirms it.  ``online``: the fleetlink link is
+    connected (fresh); False when it is not, or when fleetlink reports other
+    robots but never this one; None when the console has no link state at all."""
     names: list[str] = []
     fleet = getattr(ros, "fleet", None) if ros is not None else None
     try:
@@ -1722,7 +1769,10 @@ def fleet_roster(ros, live) -> list[dict]:
         if hand:
             label = "Spot (legged, with arm: hand camera live)"
         link = links.get(r)
-        online = bool(link.get("connected")) if isinstance(link, dict) else None
+        if isinstance(link, dict):
+            online = bool(link.get("connected"))
+        else:
+            online = False if links else None  # fleetlink is up but never heard of it
         out.append({"robot": r, "platform": platform, "label": label, "can": can,
                     "online": online, "arm": platform == "spot"})  # fmt: skip
     return out
