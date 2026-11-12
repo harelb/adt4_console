@@ -16,9 +16,16 @@ router = APIRouter(prefix="/api")
 
 
 class LaunchPlanBody(BaseModel):
-    robots: list[str]
-    session: str
+    # empty with base_only: restart only the base station's session
+    robots: list[str] = []
+    # one session for every robot (old clients; a per-platform preset maps to
+    # each robot's platform); ``sessions`` overrides it per platform
+    session: str = ""
     experiment: str
+    # platform ("spot" | "phoenix") -> robot session for that platform's robots
+    sessions: dict[str, str] = {}
+    # launch only the base station (robots are ignored); remembered by the form
+    base_only: bool = False
     mode: str | None = None
     prior_path: str = ""
     prior_source: str | None = None
@@ -61,11 +68,47 @@ def _plan(body: LaunchPlanBody, topo: dict | None = None):
         except LaunchError as e:
             raise HTTPException(400, str(e)) from None
     fields = body.model_dump()
+    if body.base_only:
+        if not (body.base_station and body.bs_session):
+            raise HTTPException(400, "Base station only: pick a base station and its session")
+        fields.update(robots=[], session="", sessions={})
+    fields["sessions"] = {p: s for p, s in (fields.get("sessions") or {}).items() if s}
     if dataclasses.is_dataclass(LaunchPlan):
-        # older fleet tooling plans have fewer options (no link network / mode)
+        # older fleet tooling plans have fewer options (no link network / mode,
+        # no per-platform sessions)
         known = {f.name for f in dataclasses.fields(LaunchPlan)}
+        if "sessions" not in known and not fields["session"] and fields["sessions"]:
+            fields["session"] = next(iter(fields["sessions"].values()))
         fields = {k: v for k, v in fields.items() if k in known}
     return LaunchPlan(**fields)
+
+
+def _validate(plan, runtime_config, output_root, topo=None):
+    """``launch_workflow.validate_plan`` (base-station-only aware); older fleet
+    tooling has only ``build_robot_commands`` (robots required)."""
+    from dcist_launch_system.fleet import launch_workflow as lw
+
+    fn = getattr(lw, "validate_plan", None)
+    if fn is not None:
+        return fn(plan, runtime_config, output_root, topo)
+    return lw.build_robot_commands(plan, runtime_config, output_root)
+
+
+def platform_choices(topo: dict | None, runtime_config: dict, mode: str) -> dict:
+    """Each robot's platform (spot | phoenix) and the mode's preset session per
+    platform (``fleet_defaults.sessions``), for the per-platform session pickers."""
+    from .. import fleet_compat as fc
+
+    machines = (topo or {}).get("machines") or {}
+    presets = (((topo or {}).get("fleet_defaults") or {}).get("sessions") or {}).get(mode) or {}
+    return {
+        "robot_platforms": {
+            n: fc.platform_of(machines.get(n) or m)
+            for n, m in runtime_config.items()
+            if m.get("role") == "robot"
+        },
+        "platform_sessions": {p: s for p, s in presets.items() if s},
+    }
 
 
 def link_choices(topo: dict | None, active: str | None) -> dict:
@@ -96,9 +139,11 @@ def launch_defaults(request: Request, mode: str = "mapping"):
             fleet.topo, fleet.runtime_config, mode, None, fleet.local_ips
         )
         links = link_choices(fleet.topo, fleet.network)
+        platforms = platform_choices(fleet.topo, fleet.runtime_config, mode)
     return {
         **sel,
         **links,
+        **platforms,
         "mode": mode,
         "sessions": list_sessions(),
         "last": last_launch(svc, sel.get("base_station")),
@@ -179,17 +224,14 @@ def launch_preflight(body: LaunchPlanBody, request: Request):
 
 @router.post("/launch")
 def launch(body: LaunchPlanBody, request: Request):
-    from dcist_launch_system.fleet.launch_workflow import (
-        LaunchError,
-        build_robot_commands,
-        run_launch,
-    )
+    from dcist_launch_system.fleet.launch_workflow import LaunchError, run_launch
 
     svc = services(request)
     fleet = svc.fleet
     plan = _plan(body, fleet.topo)
     try:  # validate up front so the UI gets a 400, not a failed job
-        build_robot_commands(plan, fleet.runtime_config, svc.settings.output_root)
+        with fleet.lock:
+            _validate(plan, fleet.runtime_config, svc.settings.output_root, fleet.topo)
     except LaunchError as e:
         raise HTTPException(400, str(e)) from None
     # the next launch (a relaunch after Stop & save) starts from these choices,
@@ -219,7 +261,11 @@ def launch(body: LaunchPlanBody, request: Request):
                 job.log("warn", f"could not register the prior map in the viewer: {e}")
         return ok
 
-    title = f"Launch {plan.experiment} on {', '.join(plan.robots)}"
+    title = (
+        f"Launch {plan.experiment} on {', '.join(plan.robots)}"
+        if plan.robots
+        else f"Launch {plan.experiment}: base station {plan.base_station} only"
+    )
     job = svc.jobs.start("launch", title, run)
     return {"job_id": job.id}
 
@@ -238,8 +284,9 @@ def attach_prior(svc, plan, job) -> dict | None:
 
     if svc.launch_state is None:
         return None
+    previous = svc.launch_state.get()
     if not plan.prior_path:
-        svc.launch_state.set(new_state(plan, None))
+        svc.launch_state.set(new_state(plan, None, previous))
         return None
     src_name = plan.prior_source or _local_name(svc)
     src = _endpoint(svc, src_name)
@@ -249,7 +296,7 @@ def attach_prior(svc, plan, job) -> dict | None:
         job.log(
             "warn", f"prior {src_name}:{plan.prior_path} not found; viewer not updated"
         )
-        svc.launch_state.set(new_state(plan, None))
+        svc.launch_state.set(new_state(plan, None, previous))
         return None
     ident = entry.get("identity") or {}
     origin = entry.get("origin") or {}
@@ -281,13 +328,13 @@ def attach_prior(svc, plan, job) -> dict | None:
     if prior["local_path"]:
         prior["source_id"] = register_prior(svc.graph, prior)
         prior["pending"] = prior["source_id"] is None
-    svc.launch_state.set(new_state(plan, prior))
+    svc.launch_state.set(new_state(plan, prior, previous))
     if prior["source_id"]:
         svc.graph.notify_version(prior["source_id"], "registered")
         job.log(
             "ok",
             f"viewer: {prior['label']} from {prior['local_path']} + live "
-            + ", ".join(plan.robots),
+            + ", ".join(svc.launch_state.get()["robots"]),
         )
     else:
         job.log(

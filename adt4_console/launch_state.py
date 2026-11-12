@@ -98,10 +98,13 @@ def restore(svc) -> None:
         svc.launch_state.set(state)
 
 
-def new_state(plan, prior: dict | None) -> dict:
+def new_state(plan, prior: dict | None, previous: dict | None = None) -> dict:
+    """``previous``: the active record; a base-station-only launch keeps its
+    robots (they keep running)."""
+    robots = list(plan.robots) or list((previous or {}).get("robots") or [])
     return {
         "experiment": plan.experiment,
-        "robots": list(plan.robots),
+        "robots": robots,
         "mode": plan.mode,
         "base_station": plan.base_station,
         "started_at": time.time(),
@@ -122,7 +125,12 @@ REMEMBERED_FIELDS = (
     "bs_session",
     "link_network",
     "link_mode",
+    "sessions",  # platform -> robot session
+    "base_only",  # launched only the base station
 )
+# kept from the previous launch when a base-station-only launch is remembered,
+# so switching back to robots + base starts from the robots last launched
+ROBOT_FIELDS = ("robots", "session", "sessions")
 NO_BASE = "-"  # key of launches without a base station
 
 
@@ -150,8 +158,13 @@ class LaunchMemory:
     def remember(self, fields: dict) -> dict:
         entry = {k: fields.get(k) for k in REMEMBERED_FIELDS}
         entry["saved_at"] = time.time()
+        entry["base_only"] = bool(entry.get("base_only"))
         key = entry.get("base_station") or NO_BASE
         with self._lock:
+            prev = self._data["by_base"].get(key) or {}
+            if entry["base_only"]:
+                for k in ROBOT_FIELDS:
+                    entry[k] = prev.get(k)
             self._data["by_base"][key] = entry
             self._data["last"] = key
             self._save()
