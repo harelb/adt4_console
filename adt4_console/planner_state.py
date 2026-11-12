@@ -109,6 +109,14 @@ class PlannerState:
             out["error"] = str(e)
         return out
 
+    def holding(self) -> dict:
+        """{robot: [objects]} from the live map's HOLDS edges; {} when the map
+        cannot be read (the chat's roster shows it, so it must never raise)."""
+        try:
+            return dict(self._map_state(self._source())["holding"])
+        except Exception:  # noqa: BLE001 — no Neo4j target
+            return {}
+
     def _roster(self) -> list[str]:
         robots = list(getattr(self.settings, "robots", None) or [])
         if not robots and self.fleet is not None:

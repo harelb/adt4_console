@@ -341,3 +341,48 @@ def test_keep_detections_for_the_fleet_change_detection_reset():
     svc, graph, ros, mod = service(writer=False)
     st = svc.detections_status()
     assert not st["running"] and not st["keep_supported"] and st["reason"]
+
+
+# ---------- "SGET: ..." is an edit request, never a goal (willow, 2026-11-12) ----------
+
+
+def test_an_sget_message_gets_no_goal_tool_and_is_told_it_is_an_edit():
+    """"SGET: move object 52 to t142" was answered with a goal card (move the
+    object with a robot). The prefix means: edit the map."""
+    from adt4_console.chat import SGET_PREFIX, SGET_TURN_NOTE, ChatTurn
+
+    for text in ("SGET: move object 52 to t142", "sget:delete t444", "  SGET : undo"):
+        assert SGET_PREFIX.match(text), text
+    for text in ("move object 52 to t142", "what does SGET: mean?", "target: o5", ""):
+        assert not SGET_PREFIX.match(text), text
+
+    c, _ = chat(writer=True)
+    edit, normal = ChatTurn(edit_only=True), ChatTurn()
+    names = [t["name"] for t in c._tools("neo4j:live", edit)]
+    assert "propose_goal" not in names
+    assert "move_scene_object" in names and "run_cypher" in names
+    assert "propose_goal" in [t["name"] for t in c._tools("neo4j:live", normal)]
+    assert SGET_TURN_NOTE in c._system("neo4j:live", None, edit)
+    assert SGET_TURN_NOTE not in c._system("neo4j:live", None, normal)
+
+    # without the writer the console's own edit tool is what is left; still no goal tool
+    c, _ = chat(writer=False)
+    names = [t["name"] for t in c._tools("neo4j:live", edit)]
+    assert "propose_goal" not in names and "propose_map_edit" in names
+
+
+def test_stream_marks_an_sget_message_as_an_edit_turn(monkeypatch):
+    c, _ = chat(writer=True)
+    seen = []
+    c.llm_client = lambda: object()
+    c._client_provider = "openai"
+    c.ledger = NS(remaining=lambda: 1.0)
+
+    def fake(client, message, robot, src, history, model, turn):
+        seen.append(turn.edit_only)
+        yield {"type": "text", "text": "ok"}
+
+    c._llm_openai = fake
+    list(c.stream("SGET: move object 52 to t142", None, "neo4j:live"))
+    list(c.stream("move object 52 to t142", None, "neo4j:live"))
+    assert seen == [True, False]

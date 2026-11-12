@@ -186,6 +186,19 @@ re-send the tasks of the last one that are still wanted.
 """
 
 
+# A message that starts with this is a scene graph edit request (heracles_agents'
+# plan-repair chat uses the same prefix): the turn offers no goal tool.
+SGET_PREFIX = re.compile(r"\s*sget\s*:", re.I)
+SGET_TURN_NOTE = (
+    "THIS MESSAGE STARTS WITH \"SGET:\": it asks you to EDIT THE SCENE GRAPH, not to move a "
+    "robot. Do not treat it as a goal: propose_goal is not available in this turn. Make the "
+    "change with the map edit tools you have (e.g. \"SGET: move object 52 to t142\" moves the "
+    "object O52 in the map to place t142's position: look the position up, then "
+    "move_scene_object). If no edit tool can make the change, say so; do not offer a goal "
+    "instead unless the operator asks for one."
+)
+
+
 def load_goal_prompts():
     """``(heracles_agents.prompts, scene_graph_edit.goal_problems, None)``, or
     ``(None, None, why)`` when heracles_agents is not importable."""
@@ -347,6 +360,8 @@ class ChatTurn:
     # PDDL goals proposed in this turn (one team goal per request)
     pddl_goals: list = field(default_factory=list)
     history: list | None = None  # propose_mission: the request the thread started with
+    # the message starts with "SGET:": a scene graph edit request, never a goal
+    edit_only: bool = False
 
 
 class ChatService:
@@ -520,6 +535,7 @@ class ChatService:
             # the chat's planner toggle: the engine of the PDDL goals proposed this turn
             engine=engine if engine in GOAL_ENGINES else None,
             history=history,
+            edit_only=bool(SGET_PREFIX.match(message or "")),
         )
         try:
             client = self.llm_client()
@@ -826,6 +842,9 @@ class ChatService:
         else:
             tools = [self._T_FIND_OBJECTS, self._T_SHOW_IMAGES, self._T_SEARCH_IMAGES,
                      self._T_PROPOSE_GOAL]  # fmt: skip
+        if turn is not None and turn.edit_only:
+            # "SGET: ...": an edit request. No goal and no mission tool this turn.
+            return [t for t in tools if t is not self._T_PROPOSE_GOAL]
         ctx = self._mission_ctx(turn)
         if ctx is not None:
             from .mission import llm_planner
@@ -1033,6 +1052,7 @@ class ChatService:
                 + self._roster_text(robot),
             ]  # fmt: skip
             + [self._edit_note()]
+            + ([SGET_TURN_NOTE] if turn is not None and turn.edit_only else [])
             + (
                 [self._mission_prompt(src, turn)]
                 if self._mission_ctx(turn) is not None
@@ -1040,16 +1060,40 @@ class ChatService:
             )
         )
 
+    def _holding(self) -> dict:
+        """{robot: [objects it holds]} as the planner sees it ({} when unknown)."""
+        ps = getattr(self.ros, "planner_state", None)
+        return ps.holding() if ps is not None else {}
+
+    def _put_down_warning(self, goal: str, team: list, scoped: bool) -> str:
+        """The planner puts a held object down where the robot stands before a
+        goal that does not name it: say which robots and objects, for the card.
+        A robot-scoped goal touches only its robots; a team goal, every robot."""
+        words = set(re.findall(r"[a-z0-9_]+", goal.lower()))
+        parts = [
+            f"{r} is holding {', '.join(objs)}"
+            for r, held in sorted(self._holding().items())
+            if (not scoped or r in team) and (objs := [o for o in held if o.lower() not in words])
+        ]
+        if not parts:
+            return ""
+        return ("; ".join(parts) + ": this goal does not name it, so it is put down where the robot "
+                "stands before the plan starts. To carry it, use object-placed-by (or keep holding in the goal)")  # fmt: skip
+
     def _roster_text(self, selected: str | None = None) -> str:
         """" Fleet roster: ..." for the system prompt ("" without robots)."""
         rows = fleet_roster(self.ros, self.live)
         if not rows:
             return ""
+        holding = self._holding()
         lines = []
         for r in rows:
             line = f"- {r['robot']}: {r['label']} — {r['can']}"
             if r["online"] is not None:
                 line += "; online" if r["online"] else "; offline"
+            if holding.get(r["robot"]):
+                # the planner puts a held object down before a goal that does not name it
+                line += f"; HOLDING {', '.join(holding[r['robot']])}"
             if r["robot"] == selected:
                 line += " (selected)"
             lines.append(line)
@@ -1300,13 +1344,16 @@ class ChatService:
         if warned:
             card["warning"] = (f"{', '.join(warned)} {'is' if len(warned) == 1 else 'are'} offline "
                                "(not connected): its tasks wait until it connects")  # fmt: skip
+        put_down = self._put_down_warning(goal, team, scoped=not unnamed)
+        if put_down:
+            card["warning"] = "; ".join(x for x in (card.get("warning"), put_down) if x)
         if replaces:
             card["replaces"] = True
         note = "The operator approves and sends it once, to the whole team."
         if replaces:
             note += " It replaces the goal proposed earlier in this reply."
         out = {"proposed": True, "note": note, "team": team, "sent_through": target}
-        if warned:
+        if card.get("warning"):
             out["warning"] = card["warning"]
         return [card], out
 

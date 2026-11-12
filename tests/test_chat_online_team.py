@@ -142,3 +142,61 @@ def test_all_robots_without_use_robots_keeps_the_offline_husky_off_the_team():
     [card], out = propose(c, "(and (visited-object o4) (visited-object o8))", "all robots visit the trash")
     assert not card["body"].get("constraints")
     assert "gauss" not in card["team"] and card["team"] == ["euclid", "hamilton"]
+
+
+def test_the_roster_says_what_each_robot_holds():
+    """willow, 2026-11-12: hamilton held O58 and was told to go to a place; the
+    goal did not name O58, so the planner put it down first. The chat can only
+    ask about it if it knows who holds what."""
+    from types import SimpleNamespace as NS
+
+    c = chat()
+    roster = [x for x in c._system(None, "euclid").splitlines() if x.startswith("- ") and ": Spot" in x]
+    assert roster and not any("; HOLDING" in x for x in roster)  # no planner state: nothing claimed
+    c.ros.planner_state = NS(holding=lambda: {"hamilton": ["O58"]})
+    text = c._system(None, "euclid")
+    hamilton = next(x for x in text.splitlines() if x.startswith("- hamilton:"))
+    assert hamilton.endswith("; HOLDING O58")
+    euclid = next(x for x in text.splitlines() if x.startswith("- euclid:"))
+    assert "HOLDING" not in euclid
+
+
+def test_planner_state_holding_never_raises():
+    from adt4_console.planner_state import PlannerState
+
+    class Maps:
+        def target(self):
+            raise LookupError("no Neo4j target")
+
+    assert PlannerState(None, None, Maps()).holding() == {}
+    rows = [{"robot": "hamilton", "object": "O58"}]
+    src = type("S", (), {"id": "live", "query": lambda self, q: rows if "HOLDS" in q else []})()
+    assert PlannerState(None, None, type("M", (), {"target": lambda self: src})()).holding() == {"hamilton": ["O58"]}
+
+
+@needs_heracles_agents
+def test_a_goal_that_does_not_name_a_held_object_gets_a_warning_on_the_card():
+    from types import SimpleNamespace as NS
+
+    def held(c):
+        c.ros.planner_state = NS(holding=lambda: {"hamilton": ["O58"]})
+        return c
+
+    # hamilton holds O58 and is only told to go somewhere: warned
+    [card], out = propose(held(chat()), "(visited-object-by hamilton o31)", "hamilton go to O31")
+    assert card["warning"].startswith("hamilton is holding O58: this goal does not name it")
+    assert "put down where the robot stands" in card["warning"] and out["warning"] == card["warning"]
+    # the goal carries it: no warning
+    [card], out = propose(held(chat()), "(object-placed-by hamilton o58 t7)", "hamilton, take it to t7")
+    assert "warning" not in card and "warning" not in out
+    [card], _ = propose(held(chat()), "(and (holding hamilton o58) (visited-object-by hamilton o31))", "")
+    assert "warning" not in card
+    # a goal for another robot leaves hamilton and its object alone: no warning
+    [card], _ = propose(held(chat()), "(visited-object-by euclid o31)", "euclid go to O31")
+    assert "warning" not in card
+    # a team goal may take any robot: warned
+    [card], _ = propose(held(chat()), "(visited-object o31)", "someone visit O31")
+    assert "hamilton is holding O58" in card["warning"]
+    # nobody holds anything: no warning
+    [card], _ = propose(chat(), "(visited-object-by hamilton o31)", "hamilton go to O31")
+    assert "warning" not in card
