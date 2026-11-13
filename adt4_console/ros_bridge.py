@@ -1496,12 +1496,20 @@ class RosBridge:
         if g is None:
             from .goal_tracker import GoalTracker
 
-            g = self.__dict__["_goals"] = GoalTracker(publish=self._publish_track)
+            g = self.__dict__["_goals"] = GoalTracker(
+                publish=self._publish_track, notify=self._publish_goal_event
+            )
         return g
 
     def _publish_track(self, gid: str, view: dict) -> None:
         if getattr(self, "hub", None) is not None:
             self.hub.publish(f"goal_track/{gid}", view)
+
+    def _publish_goal_event(self, ev: dict) -> None:
+        """A robot's part of a goal ended (reached / failed / preempted): one
+        ``goal_event`` frame (the console's toast and chat line)."""
+        if getattr(self, "hub", None) is not None:
+            self.hub.publish("goal_event", ev)
 
     @_logged_callback
     def _on_repair_alert(self, default_robot, kind: str, text: str) -> None:
