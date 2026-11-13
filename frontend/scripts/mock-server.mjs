@@ -649,10 +649,58 @@ route("POST", "/api/robots/([^/]+)/executor/(pause|resume)", (q, r, m) => {
 });
 route("GET", "/api/robots/([^/]+)/plan", (q, r, m) => (ROS ? json(r, 200, plans[m[1]] ?? {goals: [], plan: null, results: [], llm: []}) : noRos(r)));
 
+// A team PDDL goal (one long line, as the planner writes it) for the chat's goal
+// card: "pddl" in the message. Preview plans it with preview_pddl below.
+const MOCK_PDDL_GOAL =
+  "(and (visited-place euclid p1042) (visited-place hamilton p1187) (visited-object-by euclid O21) (visited-object-by hamilton O37) (object-in-region O102 R4) (holding-by hamilton O55) (visited-region-by euclid regionnorthwestcourtyardlawnnumbertwo))";
+route("POST", "/api/missions/plan/preview_pddl", async (q, r) => {
+  const b = await readBody(q);
+  const names = (b.robots ?? []).map(x => x.name);
+  const routes = Object.fromEntries(
+    names.map((n, k) => [
+      n,
+      [
+        [k * 3, 0],
+        [k * 3 + 4, 2],
+        [k * 3 + 8, -1],
+      ],
+    ]),
+  );
+  json(r, 200, {
+    routes,
+    driven_m: Object.fromEntries(names.map(n => [n, 9.4])),
+    actions: names.flatMap(n => [{robot: n, action: "goto p1"}, {robot: n, action: "inspect O21"}]),
+    robots: names,
+    ground_s: 0.4,
+    solve_s: 0.8,
+    pois: 6,
+    engine: "fast_downward",
+  });
+});
 route("POST", "/api/chat", async (q, r) => {
   const b = await readBody(q);
   r.writeHead(200, {"Content-Type": "application/x-ndjson", "Cache-Control": "no-store"});
   const words = String(b.message ?? "").toLowerCase();
+  if (words.includes("pddl")) {
+    for (const l of [
+      {type: "text", text: `Both Spots split the visits; hamilton picks up O55. The goal:\n${MOCK_PDDL_GOAL}`},
+      {
+        type: "tool",
+        name: "plan_ground_mission",
+        args: {pddl_goal: MOCK_PDDL_GOAL, engine: "fast_downward"},
+        result: {
+          error: `unknown symbol in ${MOCK_PDDL_GOAL}`,
+          planner_log: {planner: "fast_downward", digest: "goal unreachable", log: [`Translating task: ${MOCK_PDDL_GOAL}`, "Search stopped without finding a solution."], problem_file: "~/adt4_output/omniplanner/pddl_problem_2026-11-13T17-20-05_regionnorthwestcourtyardlawnnumbertwo.pddl"},
+        },
+      },
+      {type: "goal", kind: "pddl", body: {goal: MOCK_PDDL_GOAL}, robot: "euclid", team: ["euclid", "hamilton"]},
+      {type: "done"},
+    ]) {
+      r.write(JSON.stringify(l) + "\n");
+      await new Promise(res => setTimeout(res, 120));
+    }
+    return r.end();
+  }
   const hit = [...prior.nodes.values()].find(n => n.layer === 2 && n.part === 0 && words.includes(prior.labelspaces["2/0"][String(n.label)] ?? "\u0000"));
   const lines = [
     {type: "text", text: "Looking for "},
