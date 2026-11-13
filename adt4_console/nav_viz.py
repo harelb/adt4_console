@@ -245,11 +245,13 @@ def utm_zone_epsg(lat: float, lon: float) -> int:
 
 
 class FixToMap:
-    """lat/lon -> map x/y: the map's GPS anchor (``GeoService.default_anchor``)
-    when there is one, else ``ADT4_ORIGIN_UTM``; None when neither works."""
+    """lat/lon -> map x/y: the map's saved GPS anchor (``GeoService.default_anchor``)
+    when there is one, else ``ADT4_ORIGIN_UTM``, else the live anchor estimated
+    from the robots (``live_anchor``); None when none works."""
 
-    def __init__(self, geo=None, env=None):
+    def __init__(self, geo=None, env=None, live=None):
         self.geo = geo
+        self.live = live
         self.origin = origin_utm_from_env(env)
         self._origin_anchor = None
 
@@ -270,6 +272,12 @@ class FixToMap:
             if self._origin_anchor is None or self._origin_anchor.epsg != epsg:
                 self._origin_anchor = GeoAnchor(epsg, 0.0, self.origin)
             a, via = self._origin_anchor, "origin_utm"
+        if a is None and self.live is not None:
+            la = self.live.anchor()
+            if la:
+                from .geo import GeoAnchor
+
+                a, via = GeoAnchor(la["epsg"], la["yaw"], la["t"]), "live"
         if a is None:
             return None, None
         try:
@@ -288,12 +296,15 @@ class NavViz:
     (``RosBridge.nav_subscribe`` / ``nav_unsubscribe``); tests pass fakes."""
 
     def __init__(self, subscribe, unsubscribe, platform_of, hub=None, to_map=None,
-                 clock=time.monotonic, wall=time.time):  # fmt: skip
+                 clock=time.monotonic, wall=time.time, pose_of=None, live_anchor=None):  # fmt: skip
         self._subscribe = subscribe
         self._unsubscribe = unsubscribe
         self._platform_of = platform_of
         self.hub = hub
         self.to_map = to_map or FixToMap()
+        # robot -> its relocalized (x, y) in the map frame, or None
+        self.pose_of = pose_of
+        self.live_anchor = live_anchor
         self.clock = clock
         self.wall = wall
         self._lock = threading.Lock()
@@ -432,8 +443,10 @@ class NavViz:
         def cb(msg):
             try:
                 d = fix_dict(msg)
-                d["map"], d["map_via"] = self.to_map(d["lat"], d["lon"])
                 d["t"] = self.wall()
+                if self.live_anchor is not None and self.pose_of is not None:
+                    self.live_anchor.add(robot, d, self.pose_of(robot))
+                d["map"], d["map_via"] = self.to_map(d["lat"], d["lon"])
                 with self._lock:
                     self._gps[robot] = d
                 self._publish(robot, "gps")

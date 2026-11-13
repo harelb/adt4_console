@@ -13,7 +13,11 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# the fit is shared with the console's live anchor (adt4_console/geo_fit.py)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from geo_common import lonlat_to_utm, utm_to_lonlat  # noqa: E402
+
+from adt4_console.geo_fit import fit, residuals, umeyama2d  # noqa: E402,F401
 
 
 def find_mcap(p):
@@ -93,33 +97,6 @@ def pair_up(fixes, traj, lever, max_dt, min_status, shift_s=0.0):
         up.append([e, n])
         zs.append(p[2])
     return np.array(mp), np.array(up), np.array(zs)
-
-
-def umeyama2d(src, dst, with_scale=False):
-    mu_s, mu_d = src.mean(0), dst.mean(0)
-    s, d = src - mu_s, dst - mu_d
-    H = s.T @ d / len(src)
-    U, S, Vt = np.linalg.svd(H)
-    D = np.diag([1, np.sign(np.linalg.det(Vt.T @ U.T))])
-    R = Vt.T @ D @ U.T
-    sc = (S * np.diag(D)).sum() / (s**2).sum(1).mean() if with_scale else 1.0
-    t = mu_d - sc * R @ mu_s
-    return R, t, sc
-
-
-def residuals(R, t, sc, src, dst):
-    return np.linalg.norm((sc * (R @ src.T)).T + t - dst, axis=1)
-
-
-def fit(mp, up, reject=True):
-    R, t, sc = umeyama2d(mp[:, :2], up)
-    r = residuals(R, t, sc, mp[:, :2], up)
-    keep = np.ones(len(r), bool)
-    if reject:
-        keep = r <= max(3 * np.median(r), 0.5)
-        R, t, sc = umeyama2d(mp[keep, :2], up[keep])
-        r = residuals(R, t, sc, mp[keep, :2], up[keep])
-    return R, t, r, keep
 
 
 def main():

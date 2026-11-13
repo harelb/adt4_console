@@ -42,7 +42,8 @@ export interface GpsFix {
   stamp: number | null;
   /** map x/y, null when the console has no GPS anchor / ADT4_ORIGIN_UTM */
   map: [number, number] | null;
-  map_via: "anchor" | "origin_utm" | null;
+  /** anchor = the map's saved GPS anchor, origin_utm = ADT4_ORIGIN_UTM, live = the live estimate */
+  map_via: "anchor" | "origin_utm" | "live" | null;
   t: number;
 }
 
@@ -103,7 +104,7 @@ export function parseGps(d: unknown): GpsFix | null {
     frame: String(g.frame ?? ""),
     stamp: finite(g.stamp) ? g.stamp : null,
     map,
-    map_via: g.map_via === "anchor" || g.map_via === "origin_utm" ? g.map_via : null,
+    map_via: g.map_via === "anchor" || g.map_via === "origin_utm" || g.map_via === "live" ? g.map_via : null,
     t: finite(g.t) ? g.t : 0,
   };
 }

@@ -305,10 +305,45 @@ export async function loadGeo(src: string | null): Promise<void> {
     const b = world?.bounds;
     const cx = b ? (b[0] + b[2]) / 2 : 0;
     const cy = b ? (b[1] + b[3]) / 2 : 0;
-    const r = await getJSON<{anchor: GeoInfo["anchor"] | null; affine?: GeoInfo["affine"]}>(`api/geo/anchor/${enc(s)}?cx=${cx}&cy=${cy}`);
-    st().set({geo: r.anchor && r.affine ? {anchor: r.anchor, affine: r.affine} : null, geoSrc: s});
+    const r = await getJSON<{anchor: GeoInfo["anchor"] | null; affine?: GeoInfo["affine"]; live?: GeoInfo["live"]}>(`api/geo/anchor/${enc(s)}?cx=${cx}&cy=${cy}`);
+    st().set({geo: r.anchor && r.affine ? {anchor: r.anchor, affine: r.affine, live: r.live ?? null} : null, geoSrc: s});
   } catch (e) {
     st().set({error: `geo: ${errorText(e)}`});
+  }
+}
+
+/** The live anchor (estimated from the robots' GPS while the map has no saved
+ *  one) changed: reload the geo info, at most every LIVE_GEO_RELOAD_MS, and
+ *  only while the shown anchor is not a saved one. Returns the unsubscribe. */
+export const LIVE_GEO_RELOAD_MS = 5000;
+export function bindLiveAnchor(): () => void {
+  let last = 0;
+  let timer: number | undefined;
+  const off = ws.on("geo/live_anchor", () => {
+    const g = st().geo;
+    if (g && !g.live) return; // a saved anchor wins
+    const wait = Math.max(0, last + LIVE_GEO_RELOAD_MS - Date.now());
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      last = Date.now();
+      void loadGeo(st().geoSrc);
+    }, wait);
+  });
+  return () => {
+    off();
+    window.clearTimeout(timer);
+  };
+}
+
+/** Write the live anchor as the map's saved anchor (geo_anchor.json). */
+export async function saveLiveAnchor(): Promise<void> {
+  const src = st().geoSrc;
+  if (!src) return;
+  try {
+    await postJSON("api/geo/live_anchor/save", {src});
+    await loadGeo(src);
+  } catch (e) {
+    st().set({error: `save anchor: ${errorText(e)}`});
   }
 }
 

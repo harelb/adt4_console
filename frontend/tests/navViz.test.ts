@@ -40,3 +40,13 @@ describe("nav_viz payloads", () => {
     expect(gpsTone(parseGps({lat: 1, lon: 2, status: 0, std: [12, 3, 4]})!)).toBe("err");
   });
 });
+
+import {liveAnchorText} from "../src/lib/geo";
+
+describe("live anchor text", () => {
+  it("says where the anchor comes from and whether the heading is known", () => {
+    const base = {rms: 0.3, n: 25, baseline_m: 12.4, robots: ["gauss"]};
+    expect(liveAnchorText({...base, mode: "rigid", heading_known: true})).toBe("live anchor from gauss · 25 fixes · RMS 0.30 m · over 12 m");
+    expect(liveAnchorText({...base, mode: "translation", heading_known: false})).toContain("heading unknown");
+  });
+});
