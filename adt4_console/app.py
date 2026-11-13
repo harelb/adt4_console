@@ -89,6 +89,7 @@ class Services:
     planner_state: object = (
         None  # planner_state.PlannerState: what the planner believes
     )
+    nav_viz: object = None  # nav_viz.NavViz: MPPI / mid-range markers (on demand)
 
     def start(self) -> None:
         if self.settings.fleet_poll:
@@ -105,6 +106,7 @@ class Services:
 
     def stop(self) -> None:
         for svc in (
+            self.nav_viz,
             self.missions,
             self.quad,
             self.teleop,
@@ -160,6 +162,14 @@ def build_services(
         QuadFrame(svc.geo.default_anchor() if settings.quad_cmd_uri or settings.quad_image_uri else None,
                   settings.quad_utm_origin, settings.quad_map_offset),
     )  # fmt: skip
+    from .nav_viz import NavViz
+
+    svc.nav_viz = NavViz(
+        lambda topic, typ, cb: svc.ros.nav_subscribe(topic, typ, cb),
+        lambda sub: svc.ros.nav_unsubscribe(sub),
+        platform_of=lambda robot: svc.ros.platform(robot),
+        hub=hub,
+    )
     svc.missions = MissionService(settings, hub, graph, svc.geo, live, ros, svc.quad)
     chat.missions = svc.missions
     # answers go out through the bridge; the bridge hands requests to the service

@@ -17,6 +17,7 @@ import {DimGroup} from "./DimGroup";
 import {useBackground} from "./background";
 import {contrastFor, readableOn} from "./style";
 import {pathsCleared, useClearedPaths} from "../stores/clearedPaths";
+import {NavVizLegend, NavVizRows} from "./NavVizOverlay";
 
 /** Executor overlay colours derived from a robot's colour. On a light 3D
  *  background (`bg`) the shades are darkened just enough to stay visible. */
@@ -227,6 +228,7 @@ export function LiveOverlaysPanel() {
                 paths: smooth {paths[r].smooth.length} · mlp {paths[r].mlp.length} · target {paths[r].target ? "yes" : "none"}
               </div>
             )}
+            <NavVizRows robot={r} />
           </div>
         );
       })}
@@ -245,6 +247,7 @@ export function LiveOverlaysPanel() {
           <span className="swatch" style={{background: legend.target}} /> MLP target (darker)
         </label>
       </div>
+      <NavVizLegend />
     </section>
   );
 }
