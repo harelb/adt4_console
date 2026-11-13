@@ -16,7 +16,7 @@ from adt4_console.ros_bridge import (
     is_team_goal,
     normalize_constraints,
 )
-from tests.conftest import needs_heracles_agents
+from tests.conftest import _has_grstaps_prompts, needs_heracles_agents
 from tests.test_chat_roster import chat
 from tests.test_goal_tracker import make, plan
 
@@ -42,9 +42,10 @@ def test_prompt_has_the_team_goal_rules():
         '"only X"',
         "(object-in-place o t)",
         "re-send the tasks of the last goal that are still wanted",
-        "engine='grstaps'",
     ):
         assert line in text, line
+    # GRSTAPS-X is optional: named only when heracles_agents has its goal rules
+    assert ("engine='grstaps'" in text) == _has_grstaps_prompts()
     assert "Visit all the chairs with both euclid and hamilton" in text
     assert "NOT two goals, one per robot" in text
     assert "Split the 4 cones among both" in text

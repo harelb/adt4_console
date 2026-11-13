@@ -92,13 +92,13 @@ def test_a_tool_call_on_another_thread_keeps_the_turns_engine_and_guard(tmp_path
         _script("(visited-object-by euclid o2)", "(visited-object-by hamilton o3)"),
     )
     events = _each_step_on_a_new_thread(
-        c.stream("euclid to o2, hamilton to o3", robot="euclid", engine="grstaps")
+        c.stream("euclid to o2, hamilton to o3", robot="euclid", engine="fast_downward")
     )
     cards = _cards(events)
     assert len(cards) == 1, cards  # the second goal is NOT PROPOSED
     assert cards[0]["body"] == {
         "goal": "(visited-object-by euclid o2)",
-        "engine": "grstaps",
+        "engine": "fast_downward",
     }
     transcript = next(e for e in events if e["type"] == "transcript")["items"]
     refused = [i for i in transcript if i.get("role") == "tool" and i["id"] == "g1"]
@@ -109,11 +109,12 @@ def test_a_tool_call_on_another_thread_keeps_the_turns_engine_and_guard(tmp_path
 def test_two_turns_on_one_worker_thread_keep_their_own_engines(tmp_path):
     """Two turns of the app's one ChatService interleave on one threadpool worker:
     each goal gets its own turn's planner toggle (not the turn that started last),
-    and the second turn's goal is not taken for a second goal of the first."""
+    and the second turn's goal is not taken for a second goal of the first.
+    (Fast Downward vs no toggle: GRSTAPS-X is optional.)"""
     (a1, a2), (b1, b2) = _script("(visited-object o2)"), _script("(visited-object o3)")
     c = _chat(tmp_path, [a1, b1, a2, b2])  # the order the steps below ask for them
-    a = c.stream("visit o2", robot="euclid", engine="grstaps")
-    b = c.stream("visit o3", robot="euclid", engine="fast_downward")
+    a = c.stream("visit o2", robot="euclid", engine="fast_downward")
+    b = c.stream("visit o3", robot="euclid")
     out = {id(a): [], id(b): []}
     with ThreadPoolExecutor(max_workers=1) as worker:
         for gen in (a, b):  # each turn's first step: up to its first text
@@ -125,6 +126,6 @@ def test_two_turns_on_one_worker_thread_keep_their_own_engines(tmp_path):
                 except StopIteration:
                     break
     bodies = {k: [card["body"] for card in _cards(v)] for k, v in out.items()}
-    assert bodies[id(a)] == [{"goal": "(visited-object o2)", "engine": "grstaps"}]
+    assert bodies[id(a)] == [{"goal": "(visited-object o2)", "engine": "fast_downward"}]
     # b's goal is not refused as "a second goal in this reply" of a's turn
-    assert bodies[id(b)] == [{"goal": "(visited-object o3)", "engine": "fast_downward"}]
+    assert bodies[id(b)] == [{"goal": "(visited-object o3)"}]

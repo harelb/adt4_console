@@ -12,7 +12,6 @@ import pytest
 from adt4_console.chat import ChatService
 from adt4_console.ros_bridge import (
     COMMANDED_GOAL_TYPE,
-    NO_GRSTAPS,
     RosBridge,
     grstaps_topic_candidates,
 )
@@ -37,6 +36,13 @@ class FakeNode:
 
     def count_subscribers(self, topic):
         return self.graph.get(topic, ((), (), 0))[2]
+
+
+def _chat(rb):
+    """A chat on ``rb`` whose heracles_agents has GRSTAPS-X goal rules."""
+    c = ChatService(NS(llm=False), None, None, rb)
+    c.goal_prompts = NS(ENGINES=("fast_downward", "grstaps"))
+    return c
 
 
 def _bridge(monkeypatch, graph=None, gm_subs=1):
@@ -119,9 +125,8 @@ def test_send_grstaps_without_any_planner_still_refuses(monkeypatch):
 def test_chat_toggle_offers_grstaps_from_the_live_graph(monkeypatch):
     rb, _ = _bridge(monkeypatch, {})
     rb.available = True
-    c = ChatService(NS(llm=False), None, None, rb)
-    gr = {e["id"]: e for e in c.chat_engines()}["grstaps"]
-    assert not gr["available"] and gr["reason"] == NO_GRSTAPS
+    c = _chat(rb)
+    assert [e["id"] for e in c.chat_engines()] == ["fast_downward"]  # not offered
     # the grstaps_repair session starts after the console
     rb.node.graph[GR_TOPIC] = ([CPG], ["goal_manager"], 1)
     rb._plugin_graph.clear()  # (the cache would expire within 3 s)
@@ -214,6 +219,6 @@ def test_grstaps_goal_in_an_fd_session_without_grstaps_is_refused(monkeypatch):
 def test_chat_toggle_marks_the_sessions_plan_repair_engine(monkeypatch):
     rb, _ = _session(monkeypatch, "grstaps")
     rb.available = True
-    c = ChatService(NS(llm=False), None, None, rb)
+    c = _chat(rb)
     eng = {e["id"]: e for e in c.chat_engines()}
     assert eng["grstaps"]["repair"] is True and eng["fast_downward"]["repair"] is False

@@ -179,3 +179,17 @@ needs_heracles_agents = pytest.mark.skipif(
     not _has_goal_prompts(),
     reason="heracles_agents is not importable: PDDL chat goals are off",
 )
+
+
+def _has_grstaps_prompts() -> bool:
+    from adt4_console.chat import load_goal_prompts, prompts_have_grstaps
+
+    return prompts_have_grstaps(load_goal_prompts()[0])
+
+
+# GRSTAPS-X is optional: its chat goal rules are in heracles_agents only when it
+# has the "grstaps" engine (prompts.ENGINES)
+needs_grstaps_prompts = pytest.mark.skipif(
+    not _has_grstaps_prompts(),
+    reason="heracles_agents has no GRSTAPS-X goal rules (GRSTAPS-X is not installed)",
+)

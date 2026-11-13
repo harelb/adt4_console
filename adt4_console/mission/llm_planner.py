@@ -8,6 +8,7 @@ to the model so it can fix them, and a ``mission`` card goes to the operator.
 
 from __future__ import annotations
 
+import copy
 import json
 
 from .model import MAX_AGENTS, Mission
@@ -278,6 +279,24 @@ PLAN_TOOL = {
 }
 
 
+def _fd_only_plan_tool() -> dict:
+    """plan_ground_mission without GRSTAPS-X (not installed / cannot plan here):
+    engine fast_downward only, and no ``before`` (Fast Downward cannot order)."""
+    out = copy.deepcopy(PLAN_TOOL)
+    props = out["input_schema"]["properties"]
+    props["engine"]["enum"] = ["fast_downward"]
+    props["engine"]["description"] = (
+        "fast_downward: shortest routes, visits, inspections, end poses, moving / dragging "
+        "objects (object-in-place)"
+    )
+    pred = props["constraints"]["items"]["properties"]["predicate"]
+    pred["enum"] = [p for p in pred["enum"] if p != "before"]
+    return out
+
+
+PLAN_TOOL_FD = _fd_only_plan_tool()
+
+
 def run_plan_tool(
     args: dict, ctx: dict | None, service, src: str | None, message: str, history=None
 ):
@@ -432,18 +451,25 @@ def context_text(ctx: dict | None, bounds=None, regions=None) -> str:
         ):
             # the planner the operator picked in the chat window
             name = "GRSTAPS-X" if ctx["engine"] == "grstaps" else "Fast Downward"
-            parts.append(
-                f"The operator picked the {name} planner: call plan_ground_mission with engine "
-                f"'{ctx['engine']}'. If the request needs something only the other planner does, say so "
-                "in one line instead of switching"
-                + (
-                    ": an end pose (at-place / in-region) or an or needs Fast Downward."
-                    if ctx["engine"] == "grstaps"
-                    else ": ordering (before), a joint inspection, covering a big region or a drawn mission "
-                    "area (area1, ...) needs GRSTAPS-X. Fast Downward does plan moving and dragging "
-                    "objects (object-in-place)."
-                )  # fmt: skip
-            )
+            if not ctx.get("grstaps"):
+                # Fast Downward is the only planner here (GRSTAPS-X is not installed)
+                parts.append(
+                    "The operator picked the Fast Downward planner: call plan_ground_mission with engine "
+                    "'fast_downward'. If the request cannot be planned with it, say so in one line."
+                )
+            else:
+                parts.append(
+                    f"The operator picked the {name} planner: call plan_ground_mission with engine "
+                    f"'{ctx['engine']}'. If the request needs something only the other planner does, say so "
+                    "in one line instead of switching"
+                    + (
+                        ": an end pose (at-place / in-region) or an or needs Fast Downward."
+                        if ctx["engine"] == "grstaps"
+                        else ": ordering (before), a joint inspection, covering a big region or a drawn mission "
+                        "area (area1, ...) needs GRSTAPS-X. Fast Downward does plan moving and dragging "
+                        "objects (object-in-place)."
+                    )  # fmt: skip
+                )
     roster = ctx.get("roster") or []
     if ctx.get("auto_send"):
         parts.append(

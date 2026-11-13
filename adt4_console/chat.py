@@ -17,6 +17,7 @@ and proposing a goto goal (or, when nothing matches, the same SAM3 search).
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import math
@@ -184,6 +185,17 @@ engine='<engine>' unless the operator asks for the other engine.
 - "Goals sent from this console" below lists the last goals: when the operator adds a task, \
 re-send the tasks of the last one that are still wanted.
 """
+# GRSTAPS-X is optional (not installed, or no GRSTAPS-X planner running): without
+# it the engine note names Fast Downward only
+CONSOLE_GOAL_NOTES_FD_ONLY = re.sub(
+    r"^- engine: .*$",
+    "- engine: Fast Downward plans every robot at once and allocates the tasks; it takes or, "
+    "at-place / at-object (that robot ends there), holding and use-robots. The rules above are "
+    "for <engine>, <engine_why>; propose PDDL goals with engine='<engine>'.",
+    CONSOLE_GOAL_NOTES,
+    count=1,
+    flags=re.M,
+)
 
 
 # A message that starts with this is a scene graph edit request (heracles_agents'
@@ -212,6 +224,29 @@ def load_goal_prompts():
             f"heracles_agents is not importable ({type(e).__name__}: {e})",
         )
     return prompts, goal_problems, None
+
+
+def prompts_have_grstaps(goal_prompts) -> bool:
+    """heracles_agents has GRSTAPS-X goal rules (``"grstaps"`` in its prompts.ENGINES):
+    a heracles_agents without GRSTAPS-X has only Fast Downward's."""
+    return goal_prompts is not None and "grstaps" in tuple(
+        getattr(goal_prompts, "ENGINES", ())
+    )
+
+
+def fd_only_goal_tool(tool: dict) -> dict:
+    """propose_goal without GRSTAPS-X: engine Fast Downward only, no ``before``, and
+    the description without its GRSTAPS-X sentences."""
+    out = copy.deepcopy(tool)
+    desc = out["description"]
+    a = desc.index(" With engine='grstaps'")
+    b = desc.index(" The goal is", a)
+    out["description"] = desc[:a] + desc[b:]
+    props = out["input_schema"]["properties"]
+    props["engine"]["enum"] = ["fast_downward"]
+    pred = props["constraints"]["items"]["properties"]["predicate"]
+    pred["enum"] = [p for p in pred["enum"] if p != "before"]
+    return out
 
 
 def goal_constraints_json(constraints) -> str:
@@ -362,6 +397,9 @@ class ChatTurn:
     history: list | None = None  # propose_mission: the request the thread started with
     # the message starts with "SGET:": a scene graph edit request, never a goal
     edit_only: bool = False
+    # the chat's planner toggle offers GRSTAPS-X this turn (chat_engines); None:
+    # not checked (heracles_agents' GRSTAPS-X rules alone decide)
+    grstaps: bool | None = None
 
 
 class ChatService:
@@ -528,12 +566,20 @@ class ChatService:
                 "grstaps": ok and self._grstaps_ok(),
             }
         history = clean_history(history)
+        engine = engine if engine in GOAL_ENGINES else None
+        grstaps = None
+        if engine == "grstaps" or prompts_have_grstaps(self.goal_prompts):
+            # GRSTAPS-X goals only when the toggle offers it now (installed and running)
+            grstaps = any(e["id"] == "grstaps" for e in self.chat_engines())
+            if engine == "grstaps" and not grstaps:
+                engine = "fast_downward"
         turn = ChatTurn(
             mission=mission_ctx if self.missions is not None else None,
             # GPT-5 / 6 reasoning effort (REASONING_LEVELS; None / "fast": the lowest)
             reasoning=reasoning if reasoning in REASONING_LEVELS else None,
             # the chat's planner toggle: the engine of the PDDL goals proposed this turn
-            engine=engine if engine in GOAL_ENGINES else None,
+            engine=engine,
+            grstaps=grstaps,
             history=history,
             edit_only=bool(SGET_PREFIX.match(message or "")),
         )
@@ -795,6 +841,8 @@ class ChatService:
             "additionalProperties": False,
         },
     }
+    # without GRSTAPS-X (not installed / not running): Fast Downward goals only
+    _T_PROPOSE_GOAL_FD = fd_only_goal_tool(_T_PROPOSE_GOAL)
     _T_FIND_OBJECTS = {
         "name": "find_objects",
         "description": "Search the selected scene graph for objects whose semantic label or "
@@ -845,6 +893,11 @@ class ChatService:
         if turn is not None and turn.edit_only:
             # "SGET: ...": an edit request. No goal and no mission tool this turn.
             return [t for t in tools if t is not self._T_PROPOSE_GOAL]
+        if not self._grstaps_goals(turn):
+            tools = [
+                self._T_PROPOSE_GOAL_FD if t is self._T_PROPOSE_GOAL else t
+                for t in tools
+            ]
         ctx = self._mission_ctx(turn)
         if ctx is not None:
             from .mission import llm_planner
@@ -852,7 +905,11 @@ class ChatService:
             if ctx.get("planner") != "omniplanner":
                 tools.append(llm_planner.TOOL)
             if ctx.get("omniplanner"):
-                tools.append(llm_planner.PLAN_TOOL)
+                tools.append(
+                    llm_planner.PLAN_TOOL
+                    if ctx.get("grstaps")
+                    else llm_planner.PLAN_TOOL_FD
+                )
         return tools
 
     def _omniplanner_ok(self) -> bool:
@@ -909,12 +966,18 @@ class ChatService:
             return None
 
     # ---------------------------------------------------------------- shared
-    def chat_engines(self) -> list[dict]:
-        """The chat's planner toggle: Fast Downward always; GRSTAPS-X only when the
-        base runs it (goal_manager forwards to it, or a GRSTAPS-X plugin is up in
-        the live ROS graph or the console's config)."""
-        from .ros_bridge import NO_GRSTAPS
+    def _grstaps_goals(self, turn: ChatTurn | None = None) -> bool:
+        """GRSTAPS-X goals may be proposed: heracles_agents has its goal rules and
+        (when the turn checked) the chat's planner toggle offers it."""
+        if not prompts_have_grstaps(self.goal_prompts):
+            return False
+        return turn is None or turn.grstaps is not False
 
+    def chat_engines(self) -> list[dict]:
+        """The chat's planner toggle: Fast Downward always; GRSTAPS-X only when it is
+        installed (heracles_agents has its goal rules) and the base runs it
+        (goal_manager forwards to it, or a GRSTAPS-X plugin is up in the live ROS
+        graph or the console's config). Otherwise Fast Downward alone."""
         fd = {
             "id": "fast_downward",
             "label": "Fast Downward",
@@ -923,35 +986,36 @@ class ChatService:
         }
         ros = self.ros
         repair = None  # the engine plan repair (goal_manager) runs in this session
-        if ros is None or not getattr(ros, "available", False):
-            why = "ROS is not running on this console, so it cannot see a GRSTAPS-X planner"
-        else:
+        running = False
+        if ros is not None and getattr(ros, "available", False):
             try:
                 repair = ros.goal_manager_engine()
             except Exception:  # noqa: BLE001 — a ROS graph query; unknown
                 repair = None
-            try:
-                # the live ROS graph decides, not the console's own config: the
-                # planning session (e.g. grstaps_repair) may run another config
-                # and start after the console; grstaps_live is cached briefly
-                live = getattr(ros, "grstaps_live", None)
-                running = (
-                    repair == "grstaps"
-                    or (live is not None and live() is not None)
-                    or ros.find_plugin("grstaps") is not None
-                )
-            except Exception:  # noqa: BLE001 — a ROS graph query; unknown = not offered
-                running = False
-            why = None if running else NO_GRSTAPS
+            if prompts_have_grstaps(self.goal_prompts):
+                try:
+                    # the live ROS graph decides, not the console's own config: the
+                    # planning session may run another config and start after the
+                    # console; grstaps_live is cached briefly
+                    live = getattr(ros, "grstaps_live", None)
+                    running = (
+                        repair == "grstaps"
+                        or (live is not None and live() is not None)
+                        or ros.find_plugin("grstaps") is not None
+                    )
+                except Exception:  # noqa: BLE001 — a ROS graph query; unknown = not offered
+                    running = False
+        # the other engine's goals bypass plan repair (sent to that planner directly)
+        fd["repair"] = repair == "fast_downward"
+        if not running:
+            return [fd]
         gr = {
             "id": "grstaps",
             "label": "GRSTAPS-X",
-            "available": why is None,
-            "reason": why,
+            "available": True,
+            "reason": None,
+            "repair": repair == "grstaps",
         }
-        # the other engine's goals bypass plan repair (sent to that planner directly)
-        fd["repair"] = repair == "fast_downward"
-        gr["repair"] = repair == "grstaps"
         return [fd, gr]
 
     @staticmethod
@@ -964,14 +1028,17 @@ class ChatService:
         else the one the goal manager runs; Fast Downward when unknown."""
         chosen = self._chosen_engine(turn)
         if chosen in GOAL_ENGINES:
-            return chosen
-        ros = self.ros
-        if ros is None or not getattr(ros, "available", False):
-            return "fast_downward"
-        try:
-            engine = ros.goal_manager_engine()
-        except Exception:  # noqa: BLE001 — a ROS graph query; unknown is fine
-            engine = None
+            engine = chosen
+        else:
+            ros = self.ros
+            if ros is None or not getattr(ros, "available", False):
+                return "fast_downward"
+            try:
+                engine = ros.goal_manager_engine()
+            except Exception:  # noqa: BLE001 — a ROS graph query; unknown is fine
+                engine = None
+        if engine == "grstaps" and not self._grstaps_goals(turn):
+            return "fast_downward"  # GRSTAPS-X is not installed (or not offered now)
         return engine if engine in GOAL_ENGINES else "fast_downward"
 
     def _goal_text(self, cypher: bool, turn: ChatTurn | None = None) -> str:
@@ -990,9 +1057,12 @@ class ChatService:
             if self._chosen_engine(turn) in GOAL_ENGINES
             else "the engine the goal manager runs now"
         )
-        notes = CONSOLE_GOAL_NOTES.replace("<engine_why>", why).replace(
-            "<engine>", engine
+        notes = (
+            CONSOLE_GOAL_NOTES
+            if self._grstaps_goals(turn)
+            else CONSOLE_GOAL_NOTES_FD_ONLY
         )
+        notes = notes.replace("<engine_why>", why).replace("<engine>", engine)
         if not cypher:
             notes += ("- No Neo4j database is connected: look ids up with find_objects; the "
                       "Cypher queries above do not apply.\n")  # fmt: skip
@@ -1207,6 +1277,8 @@ class ChatService:
                     body["constraints"] = list(args["constraints"])
                 # the model's engine, else the chat's planner toggle
                 engine = args.get("engine") or self._chosen_engine(turn)
+                if engine == "grstaps" and not self._grstaps_goals(turn):
+                    engine = "fast_downward"  # GRSTAPS-X is not offered
                 if engine:
                     body["engine"] = engine
             else:

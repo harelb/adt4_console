@@ -116,6 +116,26 @@ describe("engine picker", () => {
     });
     expect(useEngines.getState().engine).toBe("fast_downward");
   });
+
+  it("is hidden when GRSTAPS-X is not installed (Fast Downward alone), and a remembered pick falls back", async () => {
+    useEngines.setState({engine: "grstaps"});
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json({default: "fast_downward", engines: [{id: "fast_downward", label: "Fast Downward", available: true, reason: null}]}),
+    );
+    await refreshEngines();
+    expect(useEngines.getState().engine).toBe("fast_downward");
+    const el = render(<EnginePicker />);
+    expect(el.querySelector('[data-testid="engine-picker"]')).toBeNull();
+  });
+
+  it("still shows a lone engine that cannot plan, with the reason", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json({default: "fast_downward", engines: [{id: "fast_downward", label: "Fast Downward", available: false, reason: "Fast Downward is not on PATH"}]}),
+    );
+    await refreshEngines();
+    const el = render(<EnginePicker />);
+    expect(el.querySelector("label.muted")!.getAttribute("title")).toContain("Fast Downward is not on PATH");
+  });
 });
 
 describe("goal images", () => {

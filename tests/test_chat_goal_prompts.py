@@ -16,6 +16,11 @@ from tests.test_chat_roster import chat
 
 prompts = pytest.importorskip("heracles_agents.prompts")
 sge = pytest.importorskip("heracles_agents.scene_graph_edit")
+# GRSTAPS-X is optional: heracles_agents has its goal rules only when it has the engine
+needs_grstaps = pytest.mark.skipif(
+    "grstaps" not in getattr(prompts, "ENGINES", ()),
+    reason="heracles_agents has no GRSTAPS-X goal rules (GRSTAPS-X is not installed)",
+)
 
 CONES = [f"o{i}" for i in range(1, 16)]
 ALL_CONES = "(and " + " ".join(f"(visited-object {o})" for o in CONES) + ")"
@@ -98,6 +103,7 @@ def test_goal_prompt_comes_from_heracles_agents(monkeypatch):
     )  # without Neo4j too
 
 
+@needs_grstaps
 def test_goal_rules_follow_the_goal_managers_engine():
     c = neo4j_chat()
     c.ros.available = True
@@ -254,6 +260,7 @@ def test_image_tools_are_unchanged():
 
 
 # ------------------------------------------------------- planner toggle
+@needs_grstaps
 def test_toggle_engine_sets_the_rules_and_the_proposal(fake_map):
     """The chat's planner toggle (ChatBody.engine) picks the engine's goal rules and
     the engine the proposed goal (and so its card and send) carries."""
@@ -304,27 +311,36 @@ def _turns_of(c):
     return seen
 
 
+@needs_grstaps
 def test_stream_takes_the_toggle_for_the_turn():
     c = chat()
+    c.ros.available = True
+    c.ros.goal_manager_engine = lambda: "grstaps"  # the base runs GRSTAPS-X
     turns = _turns_of(c)
     list(c.stream("hello", "euclid", src="file:none", engine="grstaps"))
     list(c.stream("hello", "euclid", src="file:none", engine="bogus"))
     assert [t.engine for t in turns] == ["grstaps", None]
+    assert turns[0].grstaps is True
 
 
+def test_stream_without_a_grstaps_planner_plans_with_fast_downward():
+    """A stale GRSTAPS-X pick (no GRSTAPS-X planner runs) is a Fast Downward turn."""
+    c = chat()
+    turns = _turns_of(c)
+    list(c.stream("hello", "euclid", src="file:none", engine="grstaps"))
+    assert [t.engine for t in turns] == ["fast_downward"]
+
+
+@needs_grstaps
 def test_grstaps_is_offered_only_when_the_base_runs_it():
     c = chat()
-    gr = {e["id"]: e for e in c.chat_engines()}
-    assert gr["fast_downward"]["available"] and not gr["grstaps"]["available"]
-    assert "ROS is not running" in gr["grstaps"]["reason"]
+    # ROS is not running
+    assert [e["id"] for e in c.chat_engines()] == ["fast_downward"]
     c.ros.available = True
     c.ros.goal_manager_engine = lambda: "fast_downward"
     c.ros.find_plugin = lambda kind: None
-    gr = {e["id"]: e for e in c.chat_engines()}
-    assert (
-        not gr["grstaps"]["available"]
-        and "no GRSTAPS-X planner is running" in gr["grstaps"]["reason"]
-    )
+    [fd] = c.chat_engines()
+    assert fd["id"] == "fast_downward" and fd["available"] and fd["repair"] is True
     c.ros.goal_manager_engine = lambda: "grstaps"
     assert {e["id"]: e for e in c.chat_engines()}["grstaps"]["available"]
     assert c.usage()["engines"][1]["id"] == "grstaps"
