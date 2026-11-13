@@ -76,6 +76,13 @@ describe("chat planner toggle", () => {
     expect([...sel.options].find(o => o.value === "grstaps")!.title).toBe("plan repair in this session");
   });
 
+  it("is hidden with Fast Downward alone (GRSTAPS-X not installed / not running), and a GRSTAPS-X pick sends Fast Downward", () => {
+    useChatEngine.setState({engine: "grstaps", engines: [FD]});
+    const el = render(<ChatEnginePicker />);
+    expect(el.querySelector('[data-testid="chat-engine"]')).toBeNull();
+    expect(chatEngineNow()).toBe("fast_downward");
+  });
+
   it("is hidden without the backend's engine list", () => {
     const el = render(<ChatEnginePicker />);
     expect(el.querySelector('[data-testid="chat-engine"]')).toBeNull();

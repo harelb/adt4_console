@@ -138,10 +138,16 @@ def _modules():
     except ImportError as e:
         return (
             None,
-            f"GRSTAPS-X is not importable (omniplanner without grstaps_planner?): {e}",
+            f"GRSTAPS-X is not installed (omniplanner without grstaps_planner): {e}",
         )
     return {"gp": gp, "ConstraintFact": ConstraintFact, "to_node": pddl_symbol_to_node_symbol,
             "PlanRequest": PlanRequest, "pipeline": full_planning_pipeline}, None  # fmt: skip
+
+
+def installed() -> bool:
+    """GRSTAPS-X is part of this workspace (omniplanner's grstaps_planner imports and
+    the ``itags`` solver is there); a missing license still leaves it installed."""
+    return _modules()[1] is None and itags_binary() is not None
 
 
 def available() -> str | None:

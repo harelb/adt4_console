@@ -14,7 +14,7 @@ import re
 import types
 
 from adt4_console.chat import CONSOLE_GOAL_NOTES, ChatService
-from tests.conftest import needs_heracles_agents
+from tests.conftest import needs_grstaps_prompts, needs_heracles_agents
 from tests.test_chat_roster import chat
 
 DESC = ChatService._T_PROPOSE_GOAL["description"]
@@ -86,6 +86,7 @@ def test_fast_downward_prompt_presents_at_place_and_at_object_as_supported():
 
 
 @needs_heracles_agents
+@needs_grstaps_prompts
 def test_grstaps_prompt_states_the_limit_and_names_fast_downward():
     _, text = _system("grstaps")
     assert "The rules above are for grstaps" in text
@@ -142,6 +143,7 @@ def test_console_text_offers_grstaps_holding_and_use_robots_with_their_limits():
 
 
 @needs_heracles_agents
+@needs_grstaps_prompts
 def test_grstaps_system_presents_holding_and_use_robots_and_at_or_as_fast_downward_only():
     _, text = _system("grstaps")
     flat = " ".join(text.split())
@@ -201,6 +203,7 @@ def test_fast_downward_system_is_unchanged_apart_from_the_rewritten_lines():
 
 
 @needs_heracles_agents
+@needs_grstaps_prompts
 def test_holding_goal_on_grstaps_makes_a_card_for_hamilton():
     c, _ = _system("grstaps")
     checked = []

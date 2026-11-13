@@ -1209,6 +1209,17 @@ Every omniplanner request takes `engine`: `fast_downward` (default, everything a
 `GET /api/missions/plan/engines` → `{engines: [{id, label, available, reason}], default}`; the
 mission tab's planner choice, the robot-chat goal card and the mission chat use it.
 
+**GRSTAPS-X is optional.** Without it (no `omniplanner.grstaps_planner` / `itags` here, no
+`"grstaps"` in heracles_agents' `prompts.ENGINES`, no GRSTAPS-X planner in the ROS graph, no
+`TaskScheduleMsg` in omniplanner_msgs) the console is Fast Downward only: `plan/engines` lists
+only `fast_downward` (`grstaps` is listed, greyed out with the reason, only when it is installed
+but cannot plan here, e.g. no Gurobi license); the chat's planner toggle (`GET /api/chat/usage`
+`engines`) lists `grstaps` only when heracles_agents has its goal rules AND a GRSTAPS-X planner
+runs (goal_manager forwards to it, or its plugin is in the live graph), and the UI hides a
+picker with one engine; the chat's goal tools offer `engine: "fast_downward"` only; a chat turn
+that asks for `grstaps` without it plans with Fast Downward; there is no schedule view. A goal
+sent with `engine: "grstaps"` anyway is refused ("GRSTAPS-X is not installed: ...").
+
 * **Setup** (checked by `available("grstaps")`, said in words): omniplanner with
   `omniplanner.grstaps_planner`; the `itags` binary on `PATH` (a colcon build of `grstapsx`,
   `install/packages.yaml`) or `ADT4_ITAGS_BINARY`; a Gurobi license file named by
@@ -1254,8 +1265,7 @@ mission tab's planner choice, the robot-chat goal card and the mission chat use 
   the solver's last lines, `itags_input.json`; a license problem says so in the digest);
   `fast_downward` stays for Fast Downward's account.
 * **Sending** (`POST /api/robots/{robot}/goal/pddl {engine: "grstaps"}`): through goal_manager when
-  it forwards to GRSTAPS-X (`planner_goal_topic:=grstaps_planner/pddl_goal`, e.g. run-adt4
-  `base_station_web_grstaps_repair`), else straight to the `Grstaps` plugin's
+  it forwards to GRSTAPS-X (`planner_goal_topic:=grstaps_planner/pddl_goal`), else straight to the `Grstaps` plugin's
   `.../grstaps_planner/pddl_goal` (a ConstrainedPddlGoalMsg) with a warning; `before` goes with
   the goal, never into the robot's standing constraints (which refuse it). The console finds the
   plugin in `ADT4_OMNIPLANNER_PLUGINS` (e.g. `config/grstaps_repair/omniplanner_plugins.yaml`),

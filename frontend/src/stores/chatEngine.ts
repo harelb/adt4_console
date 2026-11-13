@@ -1,8 +1,8 @@
 // The chat's planner toggle: which engine the PDDL goals the chat proposes are
 // planned with (Fast Downward or GRSTAPS-X). The backend gives the model that
 // engine's goal rules (heracles_agents) and puts the engine on each goal card.
-// Remembered per browser. GRSTAPS-X is offered only when the base runs it
-// (GET /api/chat/usage `engines`, with the reason when it does not).
+// Remembered per browser. GRSTAPS-X is optional: GET /api/chat/usage `engines`
+// lists it only when it is installed and the base runs it.
 import {create} from "zustand";
 import type {EngineId} from "./engines";
 

@@ -1,12 +1,13 @@
 // The chat header's planner toggle (Fast Downward | GRSTAPS-X): the engine of the
-// PDDL goals the chat proposes from this turn on. GRSTAPS-X is greyed out, with
-// the reason, when the base does not run it.
+// PDDL goals the chat proposes from this turn on. GRSTAPS-X is optional: the
+// backend lists it only when it is installed and the base runs it, and with
+// Fast Downward alone there is nothing to pick (no toggle).
 import {ENGINE_LABEL} from "../stores/engines";
 import {effectiveChatEngine, useChatEngine} from "../stores/chatEngine";
 
 export function ChatEnginePicker({onOpen}: {onOpen?: () => void}) {
   const {engine, engines, setEngine} = useChatEngine();
-  if (!engines.length) return null;
+  if (engines.length < 2) return null; // Fast Downward only (or an older backend)
   const now = effectiveChatEngine(engine, engines) ?? "fast_downward";
   const off = engines.find(e => !e.available);
   const repair = engines.find(e => e.repair);

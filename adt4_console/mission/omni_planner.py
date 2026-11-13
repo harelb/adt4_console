@@ -137,9 +137,16 @@ def available(engine: str = DEFAULT_ENGINE) -> str | None:
 
 
 def engines() -> list[dict]:
-    """[{id, label, available, reason}] for the planner choice in the UI."""
+    """[{id, label, available, reason}] for the planner choice in the UI. GRSTAPS-X
+    is optional: listed only when it is installed here (greyed out, with the
+    reason, when e.g. its Gurobi license is missing)."""
     out = []
     for eid, label in ENGINES.items():
+        if eid == "grstaps":
+            from . import grstaps_engine
+
+            if not grstaps_engine.installed():
+                continue
         reason = available(eid)
         out.append(
             {"id": eid, "label": label, "available": reason is None, "reason": reason}

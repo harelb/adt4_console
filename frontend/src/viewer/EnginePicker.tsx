@@ -4,14 +4,15 @@ import {useEffect, useId} from "react";
 import {refreshEngines, useEngines, type EngineId} from "../stores/engines";
 
 /** Which omniplanner engine plans: Fast Downward or GRSTAPS-X (greyed out, with
- *  the reason, when it cannot plan here, e.g. no Gurobi license). */
+ *  the reason, when it cannot plan here, e.g. no Gurobi license). GRSTAPS-X is
+ *  optional: without it the backend lists Fast Downward alone and there is no picker. */
 export function EnginePicker({compact = false, label = "planner"}: {compact?: boolean; label?: string}) {
   const {engines, engine, setEngine, loaded} = useEngines();
   const group = useId(); // each picker its own radio group (the tab's and the chat's can both be on screen)
   useEffect(() => {
     if (!loaded) void refreshEngines();
   }, [loaded]);
-  if (!engines.length) return null;
+  if (!engines.length || (engines.length === 1 && engines[0].available)) return null;
   return (
     <div className="engine-pick small" data-testid="engine-picker">
       {!compact && <span className="muted">{label}</span>}

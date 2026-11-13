@@ -89,8 +89,10 @@ GRSTAPS_POINTS = (
 )
 # which plugin kind an omniplanner engine (mission/omni_planner.ENGINES) is
 ENGINE_KIND = {"fast_downward": "pddl_constrained", "grstaps": "grstaps"}
-NO_GRSTAPS = ("no GRSTAPS-X planner is running (start the base station with a grstaps "
-              "session, e.g. base_station_web_grstaps_repair)")  # fmt: skip
+# GRSTAPS-X is optional: only a goal that asks for it explicitly can get this
+NO_GRSTAPS = (
+    "GRSTAPS-X is not installed: no GRSTAPS-X planner is running on the base station"
+)
 GRSTAPS_GRAPH_TTL_S = 3.0  # cache of the live-graph GRSTAPS-X lookup
 
 
@@ -1255,7 +1257,8 @@ class RosBridge:
                 10,
             )
             # GRSTAPS-X publishes the fleet's timed schedule with every plan
-            # (an omniplanner_msgs built before it has no TaskScheduleMsg)
+            # (optional: an omniplanner_msgs without GRSTAPS-X has no
+            # TaskScheduleMsg, and then there is simply no schedule view)
             try:
                 n.create_subscription(
                     import_type("omniplanner_msgs/msg/TaskScheduleMsg"),
@@ -1264,7 +1267,7 @@ class RosBridge:
                     1,
                 )
             except Exception as e:  # noqa: BLE001
-                log.info("no GRSTAPS-X schedule subscription: %s", e)
+                log.debug("no GRSTAPS-X schedule subscription (not installed): %s", e)
         if not spot:
             # phoenix has no spot_executor_node (no results / guards / teleop
             # state); its auto / manual mode is relayed up like the guards
