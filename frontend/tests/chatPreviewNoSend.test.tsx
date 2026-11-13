@@ -3,6 +3,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {act} from "react";
 import {createRoot, type Root} from "react-dom/client";
 import {GoalCard, toChatItem, type ChatItem} from "../src/viewer/ChatPanel";
+import {DirectRouteButtons} from "../src/viewer/DirectRoute";
 import {useRobots} from "../src/stores/robots";
 
 (globalThis as unknown as {IS_REACT_ACT_ENVIRONMENT: boolean}).IS_REACT_ACT_ENVIRONMENT = true;
@@ -45,5 +46,37 @@ describe("goal card Preview", () => {
     expect(urls.filter(u => /\/goal\/|path\/direct|executor|execute/.test(u))).toEqual([]);
     expect(onSend).not.toHaveBeenCalled();
     expect(host.querySelector('[data-testid="goal-preview"]')).not.toBeNull();
+  });
+
+  it("keeps Preview and Send in one actions row under the goal, apart from the title, Send last", () => {
+    const item = toChatItem({type: "goal", kind: "pddl", body: {goal: "(visited-object o2)"}, robot: "hamilton", team: ["euclid", "hamilton"]}) as Extract<ChatItem, {type: "goal"}>;
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => root!.render(<GoalCard it={item} robot="hamilton" src={null} onSend={() => undefined} />));
+    const card = host.querySelector(".msg-goal")!;
+    const actions = card.querySelector('[data-testid="goal-actions"]')!;
+    const kids = [...card.children];
+    // the actions row comes after the goal text, so Preview's results (added
+    // below it) never move a send button under the pointer
+    expect(kids.indexOf(actions)).toBeGreaterThan(kids.indexOf(card.querySelector(".goal-text")!));
+    // no button shares the title row
+    expect(kids[0].querySelector("button")).toBeNull();
+    const btns = [...actions.querySelectorAll("button")];
+    expect(btns.map(b => b.dataset.testid)).toEqual(["goal-preview-btn", "goal-send"]);
+    expect(btns[1].className).toContain("goal-send-btn");
+  });
+});
+
+describe("direct route confirm", () => {
+  it("puts the warning where the button was and Cancel before the send", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => root!.render(<DirectRouteButtons routes={{euclid: [[0, 0], [2, 0]]}} />));
+    const row = host.querySelector(".direct-route-row")!;
+    act(() => (row.querySelector("button") as HTMLButtonElement).click());
+    expect(row.firstElementChild?.getAttribute("data-testid")).toBe("direct-route-warning-euclid");
+    expect([...row.querySelectorAll("button")].map(b => b.textContent)).toEqual(["Cancel", "Send to euclid"]);
   });
 });

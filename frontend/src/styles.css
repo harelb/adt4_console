@@ -2242,6 +2242,54 @@ input[type="checkbox"] {
   overflow-wrap: anywhere;
   word-break: break-all;
 }
+/* chat card buttons keep their size: the min-width:0 above is for text, a
+   squeezed nowrap button spills its label over its neighbour (Preview under
+   "Send to team (...)" took the click). A long label wraps inside the button. */
+.chat-log .msg .btn {
+  flex: none;
+  min-width: auto;
+  max-width: 100%;
+  white-space: normal;
+  text-align: center;
+}
+.goal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 24px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+.goal-preview-btn {
+  min-width: 8.5em;
+}
+/* Send stays at the right edge, also when the row wraps: never right under Preview */
+.goal-send-btn {
+  margin-left: auto;
+}
+/* a badge's label (e.g. "omniplanner · Fast Downward") wraps in a narrow chat */
+.chat-log .msg .badge {
+  white-space: normal;
+  max-width: 100%;
+}
+.direct-route {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+}
+.direct-route-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.direct-route-confirm {
+  display: flex;
+  gap: 16px;
+}
 .msg-goal {
   background: var(--info-bg);
   border: 1px solid rgba(79, 195, 247, 0.5);

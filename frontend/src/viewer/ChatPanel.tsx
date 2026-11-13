@@ -1149,22 +1149,6 @@ export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type:
             </>
           )}
         </span>
-        <span className="row gap-sm">
-          {it.kind === "pddl" && b.goal && (
-            <button className="btn btn-sm" disabled={pv?.busy} onClick={() => void preview()} title="Plan it here with omniplanner and draw each robot's route on the map">
-              {pv?.busy ? "planning…" : shown ? "Hide preview" : "Preview"}
-            </button>
-          )}
-          <button
-            className="btn btn-sm btn-primary"
-            disabled={Boolean(it.superseded) || Boolean(sent && sent.tone !== "err")}
-            onClick={onSend}
-            title={it.team ? "One goal for the whole team: the planner plans every robot at once and allocates the tasks" : undefined}
-            data-testid="goal-send"
-          >
-            Send to {sendLabel(robot, it.team)}
-          </button>
-        </span>
       </div>
       {it.superseded && <div className="small tone-warn">replaced by the combined goal below (one goal covers the whole team)</div>}
       {it.warning && (
@@ -1185,6 +1169,25 @@ export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type:
           ))}
         </div>
       )}
+      {/* Preview and Send on their own row under the goal, far apart: squeezed
+          beside the title they overlapped and a click on Preview sent the goal.
+          Preview's results go below this row, so nothing moves under the pointer. */}
+      <div className="goal-actions" data-testid="goal-actions">
+        {it.kind === "pddl" && b.goal && (
+          <button className="btn btn-sm goal-preview-btn" disabled={pv?.busy} onClick={() => void preview()} title="Plan it here with omniplanner and draw each robot's route on the map" data-testid="goal-preview-btn">
+            {pv?.busy ? "planning…" : shown ? "Hide preview" : "Preview"}
+          </button>
+        )}
+        <button
+          className="btn btn-sm btn-primary goal-send-btn"
+          disabled={Boolean(it.superseded) || Boolean(sent && sent.tone !== "err")}
+          onClick={onSend}
+          title={it.team ? "One goal for the whole team: the planner plans every robot at once and allocates the tasks" : undefined}
+          data-testid="goal-send"
+        >
+          Send to {sendLabel(robot, it.team)}
+        </button>
+      </div>
       {pv?.err && (
         <div className="small tone-err">
           preview: {pv.err}
