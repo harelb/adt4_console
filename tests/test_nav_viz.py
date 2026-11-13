@@ -1,5 +1,5 @@
-"""On-demand navigation overlays (nav_viz): Husky MPPI / mid-range markers,
-subscribed only while the page holds a lease."""
+"""On-demand navigation overlays (nav_viz): Husky MPPI / mid-range markers and
+the GPS fix, subscribed only while the page holds a lease."""
 
 from types import SimpleNamespace as NS
 
@@ -31,6 +31,19 @@ def marker(
     return NS(header=NS(frame_id=frame), ns=ns, id=id, type=typ, action=action,
               pose=p or pose(), points=[V(*q) for q in pts],
               color=NS(r=color[0], g=color[1], b=color[2], a=color[3]))  # fmt: skip
+
+
+def fix(
+    lat=42.3601,
+    lon=-71.0942,
+    status=2,
+    cov=(0.04, 0, 0, 0, 0.09, 0, 0, 0, 0.25),
+    cov_type=2,
+):
+    return NS(latitude=lat, longitude=lon, altitude=12.5,
+              status=NS(status=status, service=1), position_covariance=list(cov),
+              position_covariance_type=cov_type,
+              header=NS(frame_id="gauss/gps", stamp=NS(sec=10, nanosec=500_000_000)))  # fmt: skip
 
 
 # ------------------------------------------------------------------ markers
@@ -78,6 +91,49 @@ def test_layer_is_thinned_under_the_cap():
     assert all(m["pts"][-1] == [999.0, 0.0, 0.0] for m in layer["markers"])  # ends kept
 
 
+# ---------------------------------------------------------------------- GPS
+def test_fix_dict_quality():
+    d = nv.fix_dict(fix())
+    assert d["status_text"] == "GBAS fix (RTK)" and d["std"] == [0.2, 0.3, 0.5]
+    assert d["cov_type"] == "diagonal known" and d["stamp"] == 10.5
+    assert nv.fix_dict(fix(status=-1, cov_type=0))["std"] is None
+
+
+def test_origin_utm_env():
+    assert nv.origin_utm_from_env({"ADT4_ORIGIN_UTM": "327000.5,4690000.25"}) == (
+        327000.5,
+        4690000.25,
+    )
+    assert nv.origin_utm_from_env({"ADT4_ORIGIN_UTM": "nope"}) is None
+    assert nv.origin_utm_from_env({}) is None
+    assert nv.utm_zone_epsg(42.36, -71.09) == 32619
+
+
+def test_fix_to_map_origin_utm():
+    pytest.importorskip("pyproj")
+    from pyproj import Transformer
+
+    e, n = Transformer.from_crs("EPSG:4326", "EPSG:32619", always_xy=True).transform(
+        -71.0942, 42.3601
+    )
+    to_map = nv.FixToMap(geo=None, env={"ADT4_ORIGIN_UTM": f"{e - 10.0},{n + 5.0}"})
+    xy, via = to_map(42.3601, -71.0942)
+    assert via == "origin_utm" and xy == pytest.approx([10.0, -5.0], abs=1e-3)
+    assert nv.FixToMap(geo=None, env={})(42.36, -71.09) == (None, None)
+
+
+def test_fix_to_map_prefers_the_map_anchor():
+    pytest.importorskip("pyproj")
+    from adt4_console.geo import GeoAnchor
+
+    anchor = GeoAnchor(32619, 0.0, (327000.0, 4690000.0))
+    geo = NS(default_anchor=lambda: anchor)
+    xy, via = nv.FixToMap(geo=geo, env={"ADT4_ORIGIN_UTM": "0,0"})(42.3601, -71.0942)
+    assert via == "anchor" and xy == pytest.approx(
+        list(anchor.lonlat_to_map(-71.0942, 42.3601)), abs=1e-3
+    )
+
+
 # ------------------------------------------------------------------- leases
 class Rig:
     def __init__(self, platform="phoenix"):
@@ -87,6 +143,7 @@ class Rig:
         self.published = []
         hub = NS(publish=lambda topic, data: self.published.append((topic, data)))
         self.viz = nv.NavViz(self.subscribe, self.dropped.append, lambda r: platform, hub=hub,
+                             to_map=lambda lat, lon: ([1.0, 2.0], "anchor"),
                              clock=lambda: self.now, wall=lambda: 100.0)  # fmt: skip
 
     def subscribe(self, topic, typ, cb):
@@ -123,15 +180,27 @@ def test_planner_lease_subscribes_publishes_and_expires():
     assert rig.viz.layers("gauss") is None
 
 
-def test_spot_has_no_planner_streams():
+def test_spot_has_no_planner_streams_but_has_gps():
     rig = Rig(platform="spot")
     st = rig.viz.set("hamilton", "planner", True)
     assert st["topics"] == [] and rig.subs == {}
+    rig.viz.set("hamilton", "gps", True)
+    typ, cb = rig.subs["/hamilton/fix"]
+    assert typ == nv.NAVSATFIX
+    cb(fix())
+    topic, data = rig.published[-1]
+    assert (
+        topic == "robot/hamilton/gps"
+        and data["map"] == [1.0, 2.0]
+        and data["map_via"] == "anchor"
+    )
+    rig.viz.set("hamilton", "gps", False)
+    assert rig.dropped == ["/hamilton/fix"] and rig.viz.gps("hamilton") is None
 
 
 def test_unknown_group():
     with pytest.raises(ValueError):
-        Rig().viz.set("gauss", "gps", True)
+        Rig().viz.set("gauss", "lidar", True)
 
 
 # -------------------------------------------------------------------- route
@@ -139,15 +208,18 @@ def test_route_needs_ros(settings):
     client, svc = make_client(settings)
     with client:
         r = client.post(
-            "/api/live/gauss/nav_viz", json={"group": "planner", "enabled": True}
+            "/api/live/gauss/nav_viz", json={"group": "gps", "enabled": True}
         )
         assert r.status_code == 503
-        bad = client.post(
-            "/api/live/gauss/nav_viz", json={"group": "nope", "enabled": True}
+        assert (
+            client.post(
+                "/api/live/gauss/nav_viz", json={"group": "nope", "enabled": True}
+            ).status_code
+            == 422
         )
-        assert bad.status_code == 422
         off = client.post(
-            "/api/live/gauss/nav_viz", json={"group": "planner", "enabled": False}
+            "/api/live/gauss/nav_viz", json={"group": "gps", "enabled": False}
         ).json()
-        assert off["enabled"] is False
-        assert client.get("/api/live/gauss/nav_viz").json()["planner"] is None
+        assert off["enabled"] is False and off["topics"] == ["/gauss/fix"]
+        got = client.get("/api/live/gauss/nav_viz").json()
+        assert got["planner"] is None and got["gps"] is None

@@ -89,7 +89,9 @@ class Services:
     planner_state: object = (
         None  # planner_state.PlannerState: what the planner believes
     )
-    nav_viz: object = None  # nav_viz.NavViz: MPPI / mid-range markers (on demand)
+    nav_viz: object = (
+        None  # nav_viz.NavViz: MPPI / mid-range markers, GPS fix (on demand)
+    )
 
     def start(self) -> None:
         if self.settings.fleet_poll:
@@ -162,13 +164,14 @@ def build_services(
         QuadFrame(svc.geo.default_anchor() if settings.quad_cmd_uri or settings.quad_image_uri else None,
                   settings.quad_utm_origin, settings.quad_map_offset),
     )  # fmt: skip
-    from .nav_viz import NavViz
+    from .nav_viz import FixToMap, NavViz
 
     svc.nav_viz = NavViz(
         lambda topic, typ, cb: svc.ros.nav_subscribe(topic, typ, cb),
         lambda sub: svc.ros.nav_unsubscribe(sub),
         platform_of=lambda robot: svc.ros.platform(robot),
         hub=hub,
+        to_map=FixToMap(svc.geo),
     )
     svc.missions = MissionService(settings, hub, graph, svc.geo, live, ros, svc.quad)
     chat.missions = svc.missions

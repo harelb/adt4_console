@@ -1,7 +1,7 @@
 """On-demand robot navigation overlays: the Husky's MPPI / mid-range planner
-markers.
+markers and every robot's GPS fix.
 
-They come over ROS on the base station (fleetlink's relay republishes the robot
+Both come over ROS on the base station (fleetlink's relay republishes the robot
 topics there: ``dcist_launch_system/fleetlink/relay.yaml``). Nothing is
 subscribed until the browser asks: ``POST /api/live/<r>/nav_viz`` with
 ``{group, enabled}`` takes a lease of :data:`LEASE_S` that the page renews
@@ -12,6 +12,9 @@ the hub at most :data:`MIN_PUBLISH_S` apart per robot and group:
   each marker ``{ns, id, kind: strip|segments|points, pts: [[x, y, z]...],
   color: [r, g, b, a] | null}`` in its layer's ``frame`` (the marker pose is
   already applied).
+* ``robot/<r>/gps`` - :func:`fix_dict` plus ``map: [x, y] | null`` and
+  ``map_via`` (``anchor`` = the shown map's GPS anchor, ``origin_utm`` =
+  ``ADT4_ORIGIN_UTM`` the way rsm_dcist's relocalization monitor uses it).
 
 Spot's executor paths (smooth / MLP / target) are not here: the fleetlink agent
 already sends them (``robot/<r>/paths``).
@@ -21,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 import time
 
@@ -33,6 +37,7 @@ MAX_POINTS_PER_LAYER = 6000
 
 MARKER = "visualization_msgs/msg/Marker"
 MARKER_ARRAY = "visualization_msgs/msg/MarkerArray"
+NAVSATFIX = "sensor_msgs/msg/NavSatFix"
 
 # platform -> [(key, label, msg type, topic suffix)] as in phoenix-r2's
 # mit_launch/rviz/gauss_mppi_debug.rviz (the relay carries these up)
@@ -44,12 +49,17 @@ PLANNER_STREAMS: dict[str, list[tuple[str, str, str, str]]] = {
         ("mrp_plan", "mid-range plan", MARKER, "mrp_interface/plan"),
     ],
 }
-GROUPS = ("planner",)
+GPS_SUFFIX = "fix"
+GROUPS = ("planner", "gps")
 
 # visualization_msgs/Marker type / action constants
 ARROW, CUBE, SPHERE, CYLINDER = 0, 1, 2, 3
 LINE_STRIP, LINE_LIST, CUBE_LIST, SPHERE_LIST, POINTS = 4, 5, 6, 7, 8
 DELETE, DELETEALL = 2, 3
+
+# sensor_msgs/NavSatStatus
+FIX_STATUS = {-1: "no fix", 0: "fix", 1: "SBAS fix", 2: "GBAS fix (RTK)"}
+COV_TYPE = {0: "unknown", 1: "approximated", 2: "diagonal known", 3: "known"}
 
 
 def planner_streams(platform: str) -> list[tuple[str, str, str, str]]:
@@ -187,6 +197,89 @@ def layer_from_markers(markers, label: str, cap: int = MAX_POINTS_PER_LAYER) -> 
     return {"label": label, "frame": frame, "markers": _thin(out, cap)}
 
 
+# --------------------------------------------------------------------- GPS
+def fix_dict(msg) -> dict:
+    """NavSatFix -> ``{lat, lon, alt, status, status_text, service, std:
+    [east, north, up] | null, cov_type, frame, stamp}``."""
+    st = getattr(msg, "status", None)
+    status = int(getattr(st, "status", -1)) if st is not None else -1
+    cov = list(getattr(msg, "position_covariance", []) or [])
+    cov_type = int(getattr(msg, "position_covariance_type", 0) or 0)
+    std = None
+    if cov_type and len(cov) == 9:
+        std = [round(math.sqrt(max(0.0, float(cov[i]))), 3) for i in (0, 4, 8)]
+    header = getattr(msg, "header", None)
+    stamp = getattr(header, "stamp", None)
+    return {
+        "lat": float(msg.latitude),
+        "lon": float(msg.longitude),
+        "alt": float(msg.altitude) if math.isfinite(float(msg.altitude)) else None,
+        "status": status,
+        "status_text": FIX_STATUS.get(status, f"status {status}"),
+        "service": int(getattr(st, "service", 0) or 0) if st is not None else 0,
+        "std": std,
+        "cov_type": COV_TYPE.get(cov_type, str(cov_type)),
+        "frame": str(getattr(header, "frame_id", "") or ""),
+        "stamp": (float(stamp.sec) + float(stamp.nanosec) * 1e-9)
+        if stamp is not None
+        else None,
+    }
+
+
+def origin_utm_from_env(env=None) -> tuple[float, float] | None:
+    """``ADT4_ORIGIN_UTM`` = ``"<easting>,<northing>"`` (map = UTM - origin, no
+    rotation; rsm_dcist's relocalization monitor reads it the same way)."""
+    s = (env if env is not None else os.environ).get("ADT4_ORIGIN_UTM", "")
+    try:
+        e, n = (float(v) for v in s.split(",")[:2])
+    except ValueError:
+        return None
+    if not (math.isfinite(e) and math.isfinite(n)):
+        return None
+    return e, n
+
+
+def utm_zone_epsg(lat: float, lon: float) -> int:
+    zone = int((lon + 180.0) // 6.0) % 60 + 1
+    return (32600 if lat >= 0 else 32700) + zone
+
+
+class FixToMap:
+    """lat/lon -> map x/y: the map's GPS anchor (``GeoService.default_anchor``)
+    when there is one, else ``ADT4_ORIGIN_UTM``; None when neither works."""
+
+    def __init__(self, geo=None, env=None):
+        self.geo = geo
+        self.origin = origin_utm_from_env(env)
+        self._origin_anchor = None
+
+    def __call__(self, lat: float, lon: float) -> tuple[list[float] | None, str | None]:
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            return None, None
+        a = None
+        if self.geo is not None:
+            try:
+                a = self.geo.default_anchor()
+            except Exception:  # noqa: BLE001
+                a = None
+        via = "anchor"
+        if a is None and self.origin is not None:
+            from .geo import GeoAnchor
+
+            epsg = utm_zone_epsg(lat, lon)
+            if self._origin_anchor is None or self._origin_anchor.epsg != epsg:
+                self._origin_anchor = GeoAnchor(epsg, 0.0, self.origin)
+            a, via = self._origin_anchor, "origin_utm"
+        if a is None:
+            return None, None
+        try:
+            x, y = a.lonlat_to_map(lon, lat)
+        except Exception as e:  # noqa: BLE001 (pyproj missing)
+            log.debug("GPS -> map unavailable: %s", e)
+            return None, None
+        return [round(float(x), 3), round(float(y), 3)], via
+
+
 # ------------------------------------------------------------- subscriptions
 class NavViz:
     """Lease-held ROS subscriptions per (robot, group), throttled to the hub.
@@ -194,24 +287,28 @@ class NavViz:
     ``subscribe(topic, type, cb)`` / ``unsubscribe(handle)`` are the ROS side
     (``RosBridge.nav_subscribe`` / ``nav_unsubscribe``); tests pass fakes."""
 
-    def __init__(self, subscribe, unsubscribe, platform_of, hub=None,
+    def __init__(self, subscribe, unsubscribe, platform_of, hub=None, to_map=None,
                  clock=time.monotonic, wall=time.time):  # fmt: skip
         self._subscribe = subscribe
         self._unsubscribe = unsubscribe
         self._platform_of = platform_of
         self.hub = hub
+        self.to_map = to_map or FixToMap()
         self.clock = clock
         self.wall = wall
         self._lock = threading.Lock()
         self._leases: dict[tuple[str, str], float] = {}
         self._subs: dict[tuple[str, str], list] = {}
         self._layers: dict[str, dict[str, dict]] = {}
+        self._gps: dict[str, dict] = {}
         self._last_pub: dict[tuple[str, str], float] = {}
         self._reaper: threading.Thread | None = None
         self._stop = threading.Event()
 
     # -------------------------------------------------------------- leases
     def streams(self, robot: str, group: str) -> list[tuple[str, str, str, str]]:
+        if group == "gps":
+            return [("gps", "GPS fix", NAVSATFIX, GPS_SUFFIX)]
         if group == "planner":
             return planner_streams(self._platform_of(robot))
         raise ValueError(
@@ -233,7 +330,11 @@ class NavViz:
             handles = []
             for skey, label, typ, suffix in streams:
                 topic = f"/{robot}/{suffix}"
-                cb = self._marker_cb(robot, skey, label, typ)
+                cb = (
+                    self._gps_cb(robot)
+                    if group == "gps"
+                    else self._marker_cb(robot, skey, label, typ)
+                )
                 try:
                     handles.append(self._subscribe(topic, typ, cb))
                 except Exception as e:  # noqa: BLE001 (type not installed)
@@ -275,10 +376,15 @@ class NavViz:
                 log.debug("nav_viz unsubscribe: %s", e)
         robot, group = key
         with self._lock:
-            self._layers.pop(robot, None)
+            if group == "planner":
+                self._layers.pop(robot, None)
+            else:
+                self._gps.pop(robot, None)
             self._last_pub.pop(key, None)
         if self.hub is not None:
-            self.hub.publish(f"robot/{robot}/nav_viz", None)
+            self.hub.publish(
+                f"robot/{robot}/{'nav_viz' if group == 'planner' else 'gps'}", None
+            )
 
     def _ensure_reaper(self) -> None:
         if self._reaper is not None and self._reaper.is_alive():
@@ -322,6 +428,20 @@ class NavViz:
 
         return cb
 
+    def _gps_cb(self, robot):
+        def cb(msg):
+            try:
+                d = fix_dict(msg)
+                d["map"], d["map_via"] = self.to_map(d["lat"], d["lon"])
+                d["t"] = self.wall()
+                with self._lock:
+                    self._gps[robot] = d
+                self._publish(robot, "gps")
+            except Exception:  # noqa: BLE001
+                log.exception("nav_viz gps %s", robot)
+
+        return cb
+
     def _publish(self, robot: str, group: str) -> None:
         now = self.clock()
         with self._lock:
@@ -331,9 +451,17 @@ class NavViz:
             self._last_pub[(robot, group)] = now
         if self.hub is None:
             return
-        self.hub.publish(f"robot/{robot}/nav_viz", self.layers(robot))
+        if group == "planner":
+            self.hub.publish(f"robot/{robot}/nav_viz", self.layers(robot))
+        else:
+            self.hub.publish(f"robot/{robot}/gps", self.gps(robot))
 
     def layers(self, robot: str) -> dict | None:
         with self._lock:
             ls = self._layers.get(robot)
             return {"layers": dict(ls), "t": self.wall()} if ls else None
+
+    def gps(self, robot: str) -> dict | None:
+        with self._lock:
+            g = self._gps.get(robot)
+            return dict(g) if g else None

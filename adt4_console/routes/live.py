@@ -124,7 +124,7 @@ def lidar_toggle(robot: str, body: LidarBody, request: Request):
 
 
 class NavVizBody(BaseModel):
-    group: Literal["planner"]
+    group: Literal["planner", "gps"]
     enabled: bool
 
 
@@ -132,9 +132,10 @@ class NavVizBody(BaseModel):
 def nav_viz_toggle(robot: str, body: NavVizBody, request: Request):
     """Start / renew (``enabled``) or stop the on-demand overlay ``group`` for
     ``robot``: ``planner`` = the Husky's MPPI / mid-range plan markers (no
-    streams on a Spot: its executor paths come with the fleetlink ``paths``).
-    A start holds a lease of ``nav_viz.LEASE_S`` that the page renews while its
-    toggle is on; updates go out on ``robot/<r>/nav_viz``."""
+    streams on a Spot: its executor paths come with the fleetlink ``paths``),
+    ``gps`` = the GPS fix. A start holds a lease of ``nav_viz.LEASE_S`` that the
+    page renews while its toggle is on; updates go out on ``robot/<r>/nav_viz``
+    and ``robot/<r>/gps``."""
     from ..ros_bridge import RosUnavailable
 
     svc = services(request)
@@ -147,15 +148,13 @@ def nav_viz_toggle(robot: str, body: NavVizBody, request: Request):
 
 @router.get("/{robot}/nav_viz")
 def nav_viz_latest(robot: str, request: Request):
-    """The latest ``robot/<r>/nav_viz`` payload (null when off or nothing
-    received yet)."""
+    """The latest ``robot/<r>/nav_viz`` and ``robot/<r>/gps`` payloads (null
+    when off or nothing received yet)."""
     nv = services(request).nav_viz
     if nv is None:
         raise HTTPException(503, "nav_viz not running")
-    return {
-        "planner": nv.layers(robot),
-        "status": {"planner": nv.status(robot, "planner")},
-    }
+    return {"planner": nv.layers(robot), "gps": nv.gps(robot),
+            "status": {g: nv.status(robot, g) for g in ("planner", "gps")}}  # fmt: skip
 
 
 @router.get("/{robot}/lidar")

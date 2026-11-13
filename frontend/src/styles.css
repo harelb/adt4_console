@@ -5133,7 +5133,23 @@ input[type="checkbox"] {
   background: var(--warn-bg);
 }
 
-/* nav_viz (viewer/NavVizOverlay.tsx) */
+/* nav_viz: GPS fix label (viewer/NavVizOverlay.tsx) */
+.gps-label {
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  border-left: 3px solid var(--warn);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+.gps-label.tone-ok {
+  border-color: var(--ok);
+}
+.gps-label.tone-err {
+  border-color: var(--err);
+}
 .nav-viz-rows {
   display: flex;
   flex-direction: column;
