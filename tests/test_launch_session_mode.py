@@ -4,8 +4,6 @@
 mapping session, remembered from the previous launch), which ignores the prior
 map, so no robot could relocalize."""
 
-import pytest
-
 from adt4_console.routes import launch as launch_routes
 
 from .conftest import needs_fleet_core
@@ -27,6 +25,7 @@ FIELD_RUN = {
 }
 
 
+@needs_fleet_core
 def test_session_mode_by_name():
     m = launch_routes.session_mode
     assert m("spot_relocalize-relocalize") == "relocalize"
@@ -53,7 +52,11 @@ def test_relocalize_with_a_mapping_session_is_refused(client):
         r = client.post(url, json=FIELD_RUN)
         assert r.status_code == 400, url
         detail = r.json()["detail"]
-        assert "euclid" in detail and "spot-indoor_image_logging" in detail and "mapping session" in detail
+        assert (
+            "euclid" in detail
+            and "spot-indoor_image_logging" in detail
+            and "mapping session" in detail
+        )
     ok = {**FIELD_RUN, "session": "spot_relocalize-relocalize"}
     assert client.post("/api/launch/dry_run", json=ok).status_code == 200
 
@@ -70,7 +73,12 @@ def test_mapping_with_a_relocalize_session_is_refused(client):
 
 @needs_fleet_core
 def test_relocalize_still_needs_a_prior(client):
-    plan = {**FIELD_RUN, "session": "spot_relocalize-relocalize", "prior_path": "", "prior_source": None}
+    plan = {
+        **FIELD_RUN,
+        "session": "spot_relocalize-relocalize",
+        "prior_path": "",
+        "prior_source": None,
+    }
     r = client.post("/api/launch", json=plan)
     assert r.status_code == 400 and "prior" in r.json()["detail"]
 
@@ -87,6 +95,8 @@ def test_fallback_check_without_fleet_tooling_support(client, monkeypatch):
     monkeypatch.setattr(lw, "validate_plan", lambda *a, **k: [])
     r = client.post("/api/launch", json=FIELD_RUN)
     assert r.status_code == 400 and "mapping session" in r.json()["detail"]
-    modes = client.get("/api/launch/defaults", params={"mode": "relocalize"}).json()["session_modes"]
+    modes = client.get("/api/launch/defaults", params={"mode": "relocalize"}).json()[
+        "session_modes"
+    ]
     assert modes["spot-indoor_image_logging"] == "mapping"
     assert modes["spot_relocalize-relocalize"] == "relocalize"
