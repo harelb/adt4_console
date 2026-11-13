@@ -1141,12 +1141,29 @@ input[type="checkbox"] {
 .pick.offline {
   opacity: 0.7;
 }
-.pick-name {
-  font-weight: 600;
+/* name on its own line, address and platform below it: the name never shares its line
+   with the offline badge and the Restart button, so it is not squeezed to a few letters */
+.pick-main {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-width: 0;
+}
+.pick-name {
+  font-weight: 600;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.pick-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pick > input,
+.pick > .badge,
+.pick > .btn {
+  flex-shrink: 0;
 }
 .launch-bar {
   display: flex;

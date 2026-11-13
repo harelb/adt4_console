@@ -376,9 +376,12 @@ export function LaunchPage() {
               <label key={m.name} className={`pick ${robots.includes(m.name) ? "on" : ""} ${m.online ? "" : "offline"}`}>
                 <input type="checkbox" checked={robots.includes(m.name)} onChange={() => toggleRobot(m.name)} />
                 <Dot tone={m.online ? "ok" : "err"} />
-                <span className="pick-name">{m.name}</span>
-                <span className="muted small mono">{m.ip}</span>
-                <span className="muted small">{platformLabel(platformOfRobot(m.name))}</span>
+                <span className="pick-main">
+                  <span className="pick-name" title={m.name}>{m.name}</span>
+                  <span className="pick-sub muted small">
+                    <span className="mono">{m.ip}</span> · {platformLabel(platformOfRobot(m.name))}
+                  </span>
+                </span>
                 {!m.online && <Badge tone="err">offline</Badge>}
                 <button
                   type="button"
