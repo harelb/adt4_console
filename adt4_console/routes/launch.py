@@ -62,7 +62,9 @@ def _with_link_mode(topo: dict, mode: str | None) -> dict:
     return topo
 
 
-def _plan(body: LaunchPlanBody, topo: dict | None = None, runtime_config: dict | None = None):
+def _plan(
+    body: LaunchPlanBody, topo: dict | None = None, runtime_config: dict | None = None
+):
     import dataclasses
 
     from dcist_launch_system.fleet.launch_workflow import LaunchError, LaunchPlan
@@ -82,7 +84,9 @@ def _plan(body: LaunchPlanBody, topo: dict | None = None, runtime_config: dict |
         raise HTTPException(400, "Pick either base station only or robots only")
     if body.base_only:
         if not (body.base_station and body.bs_session):
-            raise HTTPException(400, "Base station only: pick a base station and its session")
+            raise HTTPException(
+                400, "Base station only: pick a base station and its session"
+            )
         fields.update(robots=[], session="", sessions={})
     if body.robots_only:
         if not body.robots:
@@ -97,7 +101,8 @@ def _plan(body: LaunchPlanBody, topo: dict | None = None, runtime_config: dict |
         known = {f.name for f in dataclasses.fields(LaunchPlan)}
         if body.robots_only and "robots_only" not in known:
             raise HTTPException(
-                400, "Robots only: this workspace's fleet tooling cannot relaunch robots alone"
+                400,
+                "Robots only: this workspace's fleet tooling cannot relaunch robots alone",
             )
         if "sessions" not in known and not fields["session"] and fields["sessions"]:
             fields["session"] = next(iter(fields["sessions"].values()))
@@ -140,15 +145,17 @@ def platform_equivalent(session, platform, topo, mode, available) -> str | None:
     own = session_platform(session)
     if own is None or own == platform:
         return session
-    swapped = platform + str(session)[len(own):]
+    swapped = platform + str(session)[len(own) :]
     if swapped in available:
         return swapped
-    presets = (((topo or {}).get("fleet_defaults") or {}).get("sessions") or {})
+    presets = ((topo or {}).get("fleet_defaults") or {}).get("sessions") or {}
     preset = (presets.get(session_mode(session) or mode) or {}).get(platform)
     return preset if preset and session_platform(preset) in (None, platform) else None
 
 
-def resolve_platform_sessions(fields: dict, topo: dict | None, runtime_config: dict) -> dict:
+def resolve_platform_sessions(
+    fields: dict, topo: dict | None, runtime_config: dict
+) -> dict:
     """Fill ``sessions`` (platform -> session) for every selected robot's platform
     from a single ``session`` (older clients, legacy launch memory): a robot never
     gets another platform's session (2026-11-11: gauss, a phoenix, was sent the
@@ -195,13 +202,21 @@ def check_session_platforms(plan, runtime_config: dict, topo: dict | None) -> No
     for r in plan.robots:
         if r not in runtime_config:
             continue
-        s = robot_session(plan, runtime_config[r], topo) if robot_session else plan.session
-        sp, rp = session_platform(s), fc.platform_of(machines.get(r) or runtime_config[r])
+        s = (
+            robot_session(plan, runtime_config[r], topo)
+            if robot_session
+            else plan.session
+        )
+        sp, rp = (
+            session_platform(s),
+            fc.platform_of(machines.get(r) or runtime_config[r]),
+        )
         if sp and sp != rp:
             bad.append(f"{r} (platform {rp}) would run {s} (a {sp} session)")
     if bad:
         raise lw.LaunchError(
-            "Session does not match the robot's platform: " + "; ".join(bad)
+            "Session does not match the robot's platform: "
+            + "; ".join(bad)
             + ". Pick a session of each robot's platform."
         )
 
@@ -258,7 +273,11 @@ def check_session_modes(plan, runtime_config: dict, topo: dict | None) -> None:
     for r in plan.robots:
         if r not in runtime_config:
             continue
-        s = robot_session(plan, runtime_config[r], topo) if robot_session else plan.session
+        s = (
+            robot_session(plan, runtime_config[r], topo)
+            if robot_session
+            else plan.session
+        )
         m = session_mode(s)
         if m and m != mode:
             bad.append(f"{r} would run {s} (a {m} session)")
@@ -274,7 +293,9 @@ def platform_choices(topo: dict | None, runtime_config: dict, mode: str) -> dict
     from .. import fleet_compat as fc
 
     machines = (topo or {}).get("machines") or {}
-    presets = (((topo or {}).get("fleet_defaults") or {}).get("sessions") or {}).get(mode) or {}
+    presets = (((topo or {}).get("fleet_defaults") or {}).get("sessions") or {}).get(
+        mode
+    ) or {}
     return {
         "robot_platforms": {
             n: fc.platform_of(machines.get(n) or m)
@@ -440,7 +461,9 @@ def launch(body: LaunchPlanBody, request: Request):
                     job.log("heading", f"Stop & save {r} before the relaunch ...")
                     res = stop_save_run(svc, job, r, teardown=True)
                     if res is False:
-                        job.log("error", f"ABORT: Stop & save failed on {r}; not relaunched")
+                        job.log(
+                            "error", f"ABORT: Stop & save failed on {r}; not relaunched"
+                        )
                         return False
                     if isinstance(res, dict) and res.get("teardown") is False:
                         # killing the session now would cut hydra's save short
@@ -495,7 +518,10 @@ class _AutoStop:
     def confirm(self, request):
         if getattr(request, "kind", None) == "kill_sessions":
             machines = (getattr(request, "detail", None) or {}).get("machines") or []
-            self._cb.log("dim", f"stopping the running session on {', '.join(machines)} (restart)")
+            self._cb.log(
+                "dim",
+                f"stopping the running session on {', '.join(machines)} (restart)",
+            )
             return True
         return self._cb.confirm(request)
 
@@ -832,7 +858,9 @@ def stop_save(robot: str, request: Request, body: StopSaveBody | None = None):
     svc = services(request)
     teardown = body.teardown if body else True
     job = svc.jobs.start(
-        "stop_save", f"Stop & save {robot}", lambda job: stop_save_run(svc, job, robot, teardown)
+        "stop_save",
+        f"Stop & save {robot}",
+        lambda job: stop_save_run(svc, job, robot, teardown),
     )
     return {"job_id": job.id}
 

@@ -121,7 +121,11 @@ class AwcdChangeSet:
             names = [r for r in known if namespace_crc(r) == crc]
             # the robots' own reports name the low 32 bits as their track id
             low = oid & 0xFFFFFFFF
-            more = [r for r, s in self._robots.items() if r in names and low in s["added_ids"]]
+            more = [
+                r
+                for r, s in self._robots.items()
+                if r in names and low in s["added_ids"]
+            ]
             return more or names
         return sorted(r for r, s in self._robots.items() if oid in s["removed_ids"])
 

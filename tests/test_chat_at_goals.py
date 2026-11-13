@@ -18,7 +18,9 @@ from tests.conftest import needs_grstaps_prompts, needs_heracles_agents
 from tests.test_chat_roster import chat
 
 DESC = ChatService._T_PROPOSE_GOAL["description"]
-_NEGATIVE = re.compile(r"\b(?:not take|takes no|does not support|not supported|no at-)", re.I)
+_NEGATIVE = re.compile(
+    r"\b(?:not take|takes no|does not support|not supported|no at-)", re.I
+)
 
 
 def _sentences(text):
@@ -40,7 +42,10 @@ def _system(engine):
 
 
 def test_propose_goal_description_supports_at_on_fast_downward():
-    assert "(at-place euclid t40) / (at-object euclid o20): that robot ends there (Fast Downward)" in DESC
+    assert (
+        "(at-place euclid t40) / (at-object euclid o20): that robot ends there (Fast Downward)"
+        in DESC
+    )
     assert "With engine='grstaps' (GRSTAPS-X" in DESC
     # GRSTAPS-X takes holding and use-robots (omniplanner c07d67a), still no or / at-*
     assert "GRSTAPS-X takes no or / at-* (use engine='fast_downward' for those)" in DESC
@@ -52,7 +57,9 @@ def test_propose_goal_description_supports_at_on_fast_downward():
 
 def test_console_goal_notes_name_fast_downward_for_at():
     assert "at-place / at-object (that robot ends there)" in CONSOLE_GOAL_NOTES
-    assert "GRSTAPS-X takes no or / at-*: those need Fast Downward" in CONSOLE_GOAL_NOTES
+    assert (
+        "GRSTAPS-X takes no or / at-*: those need Fast Downward" in CONSOLE_GOAL_NOTES
+    )
     assert "holding / use-robots: those need" not in CONSOLE_GOAL_NOTES
     assert "but takes no or / at-*" not in CONSOLE_GOAL_NOTES
     _no_unattributed_at_limit(CONSOLE_GOAL_NOTES)
@@ -71,7 +78,10 @@ def test_fast_downward_prompt_presents_at_place_and_at_object_as_supported():
     assert '"Hamilton, wait at t7": (at-place hamilton t7)' in text
     assert "If the user explicitly asks for the at predicate, use it." in text
     # "go to" stays a visit
-    assert '"Hamilton, go to O21. Gauss, inspect O26": (and (visited-object-by hamilton o21)' in text
+    assert (
+        '"Hamilton, go to O21. Gauss, inspect O26": (and (visited-object-by hamilton o21)'
+        in text
+    )
     _no_unattributed_at_limit(text + "\n" + DESC)
 
 
@@ -97,13 +107,17 @@ def test_at_object_goal_on_fast_downward_makes_a_card_for_euclid():
         return ""  # the map has euclid and o20
 
     c.goal_check = goal_problems
-    c._cypher_src = lambda src: types.SimpleNamespace(id="map", uri="bolt://x", creds=("u", "p"))
+    c._cypher_src = lambda src: types.SimpleNamespace(
+        id="map", uri="bolt://x", creds=("u", "p")
+    )
     c.turn.pddl_goals = []
     events, out = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(at-object euclid o20)"},
                               "euclid, be at O20", "hamilton", "map", None, turn=c.turn)  # fmt: skip
     assert checked == ["(at-object euclid o20)"]
     [card] = events
-    assert card["type"] == "goal" and card["kind"] == "pddl" and card["robot"] == "euclid"
+    assert (
+        card["type"] == "goal" and card["kind"] == "pddl" and card["robot"] == "euclid"
+    )
     assert card["body"]["goal"] == "(at-object euclid o20)"
     assert card["body"]["engine"] == "fast_downward"
     assert "team" not in card  # one named robot
@@ -119,7 +133,10 @@ def test_console_text_offers_grstaps_holding_and_use_robots_with_their_limits():
                   "one holding goal per robot", "object cannot be both held and placed",
                   "no husky, and no robot without an arm"):  # fmt: skip
         assert limit in notes, limit
-    assert '"each robot picks up a different cone" names a specific robot for each cone' in notes
+    assert (
+        '"each robot picks up a different cone" names a specific robot for each cone'
+        in notes
+    )
     desc = " ".join(DESC.split())
     assert "the holder does nothing else in that plan" in desc
     assert "no husky or robot without an arm" in desc
@@ -136,8 +153,13 @@ def test_grstaps_system_presents_holding_and_use_robots_and_at_or_as_fast_downwa
     assert '- "Hamilton, pick up O1": (holding hamilton o1)' in text
     assert "plus a use-robots constraint naming exactly" in flat
     assert "a -by or holding robot left out of use-robots is an error" in flat
-    assert "no use-robots constraint" not in flat and "does not apply use-robots" not in flat
-    unsupported = flat.split("This planner does NOT support these")[1].split("To find")[0]
+    assert (
+        "no use-robots constraint" not in flat
+        and "does not apply use-robots" not in flat
+    )
+    unsupported = flat.split("This planner does NOT support these")[1].split("To find")[
+        0
+    ]
     assert "holding" not in unsupported
     # or / at-* stay Fast Downward only
     assert "GRSTAPS-X takes no or / at-*: those need Fast Downward" in flat
@@ -164,13 +186,18 @@ def test_fast_downward_system_is_unchanged_apart_from_the_rewritten_lines():
     import json
     import os
 
-    with open(os.path.join(os.path.dirname(__file__), "fixtures", "fd_system_1e02705.json"), encoding="utf-8") as f:
+    with open(
+        os.path.join(os.path.dirname(__file__), "fixtures", "fd_system_1e02705.json"),
+        encoding="utf-8",
+    ) as f:
         before = json.load(f)["text"].splitlines()
     _, text = _system("fast_downward")
     now = text.splitlines()
     assert len([line for line in now if line.startswith("- engine: ")]) == 1
     kept = [line for line in before if not line.startswith(_REWRITTEN)]
-    assert len(before) - len(kept) == len(_REWRITTEN) - 1  # the fixture has no engine bullet
+    assert (
+        len(before) - len(kept) == len(_REWRITTEN) - 1
+    )  # the fixture has no engine bullet
     assert [line for line in kept if line not in now] == []
     assert [line for line in now if line in kept] == kept
 
@@ -186,13 +213,19 @@ def test_holding_goal_on_grstaps_makes_a_card_for_hamilton():
         return ""  # the map has hamilton and o1
 
     c.goal_check = goal_problems
-    c._cypher_src = lambda src: types.SimpleNamespace(id="map", uri="bolt://x", creds=("u", "p"))
+    c._cypher_src = lambda src: types.SimpleNamespace(
+        id="map", uri="bolt://x", creds=("u", "p")
+    )
     c.turn.pddl_goals = []
     events, out = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(holding hamilton o1)"},
                               "hamilton, pick up O1", "euclid", "map", None, turn=c.turn)  # fmt: skip
     assert checked == ["(holding hamilton o1)"]
     [card] = events
-    assert card["type"] == "goal" and card["kind"] == "pddl" and card["robot"] == "hamilton"
+    assert (
+        card["type"] == "goal"
+        and card["kind"] == "pddl"
+        and card["robot"] == "hamilton"
+    )
     assert card["body"]["goal"] == "(holding hamilton o1)"
     assert card["body"]["engine"] == "grstaps"
     assert "team" not in card

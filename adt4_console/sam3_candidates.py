@@ -104,9 +104,7 @@ def _footprints_overlap(a: dict, b: dict, margin: float = OVERLAP_MARGIN_M) -> b
     blo, bhi = _vec(b.get("bbox_min")), _vec(b.get("bbox_max"))
     if None in (alo, ahi, blo, bhi):
         return False
-    return all(
-        alo[k] - margin <= bhi[k] and blo[k] - margin <= ahi[k] for k in (0, 1)
-    )
+    return all(alo[k] - margin <= bhi[k] and blo[k] - margin <= ahi[k] for k in (0, 1))
 
 
 def _merge_sym(c: dict) -> str | None:

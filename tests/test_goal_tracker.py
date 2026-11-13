@@ -23,7 +23,13 @@ def plan(pid, *types):
 
 
 def result(pid, i, status="SUCCESS", typ="FOLLOW", detail=""):
-    return {"plan_id": pid, "action_index": i, "action_type": typ, "status": status, "detail": detail}
+    return {
+        "plan_id": pid,
+        "action_index": i,
+        "action_type": typ,
+        "status": status,
+        "detail": detail,
+    }
 
 
 def teleop(executing=True, paused=False, **kw):
@@ -33,7 +39,9 @@ def teleop(executing=True, paused=False, **kw):
 def make():
     clock = Clock()
     pushed = []
-    tr = GoalTracker(publish=lambda gid, v: pushed.append((gid, v["stage"], v)), clock=clock)
+    tr = GoalTracker(
+        publish=lambda gid, v: pushed.append((gid, v["stage"], v)), clock=clock
+    )
     return tr, clock, pushed
 
 
@@ -56,13 +64,18 @@ def robot_stages(pushed, gid, robot):
 
 def test_single_robot_happy_path():
     tr, clock, pushed = make()
-    gid = tr.goal_sent("euclid", kind="pddl", via="goal_manager", summary="(visited-place p1)")
+    gid = tr.goal_sent(
+        "euclid", kind="pddl", via="goal_manager", summary="(visited-place p1)"
+    )
     clock.step()
     tr.on_plan("euclid", plan("0026942e", "FOLLOW", "GAZE"))
     tr.on_plan_status({"plugin": "Pddl", "robot": "euclid", "ok": True})
     v = tr.view(gid)
     assert v["planner"] == "planned"
-    assert v["robots"]["euclid"]["plan_id"] == "0026942e" and v["robots"]["euclid"]["n"] == 2
+    assert (
+        v["robots"]["euclid"]["plan_id"] == "0026942e"
+        and v["robots"]["euclid"]["n"] == 2
+    )
     clock.step()
     tr.on_teleop("euclid", teleop(executing=True))
     assert tr.view(gid)["robots"]["euclid"]["stage"] == "executing"
@@ -86,7 +99,9 @@ def test_paused_and_resumed_the_motivating_incident():
     clock.step(18)
     tr.on_teleop("euclid", teleop(executing=False, paused=True))
     v = tr.view(gid)
-    assert v["stage"] == "paused" and v["robots"]["euclid"]["text"].startswith("paused at action 1/2")
+    assert v["stage"] == "paused" and v["robots"]["euclid"]["text"].startswith(
+        "paused at action 1/2"
+    )
     # still paused much later: never mistaken for a stopped executor
     clock.step(60)
     tr.on_teleop("euclid", teleop(executing=False, paused=True))
@@ -102,7 +117,13 @@ def test_planning_failed():
     tr, clock, pushed = make()
     gid = tr.goal_sent("hamilton", kind="pddl")
     clock.step(3)
-    tr.on_plan_status({"robot": "hamilton", "ok": False, "error": "no connectivity left in the problem"})
+    tr.on_plan_status(
+        {
+            "robot": "hamilton",
+            "ok": False,
+            "error": "no connectivity left in the problem",
+        }
+    )
     v = tr.view(gid)
     assert v["stage"] == "plan_failed"
     assert "no connectivity" in v["text"]
@@ -122,10 +143,15 @@ def test_action_failed():
     tr.on_plan("euclid", plan("p1", "FOLLOW", "PICK"))
     tr.on_plan_status({"robot": "euclid", "ok": True})
     tr.on_result("euclid", result("p1", 0))
-    tr.on_result("euclid", result("p1", 1, "FAILED", "PICK", "gave up after 3 attempts"))
+    tr.on_result(
+        "euclid", result("p1", 1, "FAILED", "PICK", "gave up after 3 attempts")
+    )
     v = tr.view(gid)
     assert v["stage"] == "failed"
-    assert v["robots"]["euclid"]["text"] == "failed at action 2/2 (PICK): gave up after 3 attempts"
+    assert (
+        v["robots"]["euclid"]["text"]
+        == "failed at action 2/2 (PICK): gave up after 3 attempts"
+    )
 
 
 def test_preempted_by_a_newer_goal():
@@ -198,22 +224,36 @@ def test_tablet_takes_the_lease_and_gives_it_back():
     gid = tr.goal_sent("euclid", kind="pddl")
     tr.on_plan("euclid", plan("p1", "FOLLOW", "FOLLOW"))
     tr.on_plan_status({"robot": "euclid", "ok": True})
-    tr.on_lease("euclid", {"known": True, "owned": True, "owner": "understanding-euclid"})
+    tr.on_lease(
+        "euclid", {"known": True, "owned": True, "owner": "understanding-euclid"}
+    )
     tr.on_teleop("euclid", teleop())
     assert tr.view(gid)["stage"] == "executing"
     clock.step()
-    tr.on_lease("euclid", {"known": True, "owned": False, "owner": "bosdyn.android.spotapp tablet"})
+    tr.on_lease(
+        "euclid",
+        {"known": True, "owned": False, "owner": "bosdyn.android.spotapp tablet"},
+    )
     rv = tr.view(gid)["robots"]["euclid"]
     assert rv["stage"] == "lease_wait"
-    assert rv["text"] == "waiting — the tablet (bosdyn.android.spotapp tablet) holds the lease (tablet took over)"
+    assert (
+        rv["text"]
+        == "waiting — the tablet (bosdyn.android.spotapp tablet) holds the lease (tablet took over)"
+    )
     # the executor still runs the sequence (waiting between actions): not "stopped"
     clock.step(30)
     tr.on_teleop("euclid", teleop())
     assert tr.view(gid)["robots"]["euclid"]["stage"] == "lease_wait"
     clock.step()
-    tr.on_lease("euclid", {"known": True, "owned": True, "owner": "understanding-euclid"})
+    tr.on_lease(
+        "euclid", {"known": True, "owned": True, "owner": "understanding-euclid"}
+    )
     assert tr.view(gid)["robots"]["euclid"]["stage"] == "executing"
-    assert robot_stages(pushed, gid, "euclid")[-3:] == ["executing", "lease_wait", "executing"]
+    assert robot_stages(pushed, gid, "euclid")[-3:] == [
+        "executing",
+        "lease_wait",
+        "executing",
+    ]
 
 
 def test_lease_unknown():
@@ -229,7 +269,9 @@ def test_lease_unknown():
 
 def test_lease_known_before_the_plan_applies():
     tr, clock, _ = make()
-    tr.on_lease("euclid", {"known": True, "owned": False, "owner": "bosdyn.android.spotapp x"})
+    tr.on_lease(
+        "euclid", {"known": True, "owned": False, "owner": "bosdyn.android.spotapp x"}
+    )
     gid = tr.goal_sent("euclid", kind="pddl")
     tr.on_plan("euclid", plan("p1", "FOLLOW"))
     tr.on_teleop("euclid", teleop())
@@ -271,7 +313,10 @@ def test_exact_receipt_from_teleop_last_event():
     clock.step()
     tr.on_teleop("euclid", teleop(last_event="new plan p2 received"))
     rv = tr.view(gid)["robots"]["euclid"]
-    assert rv["received"] is not None and rv["received_how"] == "executor reports the new plan"
+    assert (
+        rv["received"] is not None
+        and rv["received_how"] == "executor reports the new plan"
+    )
 
 
 def test_skipped_goal_and_fifo_status():
@@ -370,12 +415,16 @@ def test_a_later_goals_plan_never_completes_an_earlier_goal():
 
 def test_goal_manager_replan_of_the_same_goal_is_followed():
     tr, clock, _ = make()
-    gid = tr.goal_sent("euclid", robots=["euclid"], kind="pddl", via="goal_manager", team=True)
+    gid = tr.goal_sent(
+        "euclid", robots=["euclid"], kind="pddl", via="goal_manager", team=True
+    )
     clock.step()
     tr.on_plan("euclid", plan("p1", "FOLLOW", "PLACE"))
     tr.on_plan_status({"robot": "euclid", "ok": True})
     clock.step(30)
-    tr.on_plan("euclid", plan("p9", "PLACE"))  # scene change: goal_manager replans this goal
+    tr.on_plan(
+        "euclid", plan("p9", "PLACE")
+    )  # scene change: goal_manager replans this goal
     rv = tr.view(gid)["robots"]["euclid"]
     assert rv["plan_id"] == "p9" and rv["n"] == 1
     assert any("replanned: plan p1" in e["text"] for e in rv["events"])
@@ -387,7 +436,9 @@ def test_goal_manager_replan_of_the_same_goal_is_followed():
 def test_after_a_newer_goal_manager_goal_replans_go_to_it_not_the_earlier_goal():
     tr, a, b, pushed = _a_then_b(True, "goal_manager")
     tr.clock.step(30)
-    tr.on_plan("euclid", plan("aa000009", "FOLLOW"))  # goal_manager replans B (its running goal)
+    tr.on_plan(
+        "euclid", plan("aa000009", "FOLLOW")
+    )  # goal_manager replans B (its running goal)
     _assert_a_replaced(tr, a, pushed)
     eb = tr.view(b)["robots"]["euclid"]
     assert eb["plan_id"] == "aa000009" and eb["stage"] == "planned"

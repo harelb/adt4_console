@@ -202,9 +202,9 @@ CONSOLE_GOAL_NOTES_FD_ONLY = re.sub(
 # plan-repair chat uses the same prefix): the turn offers no goal tool.
 SGET_PREFIX = re.compile(r"\s*sget\s*:", re.I)
 SGET_TURN_NOTE = (
-    "THIS MESSAGE STARTS WITH \"SGET:\": it asks you to EDIT THE SCENE GRAPH, not to move a "
+    'THIS MESSAGE STARTS WITH "SGET:": it asks you to EDIT THE SCENE GRAPH, not to move a '
     "robot. Do not treat it as a goal: propose_goal is not available in this turn. Make the "
-    "change with the map edit tools you have (e.g. \"SGET: move object 52 to t142\" moves the "
+    'change with the map edit tools you have (e.g. "SGET: move object 52 to t142" moves the '
     "object O52 in the map to place t142's position: look the position up, then "
     "move_scene_object). If no edit tool can make the change, say so; do not offer a goal "
     "instead unless the operator asks for one."
@@ -389,7 +389,9 @@ class ChatTurn:
     the turn through Starlette, which runs each step of the generator on whatever
     threadpool worker is free, and one service serves every operator's turns."""
 
-    mission: dict | None = None  # {roster, areas, mission, planted, ...} from the planner
+    mission: dict | None = (
+        None  # {roster, areas, mission, planted, ...} from the planner
+    )
     reasoning: str | None = None  # GPT-5 / 6 reasoning effort (REASONING_LEVELS)
     engine: str | None = None  # the chat's planner toggle (GOAL_ENGINES)
     # PDDL goals proposed in this turn (one team goal per request)
@@ -1143,7 +1145,8 @@ class ChatService:
         parts = [
             f"{r} is holding {', '.join(objs)}"
             for r, held in sorted(self._holding().items())
-            if (not scoped or r in team) and (objs := [o for o in held if o.lower() not in words])
+            if (not scoped or r in team)
+            and (objs := [o for o in held if o.lower() not in words])
         ]
         if not parts:
             return ""
@@ -1151,7 +1154,7 @@ class ChatService:
                 "stands before the plan starts. To carry it, use object-placed-by (or keep holding in the goal)")  # fmt: skip
 
     def _roster_text(self, selected: str | None = None) -> str:
-        """" Fleet roster: ..." for the system prompt ("" without robots)."""
+        """ " Fleet roster: ..." for the system prompt ("" without robots)."""
         rows = fleet_roster(self.ros, self.live)
         if not rows:
             return ""
@@ -1179,9 +1182,9 @@ class ChatService:
             # availability facts only; the goal rules themselves come from heracles_agents
             text += (
                 f"\nThe team now (online, connected): {', '.join(online) or 'none'}. "
-                f"Offline — do not assign: {', '.join(offline)}. \"All robots\", \"the team\", "
-                "\"both robots\" and \"every robot\" mean the online robots, and a platform word "
-                "(\"the spots\", \"the huskies\") the online robots of that platform; never put an "
+                f'Offline — do not assign: {", ".join(offline)}. "All robots", "the team", '
+                '"both robots" and "every robot" mean the online robots, and a platform word '
+                '("the spots", "the huskies") the online robots of that platform; never put an '
                 "offline robot in a goal or use-robots unless the operator names it. An offline "
                 "robot is a known robot: say it is offline, never that it is unknown or not in "
                 "the fleet."
@@ -1190,8 +1193,9 @@ class ChatService:
         recent = goals.summary_lines(3) if goals is not None else []
         if recent:
             # the live "did the robot get it" status of goals the operator sent
-            text += "\nGoals sent from this console, latest last (live status):\n" + "\n".join(
-                f"- {x}" for x in recent
+            text += (
+                "\nGoals sent from this console, latest last (live status):\n"
+                + "\n".join(f"- {x}" for x in recent)
             )
         return text
 
@@ -1365,12 +1369,14 @@ class ChatService:
         named = goal_named_robots(goal)
         allowed = use_robots(body.get("constraints"))
         asked = operator_named_robots(message, offline)
-        bad = [r for r in dict.fromkeys(allowed + named) if r in offline and r not in asked]
+        bad = [
+            r for r in dict.fromkeys(allowed + named) if r in offline and r not in asked
+        ]
         if bad:
             return [], {
                 "error": f"NOT PROPOSED: {', '.join(bad)} {'is' if len(bad) == 1 else 'are'} offline "
                 f"(not connected); online robots: {', '.join(online) or 'none'}. Give the tasks to "
-                "the online robots only (\"all robots\" / \"the team\" means the online robots) "
+                'the online robots only ("all robots" / "the team" means the online robots) '
                 "and call propose_goal again."
             }
         problems = self._goal_problems(goal, body.get("constraints"), src)
@@ -1895,16 +1901,29 @@ class EditProposals(WriteProposals):
 
 
 PLATFORM_CAN = {
-    "spot": ("Spot (legged, with arm)", "navigates, inspects (gaze), picks up, places and drags objects"),
-    "phoenix": ("Husky (phoenix, wheeled, NO arm)", "navigates and inspects only; never picks, places or drags"),
-    "husky": ("Husky (wheeled, NO arm)", "navigates and inspects only; never picks, places or drags"),
+    "spot": (
+        "Spot (legged, with arm)",
+        "navigates, inspects (gaze), picks up, places and drags objects",
+    ),
+    "phoenix": (
+        "Husky (phoenix, wheeled, NO arm)",
+        "navigates and inspects only; never picks, places or drags",
+    ),
+    "husky": (
+        "Husky (wheeled, NO arm)",
+        "navigates and inspects only; never picks, places or drags",
+    ),
 }
 
 
 def operator_named_robots(message: str, robots) -> set[str]:
     """The ``robots`` the operator's message names as words."""
     text = (message or "").lower()
-    return {r for r in robots if re.search(rf"(?<![a-z0-9_-]){re.escape(r.lower())}(?![a-z0-9_-])", text)}
+    return {
+        r
+        for r in robots
+        if re.search(rf"(?<![a-z0-9_-]){re.escape(r.lower())}(?![a-z0-9_-])", text)
+    }
 
 
 def fleet_roster(ros, live) -> list[dict]:

@@ -96,10 +96,22 @@ def test_z_outlier_and_slivers_never_represent():
 
 
 def test_different_merge_targets_stay_apart():
-    a = _cand(0, 0.9, (0, 0, 0), (0.3, 0.3, 0.7), merge={"symbol": "O1", "distance_m": 0.1})
-    b = _cand(1, 0.8, (0.4, 0, 0), (0.3, 0.3, 0.7), merge={"symbol": "O2", "distance_m": 0.1})
-    c = _cand(2, 0.7, (0.2, 0.1, 0), (0.3, 0.3, 0.7), merge={"symbol": "O1", "distance_m": 0.3})
-    groups = sorted(sorted(m["index"] for m in k["members"]) for k in cluster([a, b, c]))
+    a = _cand(
+        0, 0.9, (0, 0, 0), (0.3, 0.3, 0.7), merge={"symbol": "O1", "distance_m": 0.1}
+    )
+    b = _cand(
+        1, 0.8, (0.4, 0, 0), (0.3, 0.3, 0.7), merge={"symbol": "O2", "distance_m": 0.1}
+    )
+    c = _cand(
+        2,
+        0.7,
+        (0.2, 0.1, 0),
+        (0.3, 0.3, 0.7),
+        merge={"symbol": "O1", "distance_m": 0.3},
+    )
+    groups = sorted(
+        sorted(m["index"] for m in k["members"]) for k in cluster([a, b, c])
+    )
     assert groups == [[0, 2], [1]]
 
 

@@ -50,6 +50,8 @@ def test_cli_explicit_zenoh_connect_wins(monkeypatch):
 def test_network_fleet_link_info():
     info = _fleet_link(TOPO)
     assert info["fleet_link"] == "fleetlink"
+    # older fleet_helpers wrote "->" in the summary
+    info["fleetlink"]["summary"] = info["fleetlink"]["summary"].replace("->", "→")
     assert info["fleetlink"] == {
         "base": "base",
         "port": 7450,

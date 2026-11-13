@@ -327,7 +327,9 @@ def test_map_scene_routes():
 
 
 def test_keep_detections_for_the_fleet_change_detection_reset():
-    svc, graph, ros, mod = service(answer=(True, "Kept 2 change detection change(s) in the map."))
+    svc, graph, ros, mod = service(
+        answer=(True, "Kept 2 change detection change(s) in the map.")
+    )
     st = svc.detections_status()
     assert st["running"] and st["keep_supported"] is False  # an older writer
     ros.has_service = lambda name: name.startswith("/willow/scene_change_writer/")
@@ -336,7 +338,9 @@ def test_keep_detections_for_the_fleet_change_detection_reset():
     out = svc.keep_detections()
     assert out == {"ok": True, "service": "/willow/scene_change_writer/keep_detections",
                    "message": "Kept 2 change detection change(s) in the map."}  # fmt: skip
-    assert ros.services == [("/willow/scene_change_writer/keep_detections", "std_srvs/srv/Trigger")]
+    assert ros.services == [
+        ("/willow/scene_change_writer/keep_detections", "std_srvs/srv/Trigger")
+    ]
     assert graph.src.invalidated == 0  # keeping changes nothing in the map
     svc, graph, ros, mod = service(writer=False)
     st = svc.detections_status()
@@ -347,7 +351,7 @@ def test_keep_detections_for_the_fleet_change_detection_reset():
 
 
 def test_an_sget_message_gets_no_goal_tool_and_is_told_it_is_an_edit():
-    """"SGET: move object 52 to t142" was answered with a goal card (move the
+    """ "SGET: move object 52 to t142" was answered with a goal card (move the
     object with a robot). The prefix means: edit the map."""
     from adt4_console.chat import SGET_PREFIX, SGET_TURN_NOTE, ChatTurn
 

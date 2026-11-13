@@ -66,7 +66,10 @@ def test_candidates_match_grstaps_pddl_goal_topics_only():
     names = [
         (GR_TOPIC, [CPG]),
         ("/other/omniplanner_node/grstaps_planner/pddl_goal", [CPG]),
-        ("/willow/omniplanner_node/grstaps_planner/grstaps_goal", ["omniplanner_msgs/msg/GotoPointsGoalMsg"]),
+        (
+            "/willow/omniplanner_node/grstaps_planner/grstaps_goal",
+            ["omniplanner_msgs/msg/GotoPointsGoalMsg"],
+        ),
         ("/willow/omniplanner_node/multi_robot_pddl_constrained/pddl_goal", [CPG]),
         ("/willow/omniplanner_node/grstaps_planner/pddl_goal_x", [CPG]),
     ]
@@ -74,10 +77,16 @@ def test_candidates_match_grstaps_pddl_goal_topics_only():
         GR_TOPIC, "/other/omniplanner_node/grstaps_planner/pddl_goal"]  # fmt: skip
 
 
-def test_goal_manager_forwarding_to_grstaps_is_found_without_the_plugin_in_config(monkeypatch):
+def test_goal_manager_forwarding_to_grstaps_is_found_without_the_plugin_in_config(
+    monkeypatch,
+):
     rb, _ = _bridge(monkeypatch, {GR_TOPIC: ([CPG], ["goal_manager"], 1)})
     assert rb.find_plugin("grstaps") is None  # the console's config has none
-    assert rb.grstaps_live() == {"topic": GR_TOPIC, "goal_manager": True, "subscribers": 1}
+    assert rb.grstaps_live() == {
+        "topic": GR_TOPIC,
+        "goal_manager": True,
+        "subscribers": 1,
+    }
     assert rb.goal_manager_engine() == "grstaps"
 
 
@@ -92,7 +101,11 @@ def test_nothing_running_and_stale_names_are_not_grstaps(monkeypatch):
 def test_graph_lookup_is_cached_briefly_and_sees_a_planner_started_later(monkeypatch):
     rb, _ = _bridge(monkeypatch, {})
     assert rb.grstaps_live(now=100.0) is None
-    rb.node.graph[GR_TOPIC] = ([CPG], ["goal_manager"], 1)  # the planning session starts
+    rb.node.graph[GR_TOPIC] = (
+        [CPG],
+        ["goal_manager"],
+        1,
+    )  # the planning session starts
     assert rb.grstaps_live(now=101.0) is None  # cached
     q = rb.node.queries
     assert rb.grstaps_live(now=104.0)["topic"] == GR_TOPIC  # re-evaluated
@@ -112,7 +125,10 @@ def test_send_grstaps_straight_to_the_discovered_topic(monkeypatch):
     r = rb.send_pddl_goal("euclid", "(visited-object o1)", engine="grstaps")
     assert r["via"] == "planner" and r["plugin"] == "grstaps_planner"
     assert sent[-1][0] == GR_TOPIC and sent[-1][1] == CPG
-    assert sent[-1][2]["goal"] == {"robot_id": "euclid", "pddl_goal": "(visited-object o1)"}
+    assert sent[-1][2]["goal"] == {
+        "robot_id": "euclid",
+        "pddl_goal": "(visited-object o1)",
+    }
 
 
 def test_send_grstaps_without_any_planner_still_refuses(monkeypatch):
@@ -146,7 +162,11 @@ def _session(monkeypatch, gm_engine, fd_loaded=True, gr_loaded=True):
     if gr_loaded:
         graph[GR_TOPIC] = ([CPG], ["goal_manager"] if gm_engine == "grstaps" else [], 1)
     if fd_loaded:
-        graph[FD_TOPIC] = ([CPG], ["goal_manager"] if gm_engine == "fast_downward" else [], 1)
+        graph[FD_TOPIC] = (
+            [CPG],
+            ["goal_manager"] if gm_engine == "fast_downward" else [],
+            1,
+        )
     rb, sent = _bridge(monkeypatch, graph, gm_subs=1)
     rb.plugins = []  # nothing from the console's own config: the live graph decides
     return rb, sent
@@ -163,7 +183,10 @@ def test_fd_goal_in_a_grstaps_session_goes_to_fast_downward_directly(monkeypatch
     assert r["via"] == "planner" and r["engine"] == "fast_downward"
     assert r["plugin"] == "multi_robot_pddl_constrained"
     assert "sent to Fast Downward directly" in r["warning"]
-    assert "runs GRSTAPS-X in this session" in r["warning"] and "not repair-tracked" in r["warning"]
+    assert (
+        "runs GRSTAPS-X in this session" in r["warning"]
+        and "not repair-tracked" in r["warning"]
+    )
 
 
 def test_fd_goal_in_a_grstaps_session_without_fd_loaded_is_refused(monkeypatch):
@@ -190,7 +213,10 @@ def test_no_engine_asked_keeps_the_sessions_plan_repair(monkeypatch):
 def test_fd_goal_in_an_fd_session_goes_through_goal_manager(monkeypatch, engine):
     rb, sent = _session(monkeypatch, "fast_downward", gr_loaded=False)
     r = rb.send_pddl_goal("euclid", GOAL, engine=engine)
-    assert r["via"] == "goal_manager" and sent[-1][:2] == ("/willow/commanded_goal", COMMANDED_GOAL_TYPE)
+    assert r["via"] == "goal_manager" and sent[-1][:2] == (
+        "/willow/commanded_goal",
+        COMMANDED_GOAL_TYPE,
+    )
 
 
 def test_grstaps_goal_in_a_grstaps_session_goes_through_goal_manager(monkeypatch):

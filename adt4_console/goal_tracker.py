@@ -79,7 +79,9 @@ class RobotTrack:
         return len(self.actions)
 
     def done_count(self) -> int:
-        return len({r["action_index"] for r in self.results if r["status"] == "SUCCESS"})
+        return len(
+            {r["action_index"] for r in self.results if r["status"] == "SUCCESS"}
+        )
 
     def stage(self) -> tuple[str, str]:
         """(stage, text) for the UI."""
@@ -89,19 +91,37 @@ class RobotTrack:
             return "waiting", "waiting for a plan"
         if self.received is None:
             if self.lease == "wait" and self.delivered is not None:
-                return "lease_wait", f"waiting — {owner_text(self.lease_owner)} holds the lease (tablet took over)"
+                return (
+                    "lease_wait",
+                    f"waiting — {owner_text(self.lease_owner)} holds the lease (tablet took over)",
+                )
             if self.delivered is not None:
-                return "delivered", "plan delivered to the robot (fleetlink ack); executor not heard from yet"
+                return (
+                    "delivered",
+                    "plan delivered to the robot (fleetlink ack); executor not heard from yet",
+                )
             return "planned", f"planned: {self.n} action{'s' if self.n != 1 else ''}"
         if self.paused:
             return "paused", f"paused at action {self._cur()}/{self.n}"
         if self.lease == "wait":
-            return "lease_wait", f"waiting — {owner_text(self.lease_owner)} holds the lease (tablet took over)"
+            return (
+                "lease_wait",
+                f"waiting — {owner_text(self.lease_owner)} holds the lease (tablet took over)",
+            )
         if self.lease == "unknown":
-            return "lease_unknown", f"lease state unknown · action {self._cur()}/{self.n}"
+            return (
+                "lease_unknown",
+                f"lease state unknown · action {self._cur()}/{self.n}",
+            )
         if self.idle:
-            return "stopped", f"not executing — the executor reports no plan running (stopped at action {self._cur()}/{self.n})"
-        return "executing", f"executing action {self._cur()}/{self.n} ({self._cur_type()})"
+            return (
+                "stopped",
+                f"not executing — the executor reports no plan running (stopped at action {self._cur()}/{self.n})",
+            )
+        return (
+            "executing",
+            f"executing action {self._cur()}/{self.n} ({self._cur_type()})",
+        )
 
     def _cur(self) -> int:
         return min(self.done_count() + 1, max(self.n, 1))
@@ -137,7 +157,9 @@ class RobotTrack:
 
 
 class Goal:
-    def __init__(self, gid, robot, robots, kind, via, summary, t, platforms, team=False):
+    def __init__(
+        self, gid, robot, robots, kind, via, summary, t, platforms, team=False
+    ):
         self.id = gid
         # a team goal: the planner allocates it across the fleet, so any robot's
         # next plan belongs to it, not only the robots it names
@@ -155,7 +177,9 @@ class Goal:
         for r in robots:
             self.robots[r] = RobotTrack(r, True)
         self.events: collections.deque = collections.deque(maxlen=MAX_EVENTS)
-        self.events.append({"t": t, "text": f"goal sent to {robot}" + (f" via {via}" if via else "")})
+        self.events.append(
+            {"t": t, "text": f"goal sent to {robot}" + (f" via {via}" if via else "")}
+        )
 
     def overall(self) -> tuple[str, str]:
         if self.planner == "failed":
@@ -166,10 +190,24 @@ class Goal:
         if not tracks:
             if self.planner == "send_failed":
                 return "plan_failed", self.planner_error
-            return ("planning", "planning…") if self.planner in ("sent", "direct") else ("planned", "planned (no plan seen for any robot)")
+            return (
+                ("planning", "planning…")
+                if self.planner in ("sent", "direct")
+                else ("planned", "planned (no plan seen for any robot)")
+            )
         parts = [f"{rt.robot}: {rt.stage()[1]}" for rt in tracks]
         stages = {rt.stage()[0] for rt in tracks}
-        for s in ("failed", "lease_wait", "paused", "stopped", "lease_unknown", "preempted", "executing", "delivered", "planned"):
+        for s in (
+            "failed",
+            "lease_wait",
+            "paused",
+            "stopped",
+            "lease_unknown",
+            "preempted",
+            "executing",
+            "delivered",
+            "planned",
+        ):
             if s in stages:
                 return s, " · ".join(parts)
         return ("done" if stages == {"done"} else sorted(stages)[0]), " · ".join(parts)
@@ -195,7 +233,11 @@ class Goal:
             "planner_t": self.planner_t,
             "stage": stage,
             "text": text,
-            "robots": {r: self._robot_view(rt) for r, rt in self.robots.items() if rt.plan_id is not None or rt.named},
+            "robots": {
+                r: self._robot_view(rt)
+                for r, rt in self.robots.items()
+                if rt.plan_id is not None or rt.named
+            },
             "events": list(self.events),
         }
 
@@ -222,15 +264,35 @@ class GoalTracker:
             return [g.view() for g in list(self._goals.values())[-n:]]
 
     # ------------------------------------------------------------- feeding
-    def goal_sent(self, robot, robots=None, kind="", via=None, summary="", t=None, platforms=None, direct=False,
-                  team=False) -> str:
+    def goal_sent(
+        self,
+        robot,
+        robots=None,
+        kind="",
+        via=None,
+        summary="",
+        t=None,
+        platforms=None,
+        direct=False,
+        team=False,
+    ) -> str:
         """Register a goal before it is published; ``direct``: the console
         publishes the plan itself (no planner, no plan_status); ``team``: the
         planner allocates it across the fleet (any robot's plan joins it)."""
         t = self.clock() if t is None else t
         with self._lock:
             gid = f"g{int(t)}-{next(self._ids)}"
-            g = Goal(gid, robot, list(dict.fromkeys(robots or [robot])), kind, via, summary, t, platforms or {}, team)
+            g = Goal(
+                gid,
+                robot,
+                list(dict.fromkeys(robots or [robot])),
+                kind,
+                via,
+                summary,
+                t,
+                platforms or {},
+                team,
+            )
             if direct:
                 g.planner = "direct"
             self._goals[gid] = g
@@ -261,20 +323,34 @@ class GoalTracker:
             owner = self._claimant(robot, t) or self._goal_manager_owner(robot, t)
             for g in self._live(t):
                 rt = g.robots.get(robot)
-                if g is owner or rt is None or rt.plan_id is None or rt.plan_id == pid or rt.terminal in ("done", "failed"):
+                if (
+                    g is owner
+                    or rt is None
+                    or rt.plan_id is None
+                    or rt.plan_id == pid
+                    or rt.terminal in ("done", "failed")
+                ):
                     continue
                 if rt.terminal == "preempted":
                     continue
-                if (owner is not None and owner.t > g.t) or (owner is None and self._newer_planning(g, t)):
+                if (owner is not None and owner.t > g.t) or (
+                    owner is None and self._newer_planning(g, t)
+                ):
                     # a plan of a later goal: it must never complete this one
-                    rt.terminal, rt.detail = "preempted", f"replaced by a newer goal (plan {pid[:8]})"
+                    rt.terminal, rt.detail = (
+                        "preempted",
+                        f"replaced by a newer goal (plan {pid[:8]})",
+                    )
                     rt.event(t, rt.detail)
                     self._emit(g)
                 elif owner is None and rt.terminal is None:
                     # not from a console goal: plan repair replanned it, or another sender
                     old = rt.plan_id
                     self._attach(rt, pid, actions, t)
-                    rt.event(t, f"replaced: plan {old[:8]} → {pid[:8]} (plan repair replan or another sender), {len(actions)} actions")
+                    rt.event(
+                        t,
+                        f"replaced: plan {old[:8]} → {pid[:8]} (plan repair replan or another sender), {len(actions)} actions",
+                    )
                     self._emit(g)
             if owner is not None:
                 rt = owner.robots.get(robot)
@@ -287,13 +363,18 @@ class GoalTracker:
                     if old is None:
                         rt.event(t, f"planned: plan {pid[:8]}, {what}")
                     else:
-                        rt.event(t, f"replanned: plan {old[:8]} → {pid[:8]} (plan repair replan of this goal), {what}")
+                        rt.event(
+                            t,
+                            f"replanned: plan {old[:8]} → {pid[:8]} (plan repair replan of this goal), {what}",
+                        )
                     if not actions:
                         rt.terminal, rt.detail = "done", "empty plan: nothing to do"
                     if owner.planner == "direct":
                         owner.planner, owner.planner_t = "planned", t
                     elif owner.planner == "sent" and owner.planner_t is None:
-                        owner.planner_t = t  # the first plan: others join for JOINT_PLAN_S
+                        owner.planner_t = (
+                            t  # the first plan: others join for JOINT_PLAN_S
+                        )
                     self._emit(owner)
 
     def _attach(self, rt: RobotTrack, pid, actions, t):
@@ -316,7 +397,11 @@ class GoalTracker:
         live = self._live(t)
         for g in reversed(live):
             rt = g.robots.get(robot)
-            if g.planner in ("sent", "direct") and rt is not None and rt.plan_id is None:
+            if (
+                g.planner in ("sent", "direct")
+                and rt is not None
+                and rt.plan_id is None
+            ):
                 return g
         # a team goal still planning: the planner may give the work to any robot
         newest = live[-1] if live else None
@@ -325,10 +410,19 @@ class GoalTracker:
             if rt is None or rt.plan_id is None:
                 return newest
         for g in reversed(live):
-            if g.planner == "sent" and robot not in g.robots and g.planner_t is not None and t - g.planner_t < JOINT_PLAN_S:
+            if (
+                g.planner == "sent"
+                and robot not in g.robots
+                and g.planner_t is not None
+                and t - g.planner_t < JOINT_PLAN_S
+            ):
                 return g
         for g in reversed(live):
-            if g.planner == "planned" and g.planner_t is not None and t - g.planner_t < JOINT_PLAN_S:
+            if (
+                g.planner == "planned"
+                and g.planner_t is not None
+                and t - g.planner_t < JOINT_PLAN_S
+            ):
                 rt = g.robots.get(robot)
                 if rt is None or rt.plan_id is None:
                     return g
@@ -345,21 +439,32 @@ class GoalTracker:
         if not live:
             return None
         newest = live[-1]
-        if newest.via != "goal_manager" or newest.planner in ("send_failed", "skipped", "failed"):
+        if newest.via != "goal_manager" or newest.planner in (
+            "send_failed",
+            "skipped",
+            "failed",
+        ):
             return None
         return newest
 
     def _newer_planning(self, g: Goal, t) -> bool:
         """A goal sent after ``g`` is still planning: a plan that arrives now comes
         from it (or another sender), not from a replan of ``g``."""
-        return any(o.t > g.t and o is not g and o.planner == "sent" for o in self._live(t))
+        return any(
+            o.t > g.t and o is not g and o.planner == "sent" for o in self._live(t)
+        )
 
     def on_plan_status(self, st: dict, t=None) -> None:
         """omniplanner ``~/plan_status``: {plugin, robot, ok, error, t}."""
         t = self.clock() if t is None else t
         robot = str(st.get("robot") or "")
         with self._lock:
-            waiting = [g for g in self._live(t) if g.planner == "sent" and (not robot or g.robot == robot or robot in g.robots)]
+            waiting = [
+                g
+                for g in self._live(t)
+                if g.planner == "sent"
+                and (not robot or g.robot == robot or robot in g.robots)
+            ]
             if not waiting:
                 return
             # FIFO: the oldest waiting goal for the robot; older ones were skipped
@@ -373,14 +478,22 @@ class GoalTracker:
                 if w is g:
                     break
                 w.planner = "skipped"
-                w.planner_error = "no plan: the planner skipped this goal for a newer one"
+                w.planner_error = (
+                    "no plan: the planner skipped this goal for a newer one"
+                )
                 w.events.append({"t": t, "text": w.planner_error})
                 self._emit(w)
             if st.get("ok"):
                 g.planner = "planned"
                 g.planner_t = t
                 robots = [r for r, rt in g.robots.items() if rt.plan_id]
-                g.events.append({"t": t, "text": "planner: ok" + (f" ({', '.join(robots)})" if robots else "")})
+                g.events.append(
+                    {
+                        "t": t,
+                        "text": "planner: ok"
+                        + (f" ({', '.join(robots)})" if robots else ""),
+                    }
+                )
             else:
                 g.planner = "failed"
                 g.planner_t = t
@@ -424,16 +537,27 @@ class GoalTracker:
                 if status == "SUCCESS":
                     rt.event(t, f"{what} done")
                     if rt.done_count() >= rt.n:
-                        rt.terminal, rt.detail = "done", f"done: all {rt.n} actions succeeded"
+                        rt.terminal, rt.detail = (
+                            "done",
+                            f"done: all {rt.n} actions succeeded",
+                        )
                         rt.event(t, rt.detail)
                 elif status == "PREEMPTED":
-                    rt.terminal, rt.detail = "preempted", f"preempted at {what}" + (f": {detail}" if detail else "")
+                    rt.terminal, rt.detail = (
+                        "preempted",
+                        f"preempted at {what}" + (f": {detail}" if detail else ""),
+                    )
                     rt.event(t, rt.detail)
                 elif any(w in status for w in FAIL_WORDS):
-                    rt.terminal, rt.detail = "failed", f"failed at {what}" + (f": {detail}" if detail else "")
+                    rt.terminal, rt.detail = (
+                        "failed",
+                        f"failed at {what}" + (f": {detail}" if detail else ""),
+                    )
                     rt.event(t, rt.detail)
                 else:
-                    rt.event(t, f"{what}: {status}" + (f" ({detail})" if detail else ""))
+                    rt.event(
+                        t, f"{what}: {status}" + (f" ({detail})" if detail else "")
+                    )
                 self._emit(g)
 
     def _received(self, rt: RobotTrack, t, how) -> bool:
@@ -457,11 +581,25 @@ class GoalTracker:
                     continue
                 changed = False
                 if rt.received is None:
-                    exact = rt.plan_id and last_event == f"new plan {rt.plan_id} received"
+                    exact = (
+                        rt.plan_id and last_event == f"new plan {rt.plan_id} received"
+                    )
                     # without fleetlink's ack the executor may still be on the previous plan
-                    ok = exact or ((executing or paused) and (rt.delivered is not None or not g.platforms.get("fleetlink_" + robot)))
+                    ok = exact or (
+                        (executing or paused)
+                        and (
+                            rt.delivered is not None
+                            or not g.platforms.get("fleetlink_" + robot)
+                        )
+                    )
                     if ok and t >= (rt.t_plan or 0):
-                        changed |= self._received(rt, t, "executor reports the new plan" if exact else "executor reports a plan running")
+                        changed |= self._received(
+                            rt,
+                            t,
+                            "executor reports the new plan"
+                            if exact
+                            else "executor reports a plan running",
+                        )
                 if rt.received is None:
                     if changed:
                         self._emit(g)
@@ -473,10 +611,19 @@ class GoalTracker:
                     changed = True
                 if executing or paused:
                     rt.last_progress = t
-                idle = not executing and not paused and t - (rt.last_progress or t) > IDLE_S
+                idle = (
+                    not executing
+                    and not paused
+                    and t - (rt.last_progress or t) > IDLE_S
+                )
                 if idle != rt.idle:
                     rt.idle = idle
-                    rt.event(t, "executor reports no plan running (stopped, or it gave up waiting)" if idle else "executing again")
+                    rt.event(
+                        t,
+                        "executor reports no plan running (stopped, or it gave up waiting)"
+                        if idle
+                        else "executing again",
+                    )
                     changed = True
                 if changed:
                     self._emit(g)
@@ -517,7 +664,11 @@ class GoalTracker:
         with self._lock:
             for g, rt in self._tracks(robot, t):
                 if rt.terminal is None:
-                    rt.event(t, f"{cmd} sent from the console" + ("" if ok else " (not delivered)"))
+                    rt.event(
+                        t,
+                        f"{cmd} sent from the console"
+                        + ("" if ok else " (not delivered)"),
+                    )
                     if cmd == "stop" and ok:
                         rt.terminal, rt.detail = "preempted", "stopped from the console"
                     self._emit(g)
@@ -542,5 +693,7 @@ class GoalTracker:
             out = []
             for g in list(self._goals.values())[-n:]:
                 stage, text = g.overall()
-                out.append(f"{g.id} ({g.kind} to {g.robot}, {g.summary[:80]}): {stage} — {text[:200]}")
+                out.append(
+                    f"{g.id} ({g.kind} to {g.robot}, {g.summary[:80]}): {stage} — {text[:200]}"
+                )
             return out

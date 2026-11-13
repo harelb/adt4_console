@@ -82,7 +82,9 @@ def _fake_set_message_fields(msg, values):
 def bridge(request, monkeypatch):
     if request.param == "rosidl":
         if not _real_rosidl():
-            pytest.skip("rosidl_runtime_py / omniplanner_msgs not importable (source ROS + dcist_ws)")
+            pytest.skip(
+                "rosidl_runtime_py / omniplanner_msgs not importable (source ROS + dcist_ws)"
+            )
         from omniplanner_msgs.msg import ConstrainedPddlGoalMsg
 
         cls = ConstrainedPddlGoalMsg
@@ -95,7 +97,9 @@ def bridge(request, monkeypatch):
         monkeypatch.setitem(sys.modules, "rosidl_runtime_py.set_message", mod)
         cls = _GoalMsg
     published = []
-    pub = types.SimpleNamespace(publish=published.append, get_subscription_count=lambda: 1)
+    pub = types.SimpleNamespace(
+        publish=published.append, get_subscription_count=lambda: 1
+    )
     rb = RosBridge(types.SimpleNamespace(ros=False, planner_ns="willow"))
     monkeypatch.setattr(ros_bridge, "import_type", lambda path: cls)
     monkeypatch.setattr(rb, "run", lambda fn, timeout=5.0: fn())
@@ -126,9 +130,18 @@ def test_set_message_fields_mutates_the_callers_dicts(bridge):
 def test_publish_leaves_constraint_fields_unchanged_and_serialisable(bridge):
     rb, published, _ = bridge
     fields = json.loads(json.dumps(FIELDS))
-    assert rb.publish("/willow/goal", "omniplanner_msgs/msg/ConstrainedPddlGoalMsg", fields) == 1
+    assert (
+        rb.publish(
+            "/willow/goal", "omniplanner_msgs/msg/ConstrainedPddlGoalMsg", fields
+        )
+        == 1
+    )
     [msg] = published
-    assert [c.predicate for c in msg.constraints] == ["use-robots", "before", "forbidden-poi"]
+    assert [c.predicate for c in msg.constraints] == [
+        "use-robots",
+        "before",
+        "forbidden-poi",
+    ]
     assert list(msg.constraints[0].symbols) == ["euclid"]
     _check_fields_untouched(fields)
 
@@ -136,7 +149,9 @@ def test_publish_leaves_constraint_fields_unchanged_and_serialisable(bridge):
 def test_publish_now_leaves_constraint_fields_unchanged(bridge):
     rb, published, _ = bridge
     fields = json.loads(json.dumps(FIELDS))
-    rb.publish_now("/willow/goal", "omniplanner_msgs/msg/ConstrainedPddlGoalMsg", fields)
+    rb.publish_now(
+        "/willow/goal", "omniplanner_msgs/msg/ConstrainedPddlGoalMsg", fields
+    )
     assert len(published) == 1
     _check_fields_untouched(fields)
 
@@ -145,10 +160,16 @@ def test_send_keeps_a_msgpack_able_goal_for_the_hub(bridge, monkeypatch):
     """_send → hub.publish (msgpack) of the plan view, as in the HTTP call."""
     rb, published, _ = bridge
     frames = []
-    rb.hub = types.SimpleNamespace(publish=lambda topic, data: frames.append(msgpack.packb(data, use_bin_type=True)))
+    rb.hub = types.SimpleNamespace(
+        publish=lambda topic, data: frames.append(
+            msgpack.packb(data, use_bin_type=True)
+        )
+    )
     monkeypatch.setattr(rb, "goal_manager_subscribers", lambda: 1)
     monkeypatch.setattr(rb, "goal_manager_engine", lambda: "fast_downward")
-    out = rb.send_pddl_goal("euclid", "(visited-object o2)", constraints=[["use-robots", "euclid"]])
+    out = rb.send_pddl_goal(
+        "euclid", "(visited-object o2)", constraints=[["use-robots", "euclid"]]
+    )
     assert len(published) == 1 and frames
     msgpack.packb(out, use_bin_type=True)
     rb._publish_plan("euclid")  # what _on_plan does later on the executor

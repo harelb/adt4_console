@@ -55,14 +55,18 @@ def test_prompt_has_the_team_goal_rules():
     assert "whichever robot is closer" not in desc
     assert "WHOLE TEAM" in desc and "never one goal per robot" in desc
     assert "use-robots" in desc
-    enum = ChatService._T_PROPOSE_GOAL["input_schema"]["properties"]["constraints"]["items"]["properties"]["predicate"]["enum"]
+    enum = ChatService._T_PROPOSE_GOAL["input_schema"]["properties"]["constraints"][
+        "items"
+    ]["properties"]["predicate"]["enum"]
     assert "use-robots" in enum
 
 
 @needs_heracles_agents
 def test_system_prompt_includes_team_rules_with_and_without_neo4j():
     c = chat()
-    assert "One goal per request covers the whole team" in c._system(None, "euclid", turn=c.turn)
+    assert "One goal per request covers the whole team" in c._system(
+        None, "euclid", turn=c.turn
+    )
 
 
 # --------------------------------------------------------------- proposals
@@ -77,7 +81,11 @@ def test_both_robots_is_one_team_card():
     events, out = c._run_tool(
         "propose_goal",
         {"kind": "pddl", "pddl_goal": ALL_CHAIRS, "constraints": BOTH},
-        "Visit all the chairs with both euclid and hamilton", "euclid", None, None, turn=c.turn
+        "Visit all the chairs with both euclid and hamilton",
+        "euclid",
+        None,
+        None,
+        turn=c.turn,
     )
     [card] = events
     assert card["team"] == ["euclid", "hamilton"] and card["robot"] == "euclid"
@@ -117,8 +125,19 @@ def test_second_per_robot_goal_in_one_reply_is_refused():
     """The live failure: one goal per robot, the second send preempting the first."""
     c = chat()
     _turn(c)
-    per_robot = lambda r: "(and " + " ".join(f"(visited-object-by {r} {o})" for o in CHAIRS) + ")"  # noqa: E731
-    first, _ = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": per_robot("euclid")}, "", "euclid", None, None, turn=c.turn)
+
+    def per_robot(r):
+        return "(and " + " ".join(f"(visited-object-by {r} {o})" for o in CHAIRS) + ")"
+
+    first, _ = c._run_tool(
+        "propose_goal",
+        {"kind": "pddl", "pddl_goal": per_robot("euclid")},
+        "",
+        "euclid",
+        None,
+        None,
+        turn=c.turn,
+    )
     assert first
     events, out = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": per_robot("hamilton")}, "", "euclid", None,
                               None, turn=c.turn)  # fmt: skip
@@ -126,7 +145,15 @@ def test_second_per_robot_goal_in_one_reply_is_refused():
     assert "One goal covers the whole team" in out["error"]
     # the same for two picks sent apart
     _turn(c)
-    c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(holding hamilton o1)"}, "", "euclid", None, None, turn=c.turn)
+    c._run_tool(
+        "propose_goal",
+        {"kind": "pddl", "pddl_goal": "(holding hamilton o1)"},
+        "",
+        "euclid",
+        None,
+        None,
+        turn=c.turn,
+    )
     events, out = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(holding euclid o20)"}, "", "euclid",
                               None, None, turn=c.turn)  # fmt: skip
     assert events == [] and "(holding hamilton o1)" in out["error"]
@@ -136,7 +163,15 @@ def test_second_per_robot_goal_in_one_reply_is_refused():
 def test_combined_goal_replaces_the_earlier_proposal():
     c = chat()
     _turn(c)
-    c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(holding hamilton o1)"}, "", "euclid", None, None, turn=c.turn)
+    c._run_tool(
+        "propose_goal",
+        {"kind": "pddl", "pddl_goal": "(holding hamilton o1)"},
+        "",
+        "euclid",
+        None,
+        None,
+        turn=c.turn,
+    )
     [card], out = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(and (holding hamilton o1) (holding euclid o20))"},
                               "", "euclid", None, None, turn=c.turn)  # fmt: skip
     assert card["replaces"] is True and card["team"] == ["hamilton", "euclid"]
@@ -147,7 +182,15 @@ def test_combined_goal_replaces_the_earlier_proposal():
 def test_a_new_turn_starts_clean():
     c = chat()
     _turn(c)
-    c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(visited-object o2)"}, "", "euclid", None, None, turn=c.turn)
+    c._run_tool(
+        "propose_goal",
+        {"kind": "pddl", "pddl_goal": "(visited-object o2)"},
+        "",
+        "euclid",
+        None,
+        None,
+        turn=c.turn,
+    )
     _turn(c)
     [card], _ = c._run_tool("propose_goal", {"kind": "pddl", "pddl_goal": "(visited-object o9)"}, "", "euclid", None,
                             None, turn=c.turn)  # fmt: skip
@@ -166,9 +209,13 @@ def test_stream_starts_a_new_turn():
 
 
 def test_goal_atoms_and_robot_parsing():
-    assert goal_atoms("(and (visited-object O2)(holding euclid o1))") == {"(visited-object o2)", "(holding euclid o1)"}
-    assert goal_named_robots("(and (visited-object-by hamilton o2) (holding euclid o1) (at-place gauss t4))") == [
-        "hamilton", "euclid", "gauss"]
+    assert goal_atoms("(and (visited-object O2)(holding euclid o1))") == {
+        "(visited-object o2)",
+        "(holding euclid o1)",
+    }
+    assert goal_named_robots(
+        "(and (visited-object-by hamilton o2) (holding euclid o1) (at-place gauss t4))"
+    ) == ["hamilton", "euclid", "gauss"]
     assert is_team_goal(ALL_CHAIRS)
     assert is_team_goal("(visited-object-by euclid o1)", BOTH)
     assert is_team_goal("(and (holding hamilton o1) (holding euclid o20))")
@@ -193,7 +240,8 @@ def _bridge(monkeypatch, gm_subs=1):
 
 def test_use_robots_constraint_normalizes():
     assert normalize_constraints([["use-robots", "Euclid", "hamilton"]]) == [
-        {"predicate": "use-robots", "symbols": ["euclid", "hamilton"]}]
+        {"predicate": "use-robots", "symbols": ["euclid", "hamilton"]}
+    ]
     import pytest
 
     with pytest.raises(ValueError):
@@ -220,9 +268,16 @@ def test_team_goal_is_published_once_with_use_robots(monkeypatch):
 
 def test_standing_constraints_still_join_a_team_goal(monkeypatch):
     rb, sent = _bridge(monkeypatch)
-    rb.send_pddl_goal("euclid", ALL_CHAIRS, constraints=[["forbidden-poi", "o14"], *BOTH])
-    assert sent[-1][2]["constraints"] == [{"predicate": "forbidden-poi", "symbols": ["o14"]}, *BOTH]
-    assert rb.constraints("euclid") == [{"predicate": "forbidden-poi", "symbols": ["o14"]}]
+    rb.send_pddl_goal(
+        "euclid", ALL_CHAIRS, constraints=[["forbidden-poi", "o14"], *BOTH]
+    )
+    assert sent[-1][2]["constraints"] == [
+        {"predicate": "forbidden-poi", "symbols": ["o14"]},
+        *BOTH,
+    ]
+    assert rb.constraints("euclid") == [
+        {"predicate": "forbidden-poi", "symbols": ["o14"]}
+    ]
 
 
 def test_use_robots_is_not_a_standing_constraint(monkeypatch):
@@ -251,8 +306,15 @@ def test_grstaps_takes_use_robots_without_a_warning(monkeypatch):
     assert "use-robots" not in (r.get("warning") or "")
     # straight to the GRSTAPS-X plugin (no goal_manager): the same
     rb, sent = _bridge(monkeypatch, gm_subs=0)
-    monkeypatch.setattr(rb, "grstaps_plugin", lambda: {"name": "grstaps_planner", "topic": "/willow/g",
-                                                       "msg_type": "omniplanner_msgs/msg/ConstrainedPddlGoalMsg"})
+    monkeypatch.setattr(
+        rb,
+        "grstaps_plugin",
+        lambda: {
+            "name": "grstaps_planner",
+            "topic": "/willow/g",
+            "msg_type": "omniplanner_msgs/msg/ConstrainedPddlGoalMsg",
+        },
+    )
     r = rb.send_pddl_goal("euclid", ALL_CHAIRS, constraints=BOTH, engine="grstaps")
     assert len(sent) == 1 and sent[0][2]["constraints"] == BOTH
     assert r["via"] == "planner" and "sent straight to GRSTAPS-X" in r["warning"]
@@ -269,7 +331,10 @@ def test_tracker_gives_a_team_goal_the_plan_of_a_robot_it_did_not_name():
     tr.on_plan("euclid", plan("pe"))
     tr.on_plan_status({"robot": "euclid", "ok": True})
     v = tr.view(gid)
-    assert v["robots"]["hamilton"]["plan_id"] == "ph" and v["robots"]["hamilton"]["named"] is False
+    assert (
+        v["robots"]["hamilton"]["plan_id"] == "ph"
+        and v["robots"]["hamilton"]["named"] is False
+    )
     assert v["robots"]["euclid"]["stage"] == "done"  # empty plan: nothing to do
 
 
@@ -277,6 +342,7 @@ def test_tracker_without_team_flag_keeps_the_old_matching():
     tr, clock, _ = make()
     gid = tr.goal_sent("euclid", robots=["euclid"], kind="pddl")
     clock.step()
-    tr.on_plan("hamilton", plan("ph", "FOLLOW"))  # before any plan of the goal: not claimed
+    tr.on_plan(
+        "hamilton", plan("ph", "FOLLOW")
+    )  # before any plan of the goal: not claimed
     assert "hamilton" not in tr.view(gid)["robots"]
-

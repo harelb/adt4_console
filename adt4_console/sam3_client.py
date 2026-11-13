@@ -279,7 +279,11 @@ def candidate_events(result: dict, src: str | None) -> list[dict]:
                 "num_points": c.get("num_points"),
                 "num_views": len(refs) or c.get("num_views") or 1,
                 "views": [
-                    {"index": r["index"], "view": r["view"], "image_uri": r["image_uri"]}
+                    {
+                        "index": r["index"],
+                        "view": r["view"],
+                        "image_uri": r["image_uri"],
+                    }
                     for r in refs
                 ],
                 "num_frames": c.get("num_frames"),

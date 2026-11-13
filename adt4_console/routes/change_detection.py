@@ -274,7 +274,12 @@ def _sget(svc):
 def _map_plan(svc) -> dict:
     sg = _sget(svc)
     if sg is None:
-        return {"writer": None, "running": False, "keep_supported": False, "reason": "no SGET service"}
+        return {
+            "writer": None,
+            "running": False,
+            "keep_supported": False,
+            "reason": "no SGET service",
+        }
     return sg.detections_status()
 
 
@@ -291,8 +296,17 @@ def reset_all_plan(request: Request):
     not) and the map side (scene change writer running, keep supported)."""
     svc = services(request)
     if not svc.ros.available:
-        return {"available": False, "error": svc.ros.error or "ROS is off", "robots": [], "map": _map_plan(svc)}
-    return {"available": True, "robots": [_robot_plan(svc, r) for r in _candidates(svc)], "map": _map_plan(svc)}
+        return {
+            "available": False,
+            "error": svc.ros.error or "ROS is off",
+            "robots": [],
+            "map": _map_plan(svc),
+        }
+    return {
+        "available": True,
+        "robots": [_robot_plan(svc, r) for r in _candidates(svc)],
+        "map": _map_plan(svc),
+    }
 
 
 @router.post("/change_detection/reset_all")
@@ -315,7 +329,10 @@ def reset_all(request: Request, body: ResetAllBody | None = None):
     if not svc.ros.available:
         raise RosUnavailable(svc.ros.error or "ROS is off")
     mp = _map_plan(svc)
-    out = {"keep_applied": body.keep_applied, "map": {**mp, "ok": True, "action": "none"}}
+    out = {
+        "keep_applied": body.keep_applied,
+        "map": {**mp, "ok": True, "action": "none"},
+    }
     if mp["running"] and body.keep_applied:
         if not mp["keep_supported"]:
             return JSONResponse({"detail": f"the scene change writer ({mp['writer']}) cannot keep detected changes "
@@ -323,16 +340,28 @@ def reset_all(request: Request, body: ResetAllBody | None = None):
                                            "revert them, or update heracles", "keep_unsupported": True,
                                  "map": mp}, status_code=409)  # fmt: skip
         kept = _sget(svc).keep_detections()
-        out["map"].update(action="keep", ok=kept["ok"], message=kept.get("message"), service=kept.get("service"))
+        out["map"].update(
+            action="keep",
+            ok=kept["ok"],
+            message=kept.get("message"),
+            service=kept.get("service"),
+        )
         if not kept["ok"]:  # resetting now would revert what the operator asked to keep
-            out.update(ok=False, robots=[], base=None, error=f"keeping detected changes failed: {kept.get('message')}")
+            out.update(
+                ok=False,
+                robots=[],
+                base=None,
+                error=f"keeping detected changes failed: {kept.get('message')}",
+            )
             log.warning("op.awcd_reset aborted: %s", out["error"])
             return out
     elif mp["running"]:
         out["map"].update(action="revert", message="detected changes in the map are reverted when the detectors' "
                                                    "empty change sets reach the scene change writer")  # fmt: skip
     else:
-        out["map"]["message"] = mp.get("reason") or "no scene change writer: no map to update"
+        out["map"]["message"] = (
+            mp.get("reason") or "no scene change writer: no map to update"
+        )
 
     wanted = list(dict.fromkeys(body.robots)) or _candidates(svc)
     plans = [_robot_plan(svc, r) for r in wanted]
@@ -340,13 +369,22 @@ def reset_all(request: Request, body: ResetAllBody | None = None):
     results = {}
     if todo:
         with ThreadPoolExecutor(max_workers=min(8, len(todo))) as pool:
-            for robot, res in zip(todo, pool.map(lambda r: _reset_one(svc, r), todo), strict=True):
+            for robot, res in zip(
+                todo, pool.map(lambda r: _reset_one(svc, r), todo), strict=True
+            ):
                 results[robot] = res
     robots = []
     for p in plans:
         r = results.get(p["robot"])
         if r is None:
-            robots.append({"robot": p["robot"], "ok": False, "skipped": True, "error": p["reason"]})
+            robots.append(
+                {
+                    "robot": p["robot"],
+                    "ok": False,
+                    "skipped": True,
+                    "error": p["reason"],
+                }
+            )
         else:
             robots.append({"robot": p["robot"], "ok": bool(r.get("ok")), "skipped": False,
                            "message": r.get("message"), "error": r.get("error"), "via": r.get("via")})  # fmt: skip
@@ -361,9 +399,15 @@ def reset_all(request: Request, body: ResetAllBody | None = None):
     text = (f"change detection reset ({'kept' if out['map']['action'] == 'keep' else out['map']['action']} "
             f"detected map changes): robots {', '.join(done) or 'none'}")  # fmt: skip
     sr = svc.scene_repair
-    out["scene_repair"] = {"dropped": sr.on_detections_reset(text) if sr is not None else 0}
+    out["scene_repair"] = {
+        "dropped": sr.on_detections_reset(text) if sr is not None else 0
+    }
     attempted = [r for r in robots if not r["skipped"]]
-    out["ok"] = bool(out["map"]["ok"] and all(r["ok"] for r in attempted) and (base.get("ok") or not _has_base(base)))
+    out["ok"] = bool(
+        out["map"]["ok"]
+        and all(r["ok"] for r in attempted)
+        and (base.get("ok") or not _has_base(base))
+    )
     log.info("op.awcd_reset keep_applied=%s map=%s robots=%s base=%s", body.keep_applied, out["map"]["action"],
              {r["robot"]: ("skipped" if r["skipped"] else r["ok"]) for r in robots}, base.get("ok"))  # fmt: skip
     return out
@@ -393,7 +437,11 @@ def fleet_state(request: Request):
     not) and the relocalization verdict that gates Start."""
     svc = services(request)
     if not svc.ros.available:
-        return {"available": False, "error": svc.ros.error or "ROS is off", "robots": []}
+        return {
+            "available": False,
+            "error": svc.ros.error or "ROS is off",
+            "robots": [],
+        }
     return {"available": True,
             "robots": [{**_robot_plan(svc, r), "relocalized": relocalized(svc.live.state(r), r)}
                        for r in _candidates(svc)]}  # fmt: skip
@@ -436,12 +484,18 @@ def _fleet_cmd(svc, cmd: str, body: FleetCmdBody) -> dict:
         # each call has the bridge's own timeout: one robot does not hold the others
         step = "reset_start" if cmd == "start" else cmd
         with ThreadPoolExecutor(max_workers=min(8, len(todo))) as pool:
-            for robot, res in zip(todo, pool.map(lambda r: _run_one(svc, r, step), todo), strict=True):
+            for robot, res in zip(
+                todo, pool.map(lambda r: _run_one(svc, r, step), todo), strict=True
+            ):
                 results[robot] = res
     for row in rows:
         res = results.get(row["robot"])
         if res is not None:
-            row.update(ok=bool(res.get("ok")), message=res.get("message"), error=res.get("error"))
+            row.update(
+                ok=bool(res.get("ok")),
+                message=res.get("message"),
+                error=res.get("error"),
+            )
         row["state"] = svc.ros.change_detection(row["robot"]).get("state")
     counts = {"done": sum(r["ok"] for r in rows), "skipped": sum(r["skipped"] for r in rows),
               "failed": sum(not r["ok"] and not r["skipped"] for r in rows)}  # fmt: skip

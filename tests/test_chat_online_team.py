@@ -16,7 +16,11 @@ class Live:
     """fleetlink: euclid and hamilton connected; gauss never connected."""
 
     def __init__(self, links=None):
-        self._links = links if links is not None else {"euclid": {"connected": True}, "hamilton": {"connected": True}}
+        self._links = (
+            links
+            if links is not None
+            else {"euclid": {"connected": True}, "hamilton": {"connected": True}}
+        )
 
     def robots(self):
         return list(self._links)
@@ -53,7 +57,10 @@ def test_roster_marks_gauss_offline_and_the_team_is_the_online_robots():
     text = chat()._system(None, "euclid")
     team_line = next(x for x in text.splitlines() if x.startswith("The team now"))
     assert "online, connected): euclid, hamilton." in team_line
-    assert "Offline — do not assign: " in team_line and "gauss" in team_line.split("do not assign:")[1]
+    assert (
+        "Offline — do not assign: " in team_line
+        and "gauss" in team_line.split("do not assign:")[1]
+    )
     assert '"All robots", "the team", "both robots"' in team_line
     gauss = next(x for x in text.splitlines() if x.startswith("- gauss:"))
     assert gauss.endswith("; offline")
@@ -66,7 +73,9 @@ def test_without_link_state_nothing_is_called_offline():
 
 
 def test_operator_named_robots_matches_whole_words():
-    assert operator_named_robots("send Gauss and euclid", {"gauss", "hamilton"}) == {"gauss"}
+    assert operator_named_robots("send Gauss and euclid", {"gauss", "hamilton"}) == {
+        "gauss"
+    }
     assert operator_named_robots("gaussian blur", {"gauss"}) == set()
 
 
@@ -75,7 +84,9 @@ def test_goal_naming_an_offline_robot_is_not_proposed():
     c = chat()
     events, out = propose(c, THREE, "replan all three robots")
     assert events == []
-    assert out["error"].startswith("NOT PROPOSED: gauss is offline (not connected); online robots: euclid, hamilton")
+    assert out["error"].startswith(
+        "NOT PROPOSED: gauss is offline (not connected); online robots: euclid, hamilton"
+    )
     # use-robots naming it too
     events, out = propose(c, "(visited-object o2)", "visit o2 with the team",
                           constraints=[{"predicate": "use-robots", "symbols": ["euclid", "gauss"]}])  # fmt: skip
@@ -95,10 +106,15 @@ def test_online_team_card_and_send_label_have_only_online_robots():
 @needs_heracles_agents
 def test_operator_naming_the_offline_robot_gets_a_warning_card():
     c = chat()
-    [card], out = propose(c, THREE, "send euclid, gauss and hamilton to the cones", selected="gauss")
+    [card], out = propose(
+        c, THREE, "send euclid, gauss and hamilton to the cones", selected="gauss"
+    )
     assert card["warning"].startswith("gauss is offline")
     assert out["warning"] == card["warning"]
-    assert card["team"] == ["euclid", "hamilton"]  # the card's team / send label: online only
+    assert card["team"] == [
+        "euclid",
+        "hamilton",
+    ]  # the card's team / send label: online only
     assert card["robot"] == "euclid"  # never sent through the offline robot
 
 
@@ -111,7 +127,9 @@ def test_the_roster_is_the_one_robot_list_and_offline_is_not_unknown():
     assert "This roster is the fleet, the one list of robots" in head
     assert "even with no Robot node in the database" in head
     team_line = next(x for x in text.splitlines() if x.startswith("The team now"))
-    assert '("the spots", "the huskies") the online robots of that platform' in team_line
+    assert (
+        '("the spots", "the huskies") the online robots of that platform' in team_line
+    )
     assert "An offline robot is a known robot: say it is offline" in team_line
     assert "never that it is unknown or not in the fleet" in team_line
 
@@ -119,14 +137,16 @@ def test_the_roster_is_the_one_robot_list_and_offline_is_not_unknown():
 @needs_heracles_agents
 def test_the_rules_point_at_the_roster_not_at_the_database_for_who_is_in_the_fleet():
     text = chat()._system(None, "euclid")
-    assert "The fleet is ONE list: the fleet roster in this prompt when it has one" in text
+    assert (
+        "The fleet is ONE list: the fleet roster in this prompt when it has one" in text
+    )
     assert "are the robots of the fleet (MATCH (r:Robot)" not in text
     assert "Use only robots of the fleet (MATCH (r:Robot)" not in text
 
 
 @needs_heracles_agents
 def test_two_by_atoms_for_one_target_make_one_card_for_both_robots():
-    """"hamilton and euclid go to O31": each robot its own -by atom, no use-robots."""
+    """ "hamilton and euclid go to O31": each robot its own -by atom, no use-robots."""
     c = chat()
     goal = "(and (visited-object-by hamilton o31) (visited-object-by euclid o31))"
     [card], out = propose(c, goal, "hamilton and euclid go to O31")
@@ -136,10 +156,12 @@ def test_two_by_atoms_for_one_target_make_one_card_for_both_robots():
 
 @needs_heracles_agents
 def test_all_robots_without_use_robots_keeps_the_offline_husky_off_the_team():
-    """"all robots visit the trash": a robot-free goal and no use-robots; the
+    """ "all robots visit the trash": a robot-free goal and no use-robots; the
     card's team is the online robots, and gauss (offline husky) is not on it."""
     c = chat()
-    [card], out = propose(c, "(and (visited-object o4) (visited-object o8))", "all robots visit the trash")
+    [card], out = propose(
+        c, "(and (visited-object o4) (visited-object o8))", "all robots visit the trash"
+    )
     assert not card["body"].get("constraints")
     assert "gauss" not in card["team"] and card["team"] == ["euclid", "hamilton"]
 
@@ -151,8 +173,14 @@ def test_the_roster_says_what_each_robot_holds():
     from types import SimpleNamespace as NS
 
     c = chat()
-    roster = [x for x in c._system(None, "euclid").splitlines() if x.startswith("- ") and ": Spot" in x]
-    assert roster and not any("; HOLDING" in x for x in roster)  # no planner state: nothing claimed
+    roster = [
+        x
+        for x in c._system(None, "euclid").splitlines()
+        if x.startswith("- ") and ": Spot" in x
+    ]
+    assert roster and not any(
+        "; HOLDING" in x for x in roster
+    )  # no planner state: nothing claimed
     c.ros.planner_state = NS(holding=lambda: {"hamilton": ["O58"]})
     text = c._system(None, "euclid")
     hamilton = next(x for x in text.splitlines() if x.startswith("- hamilton:"))
@@ -170,8 +198,12 @@ def test_planner_state_holding_never_raises():
 
     assert PlannerState(None, None, Maps()).holding() == {}
     rows = [{"robot": "hamilton", "object": "O58"}]
-    src = type("S", (), {"id": "live", "query": lambda self, q: rows if "HOLDS" in q else []})()
-    assert PlannerState(None, None, type("M", (), {"target": lambda self: src})()).holding() == {"hamilton": ["O58"]}
+    src = type(
+        "S", (), {"id": "live", "query": lambda self, q: rows if "HOLDS" in q else []}
+    )()
+    assert PlannerState(
+        None, None, type("M", (), {"target": lambda self: src})()
+    ).holding() == {"hamilton": ["O58"]}
 
 
 @needs_heracles_agents
@@ -183,20 +215,37 @@ def test_a_goal_that_does_not_name_a_held_object_gets_a_warning_on_the_card():
         return c
 
     # hamilton holds O58 and is only told to go somewhere: warned
-    [card], out = propose(held(chat()), "(visited-object-by hamilton o31)", "hamilton go to O31")
-    assert card["warning"].startswith("hamilton is holding O58: this goal does not name it")
-    assert "put down where the robot stands" in card["warning"] and out["warning"] == card["warning"]
+    [card], out = propose(
+        held(chat()), "(visited-object-by hamilton o31)", "hamilton go to O31"
+    )
+    assert card["warning"].startswith(
+        "hamilton is holding O58: this goal does not name it"
+    )
+    assert (
+        "put down where the robot stands" in card["warning"]
+        and out["warning"] == card["warning"]
+    )
     # the goal carries it: no warning
-    [card], out = propose(held(chat()), "(object-placed-by hamilton o58 t7)", "hamilton, take it to t7")
+    [card], out = propose(
+        held(chat()), "(object-placed-by hamilton o58 t7)", "hamilton, take it to t7"
+    )
     assert "warning" not in card and "warning" not in out
-    [card], _ = propose(held(chat()), "(and (holding hamilton o58) (visited-object-by hamilton o31))", "")
+    [card], _ = propose(
+        held(chat()),
+        "(and (holding hamilton o58) (visited-object-by hamilton o31))",
+        "",
+    )
     assert "warning" not in card
     # a goal for another robot leaves hamilton and its object alone: no warning
-    [card], _ = propose(held(chat()), "(visited-object-by euclid o31)", "euclid go to O31")
+    [card], _ = propose(
+        held(chat()), "(visited-object-by euclid o31)", "euclid go to O31"
+    )
     assert "warning" not in card
     # a team goal may take any robot: warned
     [card], _ = propose(held(chat()), "(visited-object o31)", "someone visit O31")
     assert "hamilton is holding O58" in card["warning"]
     # nobody holds anything: no warning
-    [card], _ = propose(chat(), "(visited-object-by hamilton o31)", "hamilton go to O31")
+    [card], _ = propose(
+        chat(), "(visited-object-by hamilton o31)", "hamilton go to O31"
+    )
     assert "warning" not in card

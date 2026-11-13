@@ -394,12 +394,17 @@ class SceneRepair:
             for r in self._recs.values():
                 if r["status"] != "pending":
                     continue
-                origins = {origin_of(c.get("source") or r["source"]) for c in r["changes"]} or {r["origin"]}
+                origins = {
+                    origin_of(c.get("source") or r["source"]) for c in r["changes"]
+                } or {r["origin"]}
                 if origins == {"perception"}:
                     r.update(status="superseded", result={"by": None, "why": "change detection reset"},
                              t_done=self.clock())  # fmt: skip
                     n += 1
-        self._event("detections_reset", text + (f"; {n} pending recommendation(s) dropped" if n else ""))
+        self._event(
+            "detections_reset",
+            text + (f"; {n} pending recommendation(s) dropped" if n else ""),
+        )
         return n
 
     def _event(self, kind: str, text: str) -> None:
