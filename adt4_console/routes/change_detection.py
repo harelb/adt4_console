@@ -33,6 +33,13 @@ MOVED_DEG = 2.0
 HYDRA_LC_RE = re.compile(
     r"(\d+)\s*/\s*(\d+)\s+valid\s+inter-?robot\s+loop\s+closures", re.I
 )
+# ... "; last optimization took 0.412 s, 12.3 s ago" (Hydra feat/hydra-multi-status-optimization)
+HYDRA_OPT_RE = re.compile(
+    r"last\s+optimization\s+took\s+([\d.]+)\s*s\s*,\s*([\d.]+)\s*s\s+ago", re.I
+)
+# A robot counts as relocalized once hydra_multi has accepted this many inter-robot
+# (prior-map) loop closures for it (frontend lib/frameAlign.ts RELOC_MIN_HYDRA_LCS).
+RELOC_MIN_HYDRA_LCS = 5
 
 
 class CmdBody(BaseModel):
@@ -43,11 +50,9 @@ class ClearBody(BaseModel):
     robots: list[str] = []
 
 
-def hydra_matches(health: dict | None) -> tuple[int, int] | None:
-    """``(accepted, total)`` inter-robot loop closures from the hydra_multi row
-    of the robot's ros_system_monitor table (C1 ``health.nodes``, note
-    "N / M valid interrobot loop closures"); None when the table, the row or
-    the count is missing (e.g. hydra_multi stale: "time since last spin")."""
+def _hydra_note(health: dict | None) -> str | None:
+    """The note of the hydra_multi row of the robot's ros_system_monitor table
+    (C1 ``health.nodes``); None when the table or the row is missing."""
     nodes = (health or {}).get("nodes")
     if not isinstance(nodes, list):
         return None
@@ -57,10 +62,25 @@ def hydra_matches(health: dict | None) -> tuple[int, int] | None:
         names = f"{n.get('nickname') or ''} {n.get('node_name') or ''}"
         if "hydra_multi" not in names:
             continue
-        m = HYDRA_LC_RE.search(str(n.get("notes") or n.get("note") or ""))
-        if m:
-            return int(m.group(1)), int(m.group(2))
+        return str(n.get("notes") or n.get("note") or "")
     return None
+
+
+def hydra_matches(health: dict | None) -> tuple[int, int] | None:
+    """``(accepted, total)`` inter-robot loop closures from the hydra_multi row
+    of the robot's ros_system_monitor table (C1 ``health.nodes``, note
+    "N / M valid interrobot loop closures"); None when the table, the row or
+    the count is missing (e.g. hydra_multi stale: "time since last spin")."""
+    m = HYDRA_LC_RE.search(_hydra_note(health) or "")
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def hydra_optimization(health: dict | None) -> dict | None:
+    """``{"took_s", "ago_s"}`` of hydra_multi's last optimization from its
+    monitor note ("...; last optimization took 0.412 s, 12.3 s ago"); None when
+    the note does not say (no optimization yet, or an older hydra_multi)."""
+    m = HYDRA_OPT_RE.search(_hydra_note(health) or "")
+    return {"took_s": float(m.group(1)), "ago_s": float(m.group(2))} if m else None
 
 
 def _yaw_deg(T) -> float:
@@ -109,23 +129,29 @@ def _suspect(reloc: dict | None) -> str | None:
 
 
 def relocalized(state: dict | None, robot: str = "") -> dict:
-    """``{ok, state, reason, source, matches}`` from the robot's fleetlink C1
-    state, using the best evidence there is, in order:
+    """``{ok, state, reason, source, matches, hydra, roman, optimization}`` from
+    the robot's fleetlink C1 state.
 
-    1. hydra_multi's accepted inter-robot loop closures (its row of the robot's
-       ``health`` table: "N / M valid interrobot loop closures"), N > 0;
-    2. fleetlink's ROMAN counter ``reloc.prior_lcs`` > 0;
-    3. ``map -> odom`` moved away from the initial estimate (weaker: "aligned",
-       no match count).
-
-    A positive verdict is "suspect" (not ok) after two or more big ``map ->
-    odom`` jumps.  "not relocalized" only when hydra_multi reports its count
-    and it is 0; with no count at all the verdict is "unknown" (not ok either:
-    Start needs an override).  Agents without ``reloc`` and no hydra_multi
-    count: the transform decides (as before).  ``state`` is one of
-    relocalized / aligned / suspect / not_relocalized / unknown.  The
-    console's legend adds a distance-to-prior-map check the server cannot do."""
+    Relocalized (ok) means hydra_multi has accepted at least
+    :data:`RELOC_MIN_HYDRA_LCS` inter-robot (prior-map) loop closures for the
+    robot (its row of the robot's ``health`` table: "N / M valid interrobot
+    loop closures"), and the placement is not suspect (two or more big ``map ->
+    odom`` jumps).  Fewer accepted closures is "not_relocalized"
+    ("relocalizing").  Without a hydra_multi count, fleetlink's ROMAN counter
+    ``reloc.prior_lcs`` and a ``map -> odom`` move away from the initial
+    estimate are reported, but they no longer count as relocalized (state
+    "aligned" / "unknown", not ok: Start needs an override).  Agents that report
+    neither ``reloc`` nor a hydra_multi count (older agents, mapping sessions)
+    keep the transform-only verdict.  ``hydra`` = ``{accepted, total, needed}``
+    or None, ``roman`` = ROMAN prior-map matches seen by fleetlink (or None),
+    ``optimization`` = :func:`hydra_optimization`.  The console's legend adds a
+    distance-to-prior-map check the server cannot do."""
     who = robot or "the robot"
+    health = (state or {}).get("health")
+    hm = hydra_matches(health)
+    reloc = (state or {}).get("reloc")
+    roman = reloc.get("prior_lcs") if isinstance(reloc, dict) else None
+    need = RELOC_MIN_HYDRA_LCS
 
     def out(ok, st, reason, source=None, matches=None):
         return {
@@ -134,25 +160,32 @@ def relocalized(state: dict | None, robot: str = "") -> dict:
             "reason": reason,
             "source": source,
             "matches": matches,
+            "hydra": {"accepted": hm[0], "total": hm[1], "needed": need}
+            if hm
+            else None,
+            "roman": roman,
+            "optimization": hydra_optimization(health),
         }
 
     if not state:
         return out(False, "unknown", f"unknown: no live state from {who} (fleetlink)")
     fa = state.get("frame_align")
-    reloc = state.get("reloc")
-    hm = hydra_matches(state.get("health"))
-    if hm and hm[0] > 0:
+    roman_txt = f"; ROMAN: {roman} prior-map matches seen by fleetlink" if roman else ""
+    if hm and hm[0] >= need:
         sus = _suspect(reloc)
         if sus:
             return out(False, "suspect", sus, "hydra_multi", hm[0])
-        return out(True, "relocalized", f"relocalized ({hm[0]} accepted prior-map matches; hydra_multi {hm[0]} / {hm[1]})",
-                   "hydra_multi", hm[0])  # fmt: skip
-    if reloc and reloc.get("prior_lcs"):
-        sus = _suspect(reloc)
-        if sus:
-            return out(False, "suspect", sus, "roman", reloc["prior_lcs"])
-        return out(True, "relocalized", f"relocalized ({reloc['prior_lcs']} prior-map matches)", "roman",
-                   reloc["prior_lcs"])  # fmt: skip
+        return out(True, "relocalized", f"relocalized ({hm[0]} accepted prior-map loop closures, hydra_multi {hm[0]} / {hm[1]}; "
+                   f"needs {need}){roman_txt}", "hydra_multi", hm[0])  # fmt: skip
+    if hm:
+        if hm[0] == 0:
+            return out(False, "not_relocalized",
+                       f"not relocalized: no prior-map match yet (hydra_multi accepted 0 / {hm[1]} inter-robot loop "
+                       f"closures, needs {need}; map -> odom is only the initial estimate){roman_txt}",
+                       "hydra_multi", 0)  # fmt: skip
+        return out(False, "not_relocalized",
+                   f"relocalizing: hydra_multi accepted {hm[0]} / {hm[1]} inter-robot loop closures, needs {need}"
+                   f"{roman_txt}", "hydra_multi", hm[0])  # fmt: skip
     if not fa:
         return out(
             False, "unknown", f"unknown: {who} reports no frame alignment (older agent)"
@@ -160,19 +193,19 @@ def relocalized(state: dict | None, robot: str = "") -> dict:
     if not fa.get("ok") or fa.get("parent") == fa.get("child"):
         return out(False, "not_relocalized",
                    f"not relocalized: no {fa.get('parent') or 'map'} -> odom transform yet")  # fmt: skip
+    if (
+        reloc is None
+    ):  # older agent / mapping session, no hydra_multi count: the transform decides
+        return out(True, "aligned", "aligned to the global frame", "map_odom")
+    if roman:
+        return out(False, "unknown",
+                   f"unknown: no hydra_multi loop-closure count from {who} (needs {need}); ROMAN: {roman} "
+                   "prior-map matches seen by fleetlink", "roman", roman)  # fmt: skip
     moved = _moved(fa, reloc)
     if moved:
-        sus = _suspect(reloc)
-        if sus:
-            return out(False, "suspect", sus, "map_odom")
-        return out(True, "aligned", f"aligned (no match count): map -> odom moved {moved} from the initial estimate",
-                   "map_odom")  # fmt: skip
-    if hm is not None:  # hydra_multi reports its count, and it is 0
-        return out(False, "not_relocalized",
-                   f"not relocalized: no prior-map match yet (hydra_multi accepted 0 / {hm[1]} inter-robot loop "
-                   "closures; map -> odom is only the initial estimate)", "hydra_multi", 0)  # fmt: skip
-    if reloc is None:  # older agent, no hydra_multi count: the transform decides
-        return out(True, "aligned", "aligned to the global frame", "map_odom")
+        return out(False, "aligned",
+                   f"aligned (no hydra_multi count, needs {need}): map -> odom moved {moved} from the initial "
+                   "estimate", "map_odom")  # fmt: skip
     return out(False, "unknown",
                f"unknown (no relocalization signal from {who}: no hydra_multi loop-closure count in its "
                "status table, no ROMAN prior-map match seen by fleetlink, map -> odom at the initial estimate)")  # fmt: skip

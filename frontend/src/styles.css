@@ -5204,3 +5204,51 @@ input[type="checkbox"] {
   gap: 2px;
   margin-top: 2px;
 }
+/* robot legend: the relocalization chip opens the loop-closure / optimization details */
+.align-status-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.robot-chip .align-status.clickable {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.reloc-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  width: min(300px, 80vw);
+  white-space: normal;
+  pointer-events: auto;
+  cursor: default;
+  background: var(--bg-2);
+  color: var(--text);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font: 400 12px var(--sans);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+.reloc-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.reloc-pop-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 10px;
+  margin: 0;
+}
+.reloc-pop-grid dt {
+  color: var(--text-2);
+}
+.reloc-pop-grid dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

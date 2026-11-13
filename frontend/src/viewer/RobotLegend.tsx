@@ -4,7 +4,7 @@
 // frame (relocalized) or drawn in the robot's own odom frame (amber).
 // The focused robot's chip is highlighted; clicking a chip focuses that robot
 // (clicking the focused one goes back to all robots).
-import {useMemo} from "react";
+import {useCallback, useMemo, useState} from "react";
 import {frameAlignOf, useLiveRobots, useRobots} from "../stores/robots";
 import {useRobotColorOf} from "../lib/palette";
 import {healthNode, poseInGlobal, priorName, relocStatus, robotOfSource, type RelocContext} from "../lib/frameAlign";
@@ -15,6 +15,7 @@ import {PlanExecStatus} from "./PlanExecStatus";
 import {PhoenixChips} from "./PhoenixStatus";
 import type {FrameAlign, Pose} from "../types";
 import {useManipulation} from "../stores/manipulation";
+import {RelocPopover} from "./RelocPopover";
 
 /** A robot waiting for a grasp decision: a badge on its chip that opens the approval panel. */
 export function GraspChip({robot}: {robot: string}) {
@@ -83,7 +84,7 @@ export function useRelocContext(robot: string): RelocContext {
  *  starting guess" was read as "starting gauss") /
  *  "suspect — 13 m outside the prior map" (older agents: the
  *  transform-only "aligned to map (relocalized)"). */
-export function AlignStatus({robot, className = ""}: {robot: string; className?: string}) {
+export function AlignStatus({robot, className = "", details = false}: {robot: string; className?: string; details?: boolean}) {
   const fa = useRobots(s => frameAlignOf(robot, s));
   const reloc = useRobots(s => s.state[robot]?.reloc ?? s.link[robot]?.reloc);
   const pose = useRobots(s => s.state[robot]?.pose);
@@ -91,10 +92,41 @@ export function AlignStatus({robot, className = ""}: {robot: string; className?:
   const dist = useDistToPrior(robot, pose, fa);
   const ctx = useRelocContext(robot);
   const st = relocStatus(fa, reloc, dist, at ? (Date.now() - at) / 1000 : 0, ctx);
+  const [open, setOpen] = useState(false);
+  const close = useCallback(() => setOpen(false), []);
   if (st.tone === "none") return null;
+  if (!details) {
+    return (
+      <span className={`align-status tone-${st.tone} ${className}`} title={st.title} data-testid={`align-${robot}`}>
+        {st.text}
+      </span>
+    );
+  }
+  // clickable: the loop-closure counts and hydra_multi's last optimization
   return (
-    <span className={`align-status tone-${st.tone} ${className}`} title={st.title} data-testid={`align-${robot}`}>
-      {st.text}
+    <span className="align-status-wrap">
+      <span
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        className={`align-status clickable tone-${st.tone} ${className}`}
+        title={`${st.title}\n\nclick for loop-closure counts and the last optimization`}
+        data-testid={`align-${robot}`}
+        onClick={e => {
+          e.stopPropagation();
+          setOpen(o => !o);
+        }}
+        onKeyDown={e => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            e.stopPropagation();
+            setOpen(o => !o);
+          }
+        }}
+      >
+        {st.text}
+      </span>
+      {open && <RelocPopover robot={robot} ctx={ctx} onClose={close} />}
     </span>
   );
 }
@@ -129,7 +161,7 @@ export function RobotLegend() {
           <span className="swatch" style={{background: colorOf(r)}} />
           {r}
           <PhoenixChips robot={r} />
-          <AlignStatus robot={r} />
+          <AlignStatus robot={r} details />
           <PlanExecStatus robot={r} />
           <GraspChip robot={r} />
         </span>
