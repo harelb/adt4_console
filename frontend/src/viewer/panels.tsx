@@ -17,8 +17,9 @@ import {applyPoint, robotOfSource} from "../lib/frameAlign";
 import {sourceMatrix, useRobots} from "../stores/robots";
 import {ObjectImages, SearchThumb, useImaged, type ImageInfo} from "./objectImages";
 import {PlaceKeyframes, usePlaceReturn} from "./PlaceKeyframes";
-import {useViewStyle} from "../stores/viewStyle";
+import {placeLabelsKey, useViewStyle, type PlaceLabelsKey} from "../stores/viewStyle";
 import {BackgroundControl, HeightsControl, PathControls, RegionControls, RobotLookControl, ThemeControl} from "./StylePanels";
+import {ClearPathsRow} from "./ClearPaths";
 
 const KIND_LABEL: Record<string, string> = {neo4j: "Neo4j", file: "file", live: "live"};
 
@@ -205,6 +206,30 @@ function MeshDetailControl() {
   );
 }
 
+const PLACE_LABELS_FOR: Record<PlaceLabelsKey, string> = {neo4j: "Neo4j maps", other: "files and live maps"};
+
+/** Display › "Place labels": every place's symbol (and name) as text, chosen per
+ *  source kind (on for Neo4j maps); one toggle per kind of source loaded. */
+export function PlaceLabelsToggles() {
+  const kinds = useViewer(s => [...new Set(Object.values(s.sources).map(x => placeLabelsKey(x.kind)))].sort().join(","));
+  const placeLabels = useViewStyle(s => s.placeLabels);
+  const patch = useViewStyle(s => s.patch);
+  const keys = (kinds ? kinds.split(",") : ["neo4j"]) as PlaceLabelsKey[];
+  return (
+    <>
+      {keys.map(k => (
+        <Toggle
+          key={k}
+          checked={placeLabels[k]}
+          onChange={v => patch({placeLabels: {...placeLabels, [k]: v}})}
+          label={keys.length > 1 ? `Place labels (${PLACE_LABELS_FOR[k]})` : "Place labels"}
+          title={`Label every place of ${PLACE_LABELS_FOR[k]} with its symbol and name (the overlapping ones and the far ones give way). Off: places are labelled with "Text labels" on small maps only.`}
+        />
+      ))}
+    </>
+  );
+}
+
 export function DisplayPanel() {
   const {showBBoxes, meshOpacity, vizStyle, showText, meshCull, meshClipOn, meshClipHeight, focusOthers, set} = useViewer();
   return (
@@ -246,6 +271,8 @@ export function DisplayPanel() {
       )}
       <Toggle checked={showBBoxes} onChange={v => set({showBBoxes: v})} label="Object bounding boxes" />
       <Toggle checked={showText} onChange={v => set({showText: v})} label="Text labels" />
+      <PlaceLabelsToggles />
+      <ClearPathsRow />
       <label className="slider-row">
         <span>Other robots</span>
         <select

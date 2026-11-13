@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from . import fleet_compat
+from . import fleet_compat, recording
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +44,8 @@ class FleetDeps:
     get_remote_status: Callable = None
     get_local_ips: Callable = None
     run_parallel: Callable = None
+    # (user, ip) -> the machine's recordings (recording.probe), None on failure
+    probe_recording: Callable = None
     extra: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -59,6 +61,8 @@ class FleetDeps:
         ):
             if getattr(self, name) is None:
                 setattr(self, name, getattr(h, name))
+        if self.probe_recording is None:
+            self.probe_recording = lambda user, ip: recording.probe(h.ssh_cmd, user, ip)
 
 
 class FleetService:
@@ -201,7 +205,7 @@ class FleetService:
         status_platform = fleet_compat.status_platform
 
         def fetch(m):
-            return fleet_compat.call_accepting(
+            st = fleet_compat.call_accepting(
                 self.deps.get_remote_status,
                 m["user"],
                 m["ip"],
@@ -210,6 +214,9 @@ class FleetService:
                 platform_type=status_platform(m, topo),
                 robot=m["name"],
             )
+            if isinstance(st, dict) and m.get("role") == "robot":
+                st["recording"] = self._recording(m, st)
+            return st
 
         results = self.deps.run_parallel(fetch, machines) if machines else []
         status = {
@@ -221,6 +228,18 @@ class FleetService:
             payload = dict(self.status)
         self._publish("fleet/status", payload)
         return payload
+
+    def _recording(self, m: dict, st: dict) -> dict:
+        """A robot's ``recording`` status.  Probed (one more ssh per poll, in
+        the same parallel fetch) only while the robot has a tmux session: the
+        stop acts on the recorder's pane."""
+        if st.get("tmux_sessions") in (None, "", "none", "N/A"):
+            return dict(recording.NOT_RECORDING)
+        try:
+            return recording.summarize(self.deps.probe_recording(m["user"], m["ip"]))
+        except Exception as e:  # noqa: BLE001
+            log.warning("recording probe on %s failed: %s", m["name"], e)
+            return recording.summarize(None)
 
     def request_status_refresh(self) -> None:
         self._poke.set()

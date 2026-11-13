@@ -2,8 +2,8 @@
 
 The object is created by heracles ``graph_edit`` (one ``GraphUnitOfWork``: the node
 with heracles' Object properties so ``db_to_spark_dsg`` rebuilds it, a new class
-appended to ``_Labelspace{layer:'object'}``, the audit record and both map-version
-counters) -- so it is in the map-edit history and can be undone like any operator edit.
+appended to ``_Labelspace{layer:'object'}``, the audit record and the map-version
+bump) -- so it is in the map-edit history and can be undone like any operator edit.
 Its ``Observation`` (linked by ``HAS_OBSERVATION``; the Inspector shows its
 ``rgb_path``/``bbox_2d``) is attached right after; it is evidence, not map.
 """
@@ -31,7 +31,7 @@ def add_object(src, label: str, pos, *, size_m: float = 1.5, image_path: str | N
         from heracles import graph_edit
     except ImportError:  # an older heracles install: plain DB-first write
         sym, version = _legacy_create(db, label, x, y, z, size_m, stamp_ns, source)
-        out = {"changes": [{"kind": "create", "symbol": sym}], "state_version": version}
+        out = {"changes": [{"kind": "create", "symbol": sym}], "map_version": version}
         graph_edit = None
     op = {
         "op": "create_node", "layer": "Object", "pos": [x, y, z], "class": label, "name": label,
@@ -62,7 +62,7 @@ def add_object(src, label: str, pos, *, size_m: float = 1.5, image_path: str | N
         pass
     return {
         "sym": sym,
-        "map_version": out.get("state_version"),
+        "map_version": out.get("map_version"),
         "mutation_id": out.get("mutation_id"),
     }
 
@@ -99,4 +99,4 @@ def _legacy_create(db, label, x, y, z, size_m, stamp_ns, source):
         "n.bbox_dim = point({x: $s, y: $s, z: $s})",
         **{"props": props, "x": x, "y": y, "z": z, "s": float(size_m)},
     )
-    return sym, bump_map_counters(db, ["OBJECTS"], [sym])
+    return sym, bump_map_counters(db, ["2:0"], [sym])

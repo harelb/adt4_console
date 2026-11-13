@@ -8,9 +8,9 @@ import {useRobots} from "../src/stores/robots";
 
 const FA = {parent: "map", child: "euclid/odom", ok: true, T: [0, 0, 0, 1, 0, 0, 0], stamp: 1, age_s: 0.2};
 
-function setRobot(reloc: unknown) {
+function setRobot(reloc: unknown, health?: unknown) {
   useRobots.setState(s => ({
-    state: {...s.state, euclid: {pose: {x: 0, y: 0, z: 0, qw: 1, qx: 0, qy: 0, qz: 0, frame: "euclid/odom", t: 1}, frame_align: FA, reloc} as never},
+    state: {...s.state, euclid: {pose: {x: 0, y: 0, z: 0, qw: 1, qx: 0, qy: 0, qz: 0, frame: "euclid/odom", t: 1}, frame_align: FA, reloc, health} as never},
     stateAt: {...s.stateAt, euclid: Date.now()},
   }));
 }
@@ -55,11 +55,24 @@ describe("change detection control", () => {
     const start = el.querySelector("[data-testid=cd-start-euclid]") as HTMLButtonElement;
     expect(el.textContent).toContain("paused");
     expect(start.disabled).toBe(true);
-    expect(el.querySelector("[data-testid=cd-gate-euclid]")?.textContent).toContain("no prior match yet");
+    // no hydra_multi count, no ROMAN match, map -> odom at identity: unknown, not "not relocalized"
+    expect(el.querySelector("[data-testid=cd-gate-euclid]")?.textContent).toContain("relocalization unknown · no signal from euclid");
     act(() => (Array.from(el.querySelectorAll("button")).find(b => b.textContent === "Start anyway…") as HTMLButtonElement).click());
     await act(async () => (el.querySelector("[data-testid=cd-override-euclid]") as HTMLButtonElement).click());
     expect(posts).toEqual([{url: "api/robots/euclid/change_detection/reset_start", body: {override: true}}]);
     expect(el.textContent).toContain("running");
+  });
+
+  it("hydra_multi's accepted loop closures enable Start although fleetlink's ROMAN counter is 0", async () => {
+    stub();
+    const notes = "14 / 19 valid interrobot loop closures";
+    setRobot({prior_lcs: 0, self_lcs: 0, best_assoc: 0, last_lc_age_s: null, lcs: [], jumps: 5, last_jump: null}, {nodes: [{nickname: "euclid/hydra_multi", status: "nominal", notes}]});
+    const el = mount();
+    await act(async () => await new Promise(r => setTimeout(r, 0)));
+    const start = el.querySelector("[data-testid=cd-start-euclid]") as HTMLButtonElement;
+    expect(start.disabled).toBe(false);
+    expect(start.title).toContain("relocalized · 14 accepted matches");
+    expect(el.querySelector("[data-testid=cd-gate-euclid]")).toBeNull();
   });
 
   it("Start is enabled once relocalized and sends no override", async () => {

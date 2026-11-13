@@ -73,12 +73,6 @@ needs_rclpy = pytest.mark.skipif(
 )
 needs_lease_state = _needs("lease_state")
 needs_action_results = _needs("action_results")
-# heracles' Neo4j version counter (graph_interface.read_version)
-needs_version_counter = pytest.mark.skipif(
-    optional.optional("heracles.graph_interface", "read_version", "version counter")
-    is None,
-    reason="needs heracles.graph_interface.read_version",
-)
 
 
 def _helper(name: str) -> bool:
@@ -121,6 +115,7 @@ def fake_fleet_deps(**over) -> FleetDeps:
             "load": "0/0/0",
         },
         get_local_ips=lambda: ["127.0.0.1"],
+        probe_recording=lambda user, ip: [],
     )
     kw.update(over)
     return FleetDeps(**kw)
@@ -171,3 +166,16 @@ def client(settings, planner_plugins):
     c, services = make_client(settings)
     with c:
         yield c
+
+
+def _has_goal_prompts() -> bool:
+    from adt4_console.chat import load_goal_prompts
+
+    return load_goal_prompts()[0] is not None
+
+
+# PDDL goals in the chat need heracles_agents (its goal rules; no embedded copy)
+needs_heracles_agents = pytest.mark.skipif(
+    not _has_goal_prompts(),
+    reason="heracles_agents is not importable: PDDL chat goals are off",
+)

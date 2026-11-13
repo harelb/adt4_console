@@ -135,44 +135,176 @@ export function isBigJump(j: {dxy: number; dyaw: number}): boolean {
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "es"}`;
 
-/** Legend / Live-panel status with the relocalization evidence (``reloc``):
- *  amber until a prior-map loop closure, red when the placement is suspect
- *  (outside the prior map, or a second big correction: the first one is the
- *  relocalization itself), green otherwise. ``distToPrior`` = metres from the
- *  robot to the nearest prior-map place (null: no prior shown / no pose).
- *  Agents without ``reloc`` keep :func:`alignStatus`. */
+/** One row of a robot's ros_system_monitor table (C1 ``health.nodes``). */
+export interface HealthNode {
+  nickname?: string;
+  node_name?: string;
+  status?: string;
+  notes?: string;
+}
+
+/** What the reloc status can say beyond the agent's ``reloc``: the prior map
+ *  it matches against (as the console registered it, e.g. "Nov11_Building45_v2
+ *  (euclid)": the prior's experiment and the robot that recorded it), the
+ *  robot's own ROMAN loop-closure / hydra_multi monitor rows, and the robot's
+ *  name (for "no signal from <robot>"; default: the alignment's child frame). */
+export interface RelocContext {
+  prior?: string | null;
+  roman?: HealthNode | null;
+  hydraMulti?: HealthNode | null;
+  robot?: string;
+}
+
+/** ``<robot>/<name>`` (or bare ``name``) in a C1 ``health`` table; null if the
+ *  table lacks it, undefined when there is no table (nothing to say). */
+export function healthNode(health: {nodes?: unknown} | null | undefined, robot: string, name: string): HealthNode | null | undefined {
+  const nodes = health?.nodes;
+  if (!Array.isArray(nodes)) return undefined;
+  for (const n of nodes as HealthNode[]) {
+    if (n && (n.nickname === `${robot}/${name}` || n.nickname === name)) return n;
+  }
+  return null;
+}
+
+/** hydra_multi's monitor note "N / M valid interrobot loop closures"
+ *  (hydra_multi_ros status_monitor.cpp; backend routes/change_detection.py). */
+const HYDRA_LC_RE = /(\d+)\s*\/\s*(\d+)\s+valid\s+inter-?robot\s+loop\s+closures/i;
+
+/** Accepted / total inter-robot (prior-map) loop closures from the hydra_multi
+ *  row; null when the row or its count is missing (stale: "time since last spin"). */
+export function hydraMatches(node: HealthNode | null | undefined): {accepted: number; total: number} | null {
+  const m = node?.notes ? HYDRA_LC_RE.exec(node.notes) : null;
+  return m ? {accepted: Number(m[1]), total: Number(m[2])} : null;
+}
+
+/** A ``map -> odom`` this far from the initial estimate is an alignment, not
+ *  optimizer noise (backend MOVED_M / MOVED_DEG). */
+export const MOVED_M = 0.5;
+export const MOVED_DEG = 2;
+
+/** How far ``map -> odom`` moved from the initial estimate (since the agent's
+ *  first sample, ``reloc.total``, or from identity, hydra_multi's starting
+ *  estimate: an agent started after the relocalization saw no move), or null. */
+export function movedFromInitial(fa: FrameAlign, reloc: Reloc | null | undefined): string | null {
+  const moves: [number, number][] = [];
+  if (reloc?.total) moves.push([reloc.total.dxy, reloc.total.dyaw]);
+  if (validT(fa.T)) moves.push([Math.hypot(fa.T[0], fa.T[1]), (quatYaw(fa.T) * 180) / Math.PI]);
+  for (const [dxy, dyaw] of moves) {
+    if (Math.abs(dxy) > MOVED_M || Math.abs(dyaw) > MOVED_DEG) return `${Math.abs(dxy).toFixed(1)} m / ${dyaw.toFixed(0)}°`;
+  }
+  return null;
+}
+
+/** The prior map's display name from a graph-source label ("prior: X" -> "X"). */
+export function priorName(label: string | null | undefined): string | null {
+  if (!label) return null;
+  const name = label.replace(/^prior:\s*/, "").replace(/ \(([^()]+)\)$/, " (recorded by $1)");
+  return name || null;
+}
+
+const ROMAN_UP = new Set(["nominal", "warning"]);
+const nodeLine = (what: string, n: HealthNode | null | undefined) =>
+  n ? `${what}: ${n.status ?? "?"}${n.notes ? ` — ${n.notes}` : ""}` : `${what}: not in the robot's status table`;
+
+/** Legend / Live-panel status from the best relocalization evidence there is,
+ *  in order (the backend's ``relocalized()`` uses the same):
+ *  1. hydra_multi's accepted inter-robot loop closures (its monitor row);
+ *  2. fleetlink's ROMAN counter ``reloc.prior_lcs``;
+ *  3. ``map -> odom`` moved from the initial estimate ("aligned", no count).
+ *  Green on 1/2/3, red when the placement is suspect (outside the prior map,
+ *  or a second big correction: the first one is the relocalization itself).
+ *  Amber "not relocalized" only when hydra_multi reports a zero count
+ *  ("matching" while ROMAN reports in); amber "unknown" when no source says
+ *  anything. ``distToPrior`` = metres from the robot to the nearest prior-map
+ *  place (null: no prior shown / no pose). Agents with neither ``reloc`` nor a
+ *  hydra_multi count keep :func:`alignStatus`. The text never names another
+ *  robot: a prior map is named in the tooltip only. */
 export function relocStatus(
   fa: FrameAlign | null | undefined,
   reloc: Reloc | null | undefined,
   distToPrior: number | null,
   sinceStateS = 0,
+  ctx: RelocContext = {},
 ): AlignStatus {
   const base = alignStatus(fa, sinceStateS);
-  if (!reloc || base.tone !== "ok" || !fa || fa.parent === fa.child) return base;
+  const hm = hydraMatches(ctx.hydraMulti);
+  if (!fa || fa.parent === fa.child || (!reloc && !hm)) return base;
+  const priorName = ctx.prior ? `prior map ${ctx.prior}` : "the prior map";
+  const hydraLine = hm
+    ? `hydra_multi accepted ${hm.accepted} / ${hm.total} inter-robot loop closures against ${priorName}`
+    : ctx.hydraMulti
+      ? `hydra_multi reports no loop-closure count (${ctx.hydraMulti.status ?? "?"}${ctx.hydraMulti.notes ? ` — ${ctx.hydraMulti.notes}` : ""})`
+      : `hydra_multi: ${ctx.hydraMulti === null ? "not in the robot's status table" : "no status table from the robot"}`;
+  if (base.tone !== "ok") {
+    // matched, but this console has no usable transform yet: say both
+    if (hm && hm.accepted > 0) {
+      return {tone: "ok", text: `relocalized · ${plural(hm.accepted, "accepted match")} · drawn in ${fa.child || "odom"}`, title: `${hydraLine}\n${base.title}`};
+    }
+    return base;
+  }
   const since = Math.max(0, sinceStateS);
-  const lcAge = reloc.last_lc_age_s === null || reloc.last_lc_age_s === undefined ? null : reloc.last_lc_age_s + since;
+  const lcAge = !reloc || reloc.last_lc_age_s === null || reloc.last_lc_age_s === undefined ? null : reloc.last_lc_age_s + since;
+  const priorIds = [...new Set((reloc?.lcs ?? []).map(lc => lc.prior))].sort((a, b) => a - b);
   const lines = [
-    `${reloc.prior_lcs} loop closures against the prior map${reloc.prior_lcs ? ` (best ${reloc.best_assoc} objects, last ${fmtAge(lcAge ?? 0)} ago)` : ""}`,
-    `${fa.parent} -> ${fa.child} moved ${reloc.jumps} times` +
-      (reloc.total ? `, in all ${reloc.total.dxy.toFixed(1)} m / ${reloc.total.dyaw.toFixed(0)}°` : ""),
+    hydraLine,
+    ...(reloc
+      ? [
+          `fleetlink saw ${reloc.prior_lcs} ROMAN loop closures against ${priorName}${reloc.prior_lcs ? ` (best ${reloc.best_assoc} objects, last ${fmtAge(lcAge ?? 0)} ago${priorIds.length ? `, ROMAN prior id ${priorIds.join(", ")}` : ""})` : ""}`,
+          `${fa.parent} -> ${fa.child} moved ${reloc.jumps} times` +
+            (reloc.total ? `, in all ${reloc.total.dxy.toFixed(1)} m / ${reloc.total.dyaw.toFixed(0)}°` : ""),
+        ]
+      : []),
     distToPrior === null ? "prior map not shown: cannot check the robot is inside it" : `nearest prior place ${distToPrior.toFixed(1)} m away`,
+    ...(ctx.roman !== undefined ? [nodeLine("ROMAN loop closures (roman_lc)", ctx.roman)] : []),
+    ...(ctx.hydraMulti && ctx.hydraMulti.status && !ROMAN_UP.has(ctx.hydraMulti.status) ? [nodeLine("hydra_multi", ctx.hydraMulti)] : []),
     base.title,
   ];
   const title = lines.join("\n");
-  if (reloc.prior_lcs === 0) {
-    return {tone: "warn", text: "no prior match yet — starting guess", title: `not relocalized: ROMAN has not matched the prior map yet, so ${fa.parent} -> ${fa.child} is hydra's starting guess\n${title}`};
+  const big = reloc ? (reloc.recent_jumps ?? (reloc.last_jump ? [reloc.last_jump] : [])).filter(isBigJump).length : 0;
+  const suspect = (): AlignStatus | null => {
+    if (distToPrior !== null && distToPrior > OUTSIDE_PRIOR_M) {
+      return {tone: "err", text: `suspect — ${distToPrior.toFixed(0)} m outside the prior map`, title: `placed outside the prior map: a wrong loop closure is likely\n${title}`};
+    }
+    if (big >= 2) {
+      return {tone: "err", text: `suspect — placement jumped ${big}×`, title: `${big} large corrections (> ${BIG_JUMP_M} m or ${BIG_JUMP_DEG}°): loop closures disagree\n${title}`};
+    }
+    return null;
+  };
+  if (hm && hm.accepted > 0) {
+    return suspect() ?? {tone: "ok", text: `relocalized · ${plural(hm.accepted, "accepted match")}`, title};
   }
-  const big = (reloc.recent_jumps ?? (reloc.last_jump ? [reloc.last_jump] : [])).filter(isBigJump).length;
-  if (distToPrior !== null && distToPrior > OUTSIDE_PRIOR_M) {
-    return {tone: "err", text: `suspect — ${distToPrior.toFixed(0)} m outside the prior map`, title: `placed outside the prior map: a wrong loop closure is likely\n${title}`};
+  if (reloc && reloc.prior_lcs > 0) {
+    return (
+      suspect() ?? {
+        tone: "ok",
+        text: `relocalized · ${plural(reloc.prior_lcs, "match")}${lcAge === null ? "" : ` · last ${fmtAge(lcAge)} ago`}`,
+        title,
+      }
+    );
   }
-  if (big >= 2) {
-    return {tone: "err", text: `suspect — placement jumped ${big}×`, title: `${big} large corrections (> ${BIG_JUMP_M} m or ${BIG_JUMP_DEG}°): loop closures disagree\n${title}`};
+  const moved = movedFromInitial(fa, reloc);
+  if (moved) {
+    return (
+      suspect() ?? {
+        tone: "ok",
+        text: "aligned · no match count",
+        title: `aligned: ${fa.parent} -> ${fa.child} moved ${moved} from the initial estimate, but no source reports a prior-map match count\n${title}`,
+      }
+    );
   }
+  if (hm) {
+    const matching = !!ctx.roman?.status && ROMAN_UP.has(ctx.roman.status);
+    return {
+      tone: "warn",
+      text: matching ? "not relocalized · matching prior map…" : "not relocalized · no prior-map match yet",
+      title: `not relocalized: no loop closure against ${priorName} accepted yet, so ${fa.parent} -> ${fa.child} is only the initial estimate, not a match\n${title}`,
+    };
+  }
+  const robot = ctx.robot || fa.child.split("/")[0] || "the robot";
   return {
-    tone: "ok",
-    text: `relocalized · ${plural(reloc.prior_lcs, "match")}${lcAge === null ? "" : ` · last ${fmtAge(lcAge)} ago`}`,
-    title,
+    tone: "warn",
+    text: `relocalization unknown · no signal from ${robot}`,
+    title: `unknown (no relocalization signal from ${robot}): no hydra_multi loop-closure count, no ROMAN prior-map match seen by fleetlink, and ${fa.parent} -> ${fa.child} is still at the initial estimate\n${title}`,
   };
 }
 

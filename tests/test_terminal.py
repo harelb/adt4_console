@@ -215,3 +215,33 @@ def test_stop_session_without_a_session_is_a_noop():
     h = PaneHelpers(stop_rc=1)
     ok, _ = _stop(h)
     assert ok and len(h.cmds) == 1
+
+
+def test_cli_turns_terminals_on_by_default(monkeypatch):
+    from adt4_console import cli
+
+    monkeypatch.delenv("ADT4_CONSOLE_TERMINAL", raising=False)
+    assert cli.terminal_default() is True
+    for off in ("0", "false", "No", "off"):
+        assert cli.terminal_default({"ADT4_CONSOLE_TERMINAL": off}) is False
+    assert cli.terminal_default({"ADT4_CONSOLE_TERMINAL": "1"}) is True
+    assert cli.parse_args([]).terminal is True
+    assert cli.parse_args(["--no-terminal"]).terminal is False
+    monkeypatch.setenv("ADT4_CONSOLE_TERMINAL", "0")
+    assert cli.parse_args([]).terminal is False
+    assert cli.parse_args(["--terminal"]).terminal is True
+
+
+def test_terminal_needs_the_token_when_one_is_set(settings):
+    settings.terminal = True
+    settings.token = "s3cret"
+    client, svc = make_client(settings)
+    svc.helpers = FakeHelpers()
+    m = _machine(svc)
+    with client:
+        with pytest.raises(WebSocketDisconnect) as e:
+            with client.websocket_connect(
+                f"/api/fleet/{m['name']}/terminal?session=adt4_system"
+            ) as ws:
+                ws.receive_bytes()
+        assert e.value.code == 4401

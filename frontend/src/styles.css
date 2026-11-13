@@ -955,12 +955,52 @@ input[type="checkbox"] {
   color: #ff8a8e;
   font-weight: 700;
 }
+/* Fleet machines: every column fits at ~1600 px; narrower, the table scrolls
+   inside .table-wrap (never the page) and long cells truncate with a tooltip */
 .fleet-table td {
   white-space: nowrap;
+  padding: 6px 8px;
+}
+.fleet-table th {
+  padding-left: 8px;
+  padding-right: 8px;
 }
 .fleet-table td:first-child {
   white-space: normal;
-  min-width: 180px;
+  min-width: 150px;
+  max-width: 240px;
+}
+.fleet-table .fleet-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-table td.cell-tmux {
+  white-space: normal;
+  min-width: 150px;
+  max-width: 340px;
+}
+.fleet-table .res-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  max-width: 220px;
+}
+.fleet-table .res-cell > span {
+  white-space: nowrap;
+}
+.fleet-table td.cell-trunc {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fleet-table td.cell-actions {
+  width: 1%;
+  text-align: right;
+}
+.fleet-table .fleet-actions {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
 }
 .actions-col {
   text-align: right;
@@ -2173,6 +2213,35 @@ input[type="checkbox"] {
   max-height: 200px;
   overflow: auto;
 }
+/* chat: long goals, symbols, captions and links wrap inside their bubble or
+   card instead of running out of it (a PDDL goal is one long line) */
+.chat-log {
+  min-width: 0;
+}
+.chat-log .msg {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-log .msg > *,
+.chat-log .msg .row > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.chat-log .msg pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+.chat-log .msg .chip:not(.chip-nowrap) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.chat-log .msg a {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
 .msg-goal {
   background: var(--info-bg);
   border: 1px solid rgba(79, 195, 247, 0.5);
@@ -2670,6 +2739,12 @@ input[type="checkbox"] {
   }
   .fleet-table td:first-child {
     min-width: 0;
+  }
+  .fleet-table td,
+  .fleet-table td:first-child,
+  .fleet-table td.cell-tmux,
+  .fleet-table td.cell-trunc {
+    max-width: none;
   }
 
   /* viewer: one-row toolbar, panels as bottom sheets (BottomSheet.tsx) */
@@ -3405,6 +3480,12 @@ input[type="checkbox"] {
 }
 .cell-actions .btn + .btn {
   margin-left: 6px;
+}
+.terminal-warn {
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius);
 }
 .terminal-host {
   height: min(65vh, 640px);
@@ -4782,6 +4863,88 @@ input[type="checkbox"] {
 .cd-gate {
   align-items: center;
 }
+.cd-fleet,
+.cd-fleet-reset {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cd-reset-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+/* AWCD change list (Live tab) and its map labels */
+.awcd-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg);
+  min-width: 0;
+}
+.awcd-list {
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+}
+.awcd-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  padding: 2px 4px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.awcd-row:hover,
+.awcd-row.on {
+  background: var(--bg-2);
+}
+.awcd-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.awcd-kind.awcd-added {
+  color: var(--ok);
+}
+.awcd-kind.awcd-removed {
+  color: var(--err);
+}
+.awcd-label {
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  border-left: 3px solid;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+.awcd-label.awcd-added {
+  border-color: #00ff00;
+}
+.awcd-label.awcd-removed {
+  border-color: #ff0000;
+}
+.awcd-label.focused {
+  font-size: 12px;
+  outline: 1px solid #fff;
+}
 
 /* ------------------------------------------------- the live map and its staged load */
 .map-load {
@@ -4842,4 +5005,130 @@ input[type="checkbox"] {
   border: 1px solid var(--line-2);
   border-radius: var(--radius);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+/* grasp in progress: the camera view shows the hand camera (stores/graspCamera.ts) */
+.grasp-cam-badge {
+  align-items: center;
+  padding: 4px 8px;
+  border: 1px solid var(--info);
+  border-radius: 6px;
+  background: var(--info-bg);
+  color: var(--text);
+}
+.grasp-cam-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--info);
+  animation: grasp-cam-pulse 1.2s ease-in-out infinite;
+}
+@keyframes grasp-cam-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .grasp-cam-dot {
+    animation: none;
+  }
+}
+.grasp-cam-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+/* Launch: the last launch's choices (prefilled; "Relaunch settings" restores them) */
+.launch-last {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-1);
+}
+
+/* ---------- Planner state (what the planner believes) ---------- */
+.planner-state {
+  margin-top: 8px;
+  min-width: 0;
+}
+.planner-state.compact {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin: 4px 0;
+}
+.planner-state.compact > summary {
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.planner-state.compact[open] > summary {
+  white-space: normal;
+}
+.planner-state-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.planner-state .ps-title {
+  margin: 6px 0 0;
+}
+.ps-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+.ps-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  padding: 2px 4px;
+}
+.ps-table td {
+  padding: 3px 4px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.ps-table tr.ps-sub td {
+  border-bottom: 1px solid var(--line);
+  padding-top: 0;
+}
+.ps-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.ps-pos,
+.ps-err {
+  font-size: 11px;
+}
+.ps-fact {
+  display: inline-block;
+  margin-right: 4px;
+}
+.ps-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 0;
+}
+.ps-editor .ps-obj {
+  width: 90px;
+}
+.ps-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--warn-bg);
 }

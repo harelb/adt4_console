@@ -82,8 +82,9 @@ def parse_args(argv=None):
     p.add_argument(
         "--llm-budget-usd",
         type=float,
-        default=10.0,
-        help="hard cap on cumulative chat LLM spend; afterwards chat goes offline",
+        default=None,
+        help="optional hard cap on cumulative chat LLM spend (USD); afterwards chat goes "
+        "offline. Default: no cap",
     )
     p.add_argument(
         "--sam3-url",
@@ -92,11 +93,12 @@ def parse_args(argv=None):
     )
     p.add_argument(
         "--terminal",
-        action="store_true",
-        default=os.environ.get("ADT4_CONSOLE_TERMINAL", "") not in ("", "0", "false"),
-        help="allow browser terminals (ssh) on fleet machines from the Fleet page; "
-        "anyone who can reach the console gets a shell, so pair it with --token "
-        "off a closed network",
+        action=argparse.BooleanOptionalAction,
+        default=terminal_default(),
+        help="browser terminals (ssh) on fleet machines from the Fleet page: a shell, "
+        "or attach to a machine's tmux session (default on; --no-terminal or "
+        "ADT4_CONSOLE_TERMINAL=0 turns them off).  Anyone who can reach the console "
+        "gets a shell, so pair it with --token off a closed network",
     )
     g = p.add_argument_group("geo / missions / quad")
     g.add_argument("--geo-anchor", action="append", metavar="SRC=JSON",
@@ -127,6 +129,13 @@ def parse_args(argv=None):
     )
     p.add_argument("--log-level", default="info")
     return p.parse_args(argv)
+
+
+def terminal_default(environ=None) -> bool:
+    """Browser terminals are on unless ``$ADT4_CONSOLE_TERMINAL`` is 0/false/no/off."""
+    environ = os.environ if environ is None else environ
+    v = environ.get("ADT4_CONSOLE_TERMINAL", "").strip().lower()
+    return v not in ("0", "false", "no", "off")
 
 
 def default_zenoh_connect(topology=None, environ=None) -> str:
@@ -180,6 +189,7 @@ def settings_from_args(args):
         terminal=args.terminal,
         sam3_url=args.sam3_url,
         launch_state_path="~/.adt4_console/active_launch.json",
+        launch_memory_path="~/.adt4_console/launch_memory.json",
         geo_anchors=_pairs(args.geo_anchor, "--geo-anchor"),
         tiles_dir=args.tiles_dir,
         tiles_live=args.tiles_live,

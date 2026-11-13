@@ -215,13 +215,18 @@ class VideoStartBody(BaseModel):
     )
 
 
-async def _viewer(request: Request) -> str:
-    """Optional ``{viewer}`` JSON body (keepalive / stop may be sent without one)."""
+async def _body(request: Request) -> dict:
+    """Optional JSON object body (keepalive / stop may be sent without one)."""
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
-        return ""
-    v = body.get("viewer") if isinstance(body, dict) else None
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+async def _viewer(request: Request) -> str:
+    """Optional ``{viewer}`` JSON body (keepalive / stop may be sent without one)."""
+    v = (await _body(request)).get("viewer")
     return str(v)[:64] if v else ""
 
 
@@ -256,9 +261,13 @@ async def video_keepalive(robot: str, camera: str, request: Request):
 
 @robots_router.post("/{robot}/video/{camera}/stop")
 async def video_stop(robot: str, camera: str, request: Request):
+    """``{viewer, grace}``: with ``grace`` (a view unmounted, it may come back)
+    the stream lingers for the relay's grace period before it stops."""
     _rx(request)
+    body = await _body(request)
+    v = body.get("viewer")
     return services(request).live.video.stop(
-        robot, camera, await _viewer(request) or None
+        robot, camera, str(v)[:64] if v else None, grace=bool(body.get("grace"))
     )
 
 

@@ -16,6 +16,7 @@ import {AlignedGroup} from "./AlignedGroup";
 import {DimGroup} from "./DimGroup";
 import {useBackground} from "./background";
 import {contrastFor, readableOn} from "./style";
+import {pathsCleared, useClearedPaths} from "../stores/clearedPaths";
 
 /** Executor overlay colours derived from a robot's colour. On a light 3D
  *  background (`bg`) the shades are darkened just enough to stay visible. */
@@ -131,7 +132,10 @@ function LidarLayer({robot}: {robot: string}) {
 }
 
 function PathLayer({robot}: {robot: string}) {
-  const paths = useRobots(s => s.paths[robot]);
+  const raw = useRobots(s => s.paths[robot]);
+  const cleared = useClearedPaths(s => s.paths);
+  // the operator cleared these paths: hidden until the robot sends different ones
+  const paths = raw && !pathsCleared({paths: cleared}, robot, raw) ? raw : null;
   const {showSmooth, showMlp, showTarget} = useOverlays();
   const c = pathColors(useRobotColorOf()(robot), useBackground());
   if (!paths) return null;

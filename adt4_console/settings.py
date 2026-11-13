@@ -40,6 +40,9 @@ class Settings:
     # the active launch (experiment, robots, prior map) survives console restarts
     # here; None = memory only (tests).  cli.py sets ~/.adt4_console/active_launch.json
     launch_state_path: str | None = None
+    # the Launch form's last choices (prior map, sessions, robots, ...) per base
+    # station; None = memory only (tests).  cli.py sets ~/.adt4_console/launch_memory.json
+    launch_memory_path: str | None = None
     planner_ns: str | None = None  # omniplanner namespace (base station name)
     # browser terminals on fleet machines (a shell for anyone who can reach the console)
     terminal: bool = False
@@ -59,7 +62,8 @@ class Settings:
     llm_model: str | None = (
         None  # None -> provider default (gpt-4.1-mini / claude-opus-5-5)
     )
-    llm_budget_usd: float = 10.0  # hard cap on cumulative chat spend (persisted)
+    # optional hard cap on cumulative chat spend (persisted); None: no cap
+    llm_budget_usd: float | None = None
     llm_usage_path: str = "~/.adt4_console/llm_usage.json"
 
     # SAM3 query server (agentic_navigation sam3_frontend/query_server.py):

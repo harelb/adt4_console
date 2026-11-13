@@ -14,7 +14,8 @@ import {MeshTiles, type TileStats} from "./MeshTiles";
 import {DETAIL_LEVEL} from "../lib/meshPlan";
 import {currentActionIndex, distinctPoints} from "./planUtil";
 import {LiveOverlays} from "./LiveOverlays";
-import {useViewStyle} from "../stores/viewStyle";
+import {AwcdOverlay} from "./AwcdOverlay";
+import {placeLabelsKey, useViewStyle} from "../stores/viewStyle";
 import {contrastFor, defaultBackground, STYLE_BACKGROUND, type ColorOpts} from "./style";
 import {useTheme} from "../stores/theme";
 import {useBackground, useRobotColor3D} from "./background";
@@ -29,6 +30,7 @@ import {agentColors, MapHover, MissionOverlay} from "./MissionOverlay";
 import {pickRadius, TapTracker} from "../lib/tap";
 import {useMission} from "../stores/mission";
 import {usePlanPreview} from "../stores/planPreview";
+import {planCleared, useClearedPaths} from "../stores/clearedPaths";
 import {EditOverlay} from "./EditOverlay";
 import {fitTopView} from "../lib/fitView";
 
@@ -56,15 +58,16 @@ function SourceContent({src, cb}: {src: SourceView; cb: SceneCallbacks}) {
   const {hiddenLayers, edgeKinds, flat, stackHeight, showBBoxes, showTrajectory, meshOpacity, vizStyle, showText, meshCull, meshClipOn, meshClipHeight} = useViewer();
   const heights = useViewStyle(s => s.heights);
   const regionHulls = useViewStyle(s => s.regionHulls);
+  const placeLabels = useViewStyle(s => s.placeLabels[placeLabelsKey(src.kind)]);
   const meshColor = useViewStyle(s => s.meshColor);
   const meshLevel = useViewer(s => DETAIL_LEVEL[s.meshDetail === "auto" ? s.meshAutoDetail : s.meshDetail]);
   const colors = useColorOpts();
   const bg = useBackground();
   const edgeInk = contrastFor(bg, vizStyle).edge;
   const layout = useMemo(
-    () => (src.model ? layoutGraph(src.model, {hiddenLayers, edgeKinds, flat, stackHeight, style: vizStyle, text: showText, heights, colors, regionHulls}) : null),
+    () => (src.model ? layoutGraph(src.model, {hiddenLayers, edgeKinds, flat, stackHeight, style: vizStyle, text: showText, placeLabels, heights, colors, regionHulls}) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [src.model, src.rev, hiddenLayers, edgeKinds, flat, stackHeight, vizStyle, showText, heights, colors, regionHulls],
+    [src.model, src.rev, hiddenLayers, edgeKinds, flat, stackHeight, vizStyle, showText, placeLabels, heights, colors, regionHulls],
   );
   const onLayout = cb.onLayout;
   useEffect(() => {
@@ -98,6 +101,7 @@ function SourceContent({src, cb}: {src: SourceView; cb: SceneCallbacks}) {
           edgeKinds={edgeKinds}
           style={vizStyle}
           showText={showText}
+          placeLabels={placeLabels}
           colors={colors}
           edgeInk={edgeInk}
         />
@@ -317,11 +321,13 @@ const PLAN_ORDER = 20;
 const PREVIEW_ORDER = 45;
 function PlanOverlay() {
   const plans = useRobots(s => s.plan);
+  const cleared = useClearedPaths(s => s.plans);
   const robotColor = useRobotColor3D();
   return (
     <>
       {Object.entries(plans).map(([r, plan]) => {
-        if (!plan?.plan) return null;
+        // the operator cleared this plan's drawing (until a new plan_id)
+        if (!plan?.plan || planCleared({plans: cleared}, r, plan)) return null;
         const cur = currentActionIndex(plan);
         const color = robotColor(r);
         const paths = plan.plan.actions.map(a =>
@@ -716,6 +722,7 @@ export function Scene({sources, bounds, cb}: {sources: SourceView[]; bounds: {mi
       <LiveOverlays />
       <RobotGlyphs />
       <PlanOverlay />
+      <AwcdOverlay />
       <PreviewOverlay bounds={bounds} />
       <MissionLayer bounds={bounds} />
       <EditOverlay />

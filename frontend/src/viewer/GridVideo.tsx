@@ -11,7 +11,7 @@ import {ws} from "../ws";
 import {consoleClockOffset} from "../lib/clock";
 import {GRID_QUALITY, MOSAIC, StampRate, dropCamera, frameLagMs, gridStreams, h264Decoder, moveCamera, normalizeSelection, parseVideoFrame, pickCodec, selectedCameras, setAllCameras, streamCameras, toggleCamera, type GridQuality, type GridSelection, type GridStreamParams, type GridVideoMode, type H264Decoder, type VideoCodec, type VideoFrame as StreamFrame} from "../lib/video";
 import {StreamDecoder} from "../lib/videoDecode";
-import {detail, post, usePageVisible, viewerId} from "./VideoView";
+import {detail, post, releaseStream, usePageVisible, viewerId} from "./VideoView";
 
 const START_SPACING_MS = 1100; // the console rate-limits parameter changes to 1/s
 const KEEPALIVE_MS = 2000;
@@ -116,7 +116,7 @@ function useStreamSession(robot: string, p: GridStreamParams, codec: VideoCodec 
       startRef.current = null;
       window.clearInterval(id);
       window.clearTimeout(timer);
-      void post(`${base}/stop`, {viewer: viewer.current}, true).catch(() => undefined);
+      releaseStream(base, viewer.current);
     };
   }, [base, enabled, codec]);
 

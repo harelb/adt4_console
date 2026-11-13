@@ -37,6 +37,11 @@ FEATURES: dict[str, tuple[str, str | None, str]] = {
         None,
         "plan repair's scene edits (SGET) in the chat",
     ),
+    "team_goal_prompts": (
+        "heracles_agents.prompts",
+        None,
+        "PDDL team goals in the chat (heracles_agents' goal rules and goal check)",
+    ),
     "pddl_planning": (
         "dsg_pddl.pddl_grounding",
         None,

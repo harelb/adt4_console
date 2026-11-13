@@ -1,6 +1,6 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {fuzzyMatch, matchRanges} from "../src/lib/fuzzy";
-import {DEFAULT_PREFS, isIncomplete, loadPrefs, mapTime, savePrefs, searchMaps, sortMaps, type MapRow} from "../src/lib/mapList";
+import {DEFAULT_PREFS, imageIndexState, isIncomplete, loadPrefs, mapTime, savePrefs, searchMaps, sortMaps, type MapRow} from "../src/lib/mapList";
 import type {MapEntry} from "../src/types";
 
 const picked = (s: string, idx: number[]) => idx.map(i => s[i]).join("");
@@ -142,5 +142,29 @@ describe("isIncomplete", () => {
   });
   it("an older backend that does not report files is not hidden", () => {
     expect(isIncomplete(m({}))).toBe(false);
+  });
+});
+
+describe("imageIndexState (Build image store)", () => {
+  const store = (extra: object) => ({frames: {}, frames_total: 0, observations: 0, sensors: 0, check: {ok: true, problems: []}, ...extra});
+  const m = (files: Partial<MapEntry>): MapEntry => ({name: "r", size: 1, ...files});
+  it("raw logs, never indexed: build needed", () => {
+    const s = imageIndexState(m({has_image_store: true, subdirs: ["hydra", "keyframes"], image_store: store({indexed: false, raw: {keyframe_archives: 40, tracks: 3}})}));
+    expect(s).toMatchObject({canBuild: true, needed: true, label: "Build image store"});
+  });
+  it("indexed but fewer keyframes than archives: update needed", () => {
+    const s = imageIndexState(m({has_image_store: true, image_store: store({indexed: true, frames: {keyframe: 10}, raw: {keyframe_archives: 40, tracks: 0}})}));
+    expect(s).toMatchObject({canBuild: true, needed: true, label: "Update image store"});
+  });
+  it("indexed and up to date: re-run offered, not highlighted", () => {
+    const s = imageIndexState(m({has_image_store: true, image_store: store({indexed: true, frames: {keyframe: 40}, raw: {keyframe_archives: 40, tracks: 2}})}));
+    expect(s).toMatchObject({canBuild: true, needed: false, label: "Re-index images"});
+  });
+  it("no raw logs (e.g. a packed copy): nothing to build", () => {
+    expect(imageIndexState(m({has_image_store: true, subdirs: ["hydra", "image_store"], image_store: store({indexed: true, frames: {keyframe: 5}})})).canBuild).toBe(false);
+    expect(imageIndexState(m({has_image_store: false, subdirs: ["hydra"], image_store: null})).canBuild).toBe(false);
+  });
+  it("older backend without raw counts: keyframes/ dir is enough", () => {
+    expect(imageIndexState(m({has_image_store: false, subdirs: ["keyframes"], image_store: null}))).toMatchObject({canBuild: true, needed: true});
   });
 });

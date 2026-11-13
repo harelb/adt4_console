@@ -62,9 +62,11 @@ describe("chat auto-send", () => {
   let host: HTMLDivElement | null = null;
   let calls: {url: string; body: Record<string, unknown> | null}[] = [];
   const GOAL = "(and (visited-poi-by gauss t8202) (visited-poi-by euclid t17657))";
+  let chatBody: Record<string, unknown> = {goal: GOAL};
 
   beforeEach(() => {
     calls = [];
+    chatBody = {goal: GOAL};
     const now = Date.now();
     const f = fleet();
     useRobots.setState({state: f.state as never, stateAt: {euclid: now, gauss: now, hamilton: now}, link: f.link as never});
@@ -75,7 +77,7 @@ describe("chat auto-send", () => {
         const body = init?.body ? JSON.parse(String(init.body)) : null;
         calls.push({url: String(url), body});
         if (String(url) === "api/chat")
-          return new Response(JSON.stringify({type: "goal", kind: "pddl", body: {goal: GOAL}, robot: null}) + "\n", {status: 200});
+          return new Response(JSON.stringify({type: "goal", kind: "pddl", body: chatBody, robot: null}) + "\n", {status: 200});
         if (String(url).includes("/goal/pddl")) return new Response(JSON.stringify({ok: true, via: "goal_manager", lease: {euclid: {ok: true, message: "taken"}}}), {status: 200});
         return new Response("{}", {status: 200});
       }),
@@ -131,12 +133,43 @@ describe("chat auto-send", () => {
     const sends = calls.filter(c => c.url.includes("/goal/"));
     expect(sends).toHaveLength(1);
     expect(sends[0].url).toBe("api/robots/gauss/goal/pddl");
-    expect(sends[0].body).toEqual({goal: GOAL});
+    expect(sends[0].body).toEqual({goal: GOAL, engine: "fast_downward"});
     expect(calls.some(c => c.url.includes("/goal/goto"))).toBe(false);
     const card = useChat.getState().items.find(i => i.type === "autosend");
     expect(card).toMatchObject({via: "gauss", robots: [{name: "gauss"}, {name: "euclid"}]});
     expect(host!.querySelector("[data-testid=auto-send-skipped]")!.textContent).toContain("hamilton (E-stopped)");
     expect(host!.querySelector("[data-testid=auto-send-stop-gauss]")!.textContent).toBe("Stop (manual)");
     expect(host!.querySelector("[data-testid=auto-send-stop-euclid]")!.textContent).toBe("Pause");
+  });
+
+  // robot test 2026-11-11: in a GRSTAPS-X plan repair session goal_manager plans a
+  // goal with no engine with GRSTAPS-X; (at-object euclid o20) auto-sent without its
+  // engine got "Unsupported GRSTAPS-X goal predicate at-object"
+  it("always sends the goal's engine: a Fast Downward goal says fast_downward even when the toggle is GRSTAPS-X", async () => {
+    chatBody = {goal: "(at-object euclid o20)", engine: "fast_downward"};
+    useEngines.setState({engine: "grstaps"} as never);
+    setAutoSend(true);
+    await mountAndAsk("euclid, be at O20");
+    const sends = calls.filter(c => c.url.includes("/goal/"));
+    expect(sends).toHaveLength(1);
+    expect(sends[0].url).toBe("api/robots/euclid/goal/pddl");
+    expect(sends[0].body).toEqual({goal: "(at-object euclid o20)", engine: "fast_downward"});
+  });
+
+  it("sends engine grstaps for a GRSTAPS-X goal", async () => {
+    chatBody = {goal: "(visited-object-by euclid o20)", engine: "grstaps"};
+    setAutoSend(true);
+    await mountAndAsk("euclid, go to O20");
+    const sends = calls.filter(c => c.url.includes("/goal/"));
+    expect(sends).toHaveLength(1);
+    expect(sends[0].body).toEqual({goal: "(visited-object-by euclid o20)", engine: "grstaps"});
+  });
+
+  it("a goal with no engine of its own goes with the planner toggle's engine", async () => {
+    useEngines.setState({engine: "fast_downward"} as never);
+    setAutoSend(true);
+    await mountAndAsk("send gauss and euclid to the sidewalks");
+    const sends = calls.filter(c => c.url.includes("/goal/"));
+    expect(sends.map(c => c.body?.engine)).toEqual(["fast_downward"]);
   });
 });

@@ -10,15 +10,17 @@ import {Badge, Spinner} from "../components/ui";
 import {sendGoal} from "./PlanPanel";
 import {goalSendMessage, type SendTone} from "./PlanRepair";
 import {LeaseRefusalNotice} from "./LeaseControl";
-import {chatAbort, clearChat, storable, useChat} from "../stores/chat";
+import {chatAbort, clearChat, setChatDraft, storable, useChat} from "../stores/chat";
 import {closeMission, fitMission, missionContext, openMission, saveCurrent, simCmd, useMission} from "../stores/mission";
 import {clearPreview, previewPddl, PreviewError, previewRobots, usePlanPreview, type PddlPreview} from "../stores/planPreview";
 import {FastDownwardDetails} from "./FastDownward";
 import {PlannerSchedule} from "./PlannerSchedule";
 import {EnginePicker} from "./EnginePicker";
 import {GoalImages} from "./GoalImages";
+import {GoalStatus} from "./GoalStatus";
+import {NOTABLE, trackNote, useGoalTracks} from "../lib/goalTrack";
 import {DirectRouteButtons} from "./DirectRoute";
-import {autoRoster, onlineRobots, planAutoSend, type AutoRobot, type Fleet, type Skipped} from "../lib/autoSend";
+import {autoRoster, onlineRobots, planAutoSend, sendLabel, type AutoRobot, type Fleet, type Skipped} from "../lib/autoSend";
 import {setAutoSend, useAutoSend} from "../stores/autoSend";
 import {useRobots} from "../stores/robots";
 import {useFleet} from "../stores/fleet";
@@ -26,17 +28,20 @@ import {rosterOf} from "./robotFocus";
 import {agentColors} from "./MissionOverlay";
 import {useRobotColor3D} from "./background";
 import {ENGINE_LABEL, refreshEngines, useEngines, type EngineId} from "../stores/engines";
+import {chatEngineNow, useChatEngine, type ChatEngineInfo} from "../stores/chatEngine";
+import {ChatEnginePicker} from "./ChatEnginePicker";
+import {PlannerStatePanel} from "./PlannerState";
 import type {FastDownwardInfo} from "../lib/fastDownward";
 import {decideMapEdit, MapEditCard, mapEditNote, statusOf, toMapEditItem, type MapEditItem} from "./MapEditCard";
 import {decideSceneEdit, SceneEditCard, sceneEditNote, sceneEditStatus, toSceneEditItem, undoSceneEdit, type SceneEditItem} from "./SceneEditCard";
 import {refreshEdit} from "../stores/mapEdit";
-import {candidateNote, candidateOrdinals, cellText, cypherErrorShort, fmtLeft, lookupSummary, mergeTargetsAfterCommit, scrollAnchor, toolGroups, trimTranscript, writeNote, type TranscriptItem, type WriteOutcome} from "../lib/chatTranscript";
+import {candidateMeta, candidateNote, candidateOrdinals, cellText, cypherErrorShort, fmtExpiry, fmtExtent, lookupSummary, mergeTargetsAfterCommit, scrollAnchor, toolGroups, trimTranscript, writeNote, type TranscriptItem, type WriteOutcome} from "../lib/chatTranscript";
 
 export type ChatItem =
   | {type: "user"; text: string; note?: boolean}
   | {type: "text"; text: string}
   | {type: "tool"; name: string; args: unknown; result: unknown}
-  | {type: "goal"; kind: string; body: Record<string, unknown>; robot?: string | null; sent?: {tone: SendTone; text: string}}
+  | {type: "goal"; kind: string; body: Record<string, unknown>; robot?: string | null; team?: string[] | null; warning?: string | null; replaces?: boolean; superseded?: boolean; sent?: {tone: SendTone; text: string}; track?: string}
   | {type: "error"; text: string}
   | MissionCardItem
   | CypherWrite
@@ -57,6 +62,8 @@ export interface AutoSendItem {
   skipped: Skipped[];
   blocked?: string;
   result?: {tone: SendTone; text: string};
+  /** the goal's live status (lib/goalTrack) */
+  track?: string;
   /** the backend's lease report ({robot: {ok, message}}) */
   lease?: Record<string, {ok?: boolean; message?: string}> | null;
 }
@@ -123,6 +130,14 @@ export interface ObjectCandidate {
   bbox_min: number[] | null;
   bbox_max: number[] | null;
   num_views?: number;
+  /** every view the card can show (the console groups same-object candidates
+   *  into one card): which server candidate (index) and which of its views */
+  views?: {index: number; view: number; image_uri: string | null}[];
+  /** server candidate indices folded into this card (``index`` first) */
+  members?: number[];
+  /** "ok" | "suspect" | "degenerate" geometry, and why */
+  geometry?: string;
+  flags?: string[];
   would_merge_into?: {symbol: string; distance_m: number | null} | null;
   /** seconds left when it arrived, and when that was (ms) */
   expires_in_s?: number | null;
@@ -134,6 +149,15 @@ export interface ObjectCandidate {
 
 const nums = (v: unknown): number[] | null => (Array.isArray(v) && v.every(x => typeof x === "number") ? (v as number[]) : null);
 
+const toViewRefs = (vs: unknown[]): NonNullable<ObjectCandidate["views"]> =>
+  vs
+    .filter((v): v is Record<string, unknown> => Boolean(v) && typeof v === "object")
+    .map(v => ({
+      index: Number(v.index ?? 0),
+      view: Number(v.view ?? 0),
+      image_uri: typeof v.image_uri === "string" && v.image_uri.startsWith("data:image/") ? v.image_uri : null,
+    }));
+
 /** One streamed NDJSON object → a chat item (null: not shown, e.g. ``done``). */
 export function toChatItem(o: Record<string, unknown>): ChatItem | null {
   switch (o.type) {
@@ -142,7 +166,15 @@ export function toChatItem(o: Record<string, unknown>): ChatItem | null {
     case "tool":
       return {type: "tool", name: String(o.name), args: o.args, result: o.result};
     case "goal":
-      return {type: "goal", kind: String(o.kind), body: (o.body as Record<string, unknown>) ?? {}, robot: typeof o.robot === "string" ? o.robot : null};
+      return {
+        type: "goal",
+        kind: String(o.kind),
+        body: (o.body as Record<string, unknown>) ?? {},
+        robot: typeof o.robot === "string" ? o.robot : null,
+        team: Array.isArray(o.team) ? o.team.map(String) : null,
+        warning: typeof o.warning === "string" ? o.warning : null,
+        replaces: o.replaces === true,
+      };
     case "error":
       return {type: "error", text: String(o.text ?? "error")};
     case "mission":
@@ -181,6 +213,10 @@ export function toChatItem(o: Record<string, unknown>): ChatItem | null {
         bbox_min: nums(o.bbox_min),
         bbox_max: nums(o.bbox_max),
         num_views: typeof o.num_views === "number" ? o.num_views : undefined,
+        views: Array.isArray(o.views) ? toViewRefs(o.views) : undefined,
+        members: Array.isArray(o.members) ? o.members.filter((x): x is number => typeof x === "number") : undefined,
+        geometry: typeof o.geometry === "string" ? o.geometry : undefined,
+        flags: Array.isArray(o.flags) ? o.flags.filter((x): x is string => typeof x === "string") : undefined,
         would_merge_into: m && typeof m.symbol === "string" ? {symbol: m.symbol, distance_m: typeof m.distance_m === "number" ? m.distance_m : null} : null,
         expires_in_s: typeof o.expires_in_s === "number" ? o.expires_in_s : null,
         received: Date.now(),
@@ -226,6 +262,7 @@ export function looksTabular(text: string): boolean {
 }
 
 const MODEL_KEY = "adt4.chat.model";
+const USAGE_REFRESH_MS = 20_000; // re-read the planner toggle's engines (GRSTAPS-X may start later)
 const REASONING_KEY = "adt4.chat.reasoning";
 export const REASONING_LEVELS = ["fast", "low", "medium", "high"] as const;
 /** GPT-5 / 6 (and o-series) take a reasoning effort. */
@@ -275,6 +312,19 @@ const turnStart = {
 };
 const abort = chatAbort;
 
+// the assistant hears how a goal it proposed went (once per notable stage): an
+// [operator] note in the transcript, like the auto-send result; no extra LLM call
+const noted = new Set<string>();
+useGoalTracks.subscribe(s => {
+  for (const v of Object.values(s.tracks)) {
+    if (!v || !NOTABLE.has(v.stage) || noted.has(`${v.id}:${v.stage}`)) continue;
+    noted.add(`${v.id}:${v.stage}`);
+    const text = trackNote(v);
+    if (transcript.current.some(t => (t as {text?: string}).text === text)) continue;
+    transcript.current = [...transcript.current, {role: "user", text}];
+  }
+});
+
 export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
   const {planRobot, order, sources} = useViewer();
   // the conversation lives in the chat store: it outlives this panel (page
@@ -282,7 +332,10 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
   const items = useChat(s => s.items);
   const autoOn = useAutoSend(s => s.on);
   const busy = useChat(s => s.busy);
-  const [input, setInput] = useState("");
+  // the unsent text is in the store: it survives the panel unmounting (a map
+  // click switches the side panel to Inspect)
+  const input = useChat(s => s.draft);
+  const setInput = setChatDraft;
   // "Re-plan in chat" (Mission tab): the text lands in the message box, unsent
   const prefill = useChat(s => s.prefill);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -321,13 +374,20 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
     const card = a === null ? null : el.querySelector<HTMLElement>(`[data-item="${a}"]`);
     el.scrollTop = card ? el.scrollTop + card.getBoundingClientRect().top - el.getBoundingClientRect().top : el.scrollHeight;
   }, [items]);
-  useEffect(() => {
-    getJSON<{models?: string[]; model?: string | null}>("api/chat/usage")
+  // models, and the planner toggle's engines (re-read when the toggle opens: the base may start GRSTAPS-X later)
+  const loadUsage = () =>
+    getJSON<{models?: string[]; model?: string | null; engines?: ChatEngineInfo[]}>("api/chat/usage")
       .then(u => {
         setModels(u.models ?? []);
         setDefaultModel(u.model ?? null);
+        useChatEngine.getState().setEngines(u.engines ?? []);
       })
       .catch(() => undefined);
+  useEffect(() => {
+    void loadUsage();
+    // ... and every 20 s: the planning session (GRSTAPS-X) may start or stop after the console
+    const id = window.setInterval(() => void loadUsage(), USAGE_REFRESH_MS);
+    return () => window.clearInterval(id);
   }, []);
   const setModel = (m: string) => {
     setModelRaw(m);
@@ -369,6 +429,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
     abort.current = ctl;
     let gotTranscript = false;
     const toSend: AutoQueued[] = [];
+    let lastGoal: ChatItem | null = null;
     try {
       const headers: Record<string, string> = {"Content-Type": "application/json"};
       const t = getToken();
@@ -388,6 +449,8 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
         model: chosenModel,
         mission_ctx: withMission ? (autoFleet ? {...missionContext(), roster: autoRoster(autoFleet.online), auto_send: true} : missionContext()) : undefined,
         reasoning: isReasoningModel(chosenModel ?? defaultModel) ? reasoning : undefined,
+        // the planner toggle: the engine of the goals the chat proposes (undefined: older backend)
+        engine: chatEngineNow(),
       };
       const res = await fetch("api/chat", {method: "POST", headers, body: JSON.stringify(body), signal: ctl.signal});
       if (!res.ok || !res.body) {
@@ -410,6 +473,13 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           return;
         }
         const it = toChatItem(o);
+        if (it?.type === "goal" && it.replaces) {
+          // one team goal per request: the combined goal replaces this reply's earlier one
+          const prev: (ChatItem | null | undefined)[] = [lastGoal, ...toSend.filter(q => q.card).map(q => q.card)];
+          toSend.splice(0, toSend.length, ...toSend.filter(q => !q.card));
+          setItems(cur => cur.map(c => (c.type === "goal" && !c.sent && prev.includes(c) ? {...c, superseded: true} : c)));
+        }
+        if (it?.type === "goal" && it.kind === "pddl") lastGoal = it;
         if (it) push(it);
         if (auto && it) {
           if (it.type === "goal" && it.kind === "pddl" && typeof it.body.goal === "string")
@@ -575,7 +645,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
    *  straight goto), through one robot it names (-by forms cover the others). */
   const autoSendGoal = async (q: AutoQueued) => {
     const {online, skipped} = autoSendRobots(q.engine);
-    const plan = planAutoSend(q.goal, online, skipped);
+    const plan = planAutoSend(q.goal, online, skipped, q.constraints);
     const named = plan.robots.map(n => online.find(r => r.name === n) ?? {name: n, kind: "spot"});
     const card: AutoSendItem = {type: "autosend", goal: q.goal, engine: q.engine, via: plan.via, robots: named, skipped: plan.skipped, blocked: plan.blocked};
     if (!plan.via) {
@@ -584,17 +654,21 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
     }
     let result: AutoSendItem["result"];
     let lease: AutoSendItem["lease"] = null;
+    let track: string | undefined;
     try {
       const body: Record<string, unknown> = {goal: q.goal};
       if (q.constraints) body.constraints = q.constraints;
-      if (q.engine === "grstaps") body.engine = "grstaps";
+      // always the engine: in a GRSTAPS-X plan repair session goal_manager plans a goal
+      // with no engine with GRSTAPS-X, so a Fast Downward goal must say so
+      body.engine = q.engine ?? useEngines.getState().engine;
       const r = await sendGoal(plan.via, "pddl", body);
       result = goalSendMessage(`Sent through ${plan.via}`, r);
+      track = r?.track;
       lease = ((r as unknown as {lease?: AutoSendItem["lease"]}).lease ?? null) || null;
     } catch (e) {
       result = {tone: "err", text: `failed: ${errorText(e)}`};
     }
-    push({...card, result, lease});
+    push({...card, result, lease, track});
     if (q.card) setItems(cur => cur.map(c => (c === q.card ? {...(c as Extract<ChatItem, {type: "goal"}>), sent: {tone: result!.tone, text: `auto-sent: ${result!.text}`}} : c)));
     // the assistant should know the plan is underway
     transcript.current = [...transcript.current, {role: "user", text: `[operator] auto-sent ${q.goal} through ${plan.via}: ${result!.text}`}];
@@ -612,7 +686,8 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
       // a PDDL goal goes to the engine the card shows (GRSTAPS-X: its plugin or goal_manager)
       const engine = it.kind === "pddl" ? ((it.body as {engine?: string}).engine ?? useEngines.getState().engine) : undefined;
       const r = await sendGoal(robot, it.kind, engine === "grstaps" ? {...it.body, engine} : it.body);
-      patch(idx, c => ({...(c as typeof it), sent: goalSendMessage(`Sent to ${robot}`, r)}));
+      const to = it.team ? `Sent once to ${sendLabel(robot, it.team)} through ${robot}` : `Sent to ${robot}`;
+      patch(idx, c => ({...(c as typeof it), sent: goalSendMessage(to, r), track: r?.track ?? (c as typeof it).track}));
     } catch (e) {
       patch(idx, c => ({...(c as typeof it), sent: {tone: "err", text: `failed: ${errorText(e)}`}}));
     }
@@ -649,6 +724,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
             ))}
           </select>
         )}
+        <ChatEnginePicker onOpen={() => void loadUsage()} />
         <label className="row gap-xs small chat-autosend" title="Plans the chat makes are sent at once to the robots that are online (fleetlink up, executor status, not E-stopped); sending takes a Spot's lease">
           <input type="checkbox" checked={autoOn} onChange={e => setAutoSend(e.target.checked)} data-testid="auto-send-toggle" />
           Auto-send to online robots
@@ -692,6 +768,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           {missionMode ? "Clear" : "New chat"}
         </button>
       </div>
+      <PlannerStatePanel compact />
       {missionMode && (
         <div className="chat-engine">
           <EnginePicker label="planner" />
@@ -1035,7 +1112,7 @@ function ImagesCard({it}: {it: ImagesItem}) {
 }
 
 
-function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"}>; robot: string | null; src: string | null; onSend: () => void}) {
+export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"}>; robot: string | null; src: string | null; onSend: () => void}) {
   const b = it.body as {goal?: string; points?: string[]; command?: string; engine?: string; constraints?: {predicate: string; symbols: string[]}[]};
   const sent = it.sent;
   const {engines, engine: chosen, loaded} = useEngines();
@@ -1066,7 +1143,7 @@ function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"
           {it.kind === "pddl" && engines.length > 1 && (
             <>
               {" "}
-              <Badge tone={engine === "grstaps" ? "info" : "off"} title={b.engine ? "the chat chose this planner" : "the planner chosen in the mission panel"}>
+              <Badge tone={engine === "grstaps" ? "info" : "off"} title={b.engine ? "this goal's planner (the chat's planner toggle, or the assistant's choice): the goal is sent with it" : "the planner chosen in the mission panel"}>
                 {ENGINE_LABEL[engine]}
               </Badge>
             </>
@@ -1078,12 +1155,24 @@ function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"
               {pv?.busy ? "planning…" : shown ? "Hide preview" : "Preview"}
             </button>
           )}
-          <button className="btn btn-sm btn-primary" disabled={Boolean(sent && sent.tone !== "err")} onClick={onSend}>
-            Send to {robot ?? "robot"}
+          <button
+            className="btn btn-sm btn-primary"
+            disabled={Boolean(it.superseded) || Boolean(sent && sent.tone !== "err")}
+            onClick={onSend}
+            title={it.team ? "One goal for the whole team: the planner plans every robot at once and allocates the tasks" : undefined}
+            data-testid="goal-send"
+          >
+            Send to {sendLabel(robot, it.team)}
           </button>
         </span>
       </div>
-      {b.goal && <pre className="mono small">{b.goal}</pre>}
+      {it.superseded && <div className="small tone-warn">replaced by the combined goal below (one goal covers the whole team)</div>}
+      {it.warning && (
+        <div className="small tone-warn" data-testid="goal-warning">
+          ⚠ {it.warning}
+        </div>
+      )}
+      {b.goal && <pre className="mono small goal-text">{b.goal}</pre>}
       {b.points && <div className="mono small">{b.points.join(" → ")}</div>}
       {b.command && <div className="small">“{b.command}”</div>}
       {b.constraints && b.constraints.length > 0 && (
@@ -1115,6 +1204,7 @@ function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"
       {pv?.p && shown && <DirectRouteButtons routes={pv.p.routes} />}
       {pv?.p?.schedule && shown && <PlannerSchedule schedule={pv.p.schedule} compact />}
       {sent && <div className={`small tone-${sent.tone}`}>{sent.text}</div>}
+      {it.track && <GoalStatus id={it.track} />}
     </div>
   );
 }
@@ -1132,24 +1222,25 @@ function CandidateCard({it, idx, ord, onAct}: {it: ObjectCandidate; idx: number;
   const left = it.expires_in_s != null ? it.expires_in_s - (now - (it.received ?? now)) / 1000 : null;
   const expired = left !== null && left <= 0 && !done;
   const size = it.bbox_min && it.bbox_max ? it.bbox_max.map((v, k) => Math.abs(v - (it.bbox_min as number[])[k])) : null;
-  const views = Math.max(1, it.num_views ?? 1);
-  const src =
-    view === 0 && it.image_uri
-      ? it.image_uri
-      : withToken(`api/sam3/frame.jpg?pending_id=${encodeURIComponent(it.pending_id)}&index=${it.index}&view=${view}&max_dim=640`);
+  const refs = it.views && it.views.length > 0 ? it.views : null;
+  const views = refs ? refs.length : Math.max(1, it.num_views ?? 1);
+  const ref = refs ? refs[Math.min(view, refs.length - 1)] : {index: it.index, view, image_uri: view === 0 ? it.image_uri : null};
+  const src = ref.image_uri ?? withToken(`api/sam3/frame.jpg?pending_id=${encodeURIComponent(it.pending_id)}&index=${ref.index}&view=${ref.view}&max_dim=640`);
+  const countdown = left !== null && !done ? fmtExpiry(left) : null;
+  const dup = (it.members?.length ?? 1) - 1;
   return (
     <div className="msg msg-candidate" data-item={idx}>
       <div className="row gap between">
         <span>
-          <Badge tone="warn">not in map</Badge> <strong>{it.label}</strong> <span className="muted small">score {it.score.toFixed(2)}</span>
-          {ord && ord.n > 1 && (
-            <span className="muted small">
-              {" "}
-              · {ord.k} of {ord.n}
+          <Badge tone="warn">not in map</Badge> <strong>{it.label}</strong>{" "}
+          <span className="muted small">{candidateMeta(it.score, ord, null).join(" · ")}</span>
+          {countdown && (
+            <span className={`small ${expired ? "tone-err" : "muted"}`} title="The server holds this search's results this long; approve before, or search again after">
+              {" · "}
+              {countdown}
             </span>
           )}
         </span>
-        {left !== null && !done && <span className={`small mono ${expired ? "tone-err" : "muted"}`} title="The candidate is held this long; search again after">{fmtLeft(left)}</span>}
       </div>
       <img className="candidate-img" src={src} alt={`SAM3 mask of ${it.label}, view ${view + 1}`} />
       {views > 1 && (
@@ -1163,8 +1254,23 @@ function CandidateCard({it, idx, ord, onAct}: {it: ObjectCandidate; idx: number;
       )}
       <div className="small mono">
         at {fmt(it.centroid)}
-        {size && <span className="muted"> · size {fmt(size)} m</span>}
+        {size && <span className="muted"> · size ({size.map(fmtExtent).join(", ")}) m</span>}
       </div>
+      {(dup > 0 || (it.flags && it.flags.length > 0)) && (
+        <div className="small">
+          {dup > 0 && (
+            <span className="muted" title="Detections of the same object in other keyframes; one card, approving adds it once">
+              same object in {dup + 1} detections
+            </span>
+          )}
+          {dup > 0 && it.flags && it.flags.length > 0 && " · "}
+          {it.flags && it.flags.length > 0 && (
+            <span className={it.geometry === "degenerate" ? "tone-err" : "tone-warn"} title="Geometry from few or bad depth pixels; the position may be off">
+              {it.flags.join(", ")}
+            </span>
+          )}
+        </div>
+      )}
       <div className="small">
         {it.would_merge_into ? (
           <span className="tone-warn">
@@ -1220,6 +1326,7 @@ function AutoSendCard({it}: {it: AutoSendItem}) {
       </div>
       <pre className="mono small">{it.goal}</pre>
       {it.result && <div className={`small tone-${it.result.tone}`}>{it.result.text}</div>}
+      {it.track && <GoalStatus id={it.track} />}
       {it.blocked && <div className="small tone-err">{it.blocked}</div>}
       {it.via &&
         it.robots.map(r => (

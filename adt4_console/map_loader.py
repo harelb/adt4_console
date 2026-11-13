@@ -21,6 +21,7 @@ reports 0-100 on the job's progress and on the ``maps/active`` channel.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import pathlib
 import threading
@@ -294,6 +295,13 @@ class MapLoader:
         store_mesh_path = optional(
             "heracles.graph_interface", "store_mesh_path", "the mesh of loaded maps"
         )
+        reload_feature = (
+            "keeping robots, holding and the map version through a map load"
+        )
+        reloading_map = optional("heracles.map_reload", "reloading_map", reload_feature)
+        keep_labels = (
+            optional("heracles.map_reload", "KEEP_LABELS", reload_feature) or ()
+        )
         sid = "graph"
         self._stage(job, sid, "running", 2, "reading the scene graph")
         G = spark_dsg.DynamicSceneGraph.load(str(dsg))
@@ -303,45 +311,66 @@ class MapLoader:
         job.check_cancelled()
         db = t.db()
         self._stage(job, sid, "running", 10, f"wiping neo4j:{t.name}")
-        gi.initialize_db(db)
-        object_ls, room_ls = extract_labelspaces_from_dsg(G)
-        # heracles.graph_interface.spark_dsg_to_db without an image store, step by step
-        steps = (
-            [("agents", lambda: add_agents(G, db, None))]
-            if add_agents is not None
-            else []
-        )
-        steps += [
-            (
-                "objects",
-                lambda: gi.add_objects_from_dsg(G, db, object_labelspace=object_ls),
-            ),
-            ("places", lambda: gi.add_places_from_dsg(G, db)),
-            (
-                "mesh places",
-                lambda: gi.add_mesh_places_from_dsg(G, db, object_labelspace=object_ls),
-            ),
-            ("rooms", lambda: gi.add_rooms_from_dsg(G, db, room_labelspace=room_ls)),
-            ("buildings", lambda: gi.add_buildings_from_dsg(G, db)),
-            ("edges", lambda: gi.add_edges_from_dsg(G, db)),
-        ]
-        for i, (what, fn) in enumerate(steps):
-            self._stage(job, sid, "running", 15 + 75 * i / len(steps), what)
-            fn()
-            job.check_cancelled()
-        for layer, ls in (("object", object_ls), ("room", room_ls)):
-            if ls:
-                db.execute(f"MERGE (m:_Labelspace {{layer: '{layer}'}}) SET m.ids = $ids, m.names = $names",
-                           ids=[int(k) for k in ls], names=list(ls.values()))  # fmt: skip
-        db.execute(
-            "MERGE (m:_GraphMetadata {key: 'source'}) SET m.file_path = $p", p=str(dsg)
-        )
-        mesh = dsg.parent / "mesh.ply"
-        if mesh.is_file() and store_mesh_path is not None:
-            store_mesh_path(db, str(mesh))
-        from .routes.maps import bump_map_counters
+        # heracles' reloading_map keeps robots, what they hold and the map version
+        # (max(old)+1, a new map epoch) through the wipe, and holds the published
+        # map meanwhile; an older heracles just wipes everything
+        if reloading_map is not None:
+            reload_ctx = reloading_map(
+                db, f"loading {run.name}", log=lambda m: job.log("dim", m)
+            )
+        else:
+            reload_ctx = contextlib.nullcontext()
+        with reload_ctx as reload:
+            if reload is not None:
+                gi.initialize_db(db, keep_labels=keep_labels)
+                reload.wiped()
+            else:
+                gi.initialize_db(db)
+            object_ls, room_ls = extract_labelspaces_from_dsg(G)
+            # heracles.graph_interface.spark_dsg_to_db without an image store, step by step
+            steps = (
+                [("agents", lambda: add_agents(G, db, None))]
+                if add_agents is not None
+                else []
+            )
+            steps += [
+                (
+                    "objects",
+                    lambda: gi.add_objects_from_dsg(G, db, object_labelspace=object_ls),
+                ),
+                ("places", lambda: gi.add_places_from_dsg(G, db)),
+                (
+                    "mesh places",
+                    lambda: gi.add_mesh_places_from_dsg(
+                        G, db, object_labelspace=object_ls
+                    ),
+                ),
+                (
+                    "rooms",
+                    lambda: gi.add_rooms_from_dsg(G, db, room_labelspace=room_ls),
+                ),
+                ("buildings", lambda: gi.add_buildings_from_dsg(G, db)),
+                ("edges", lambda: gi.add_edges_from_dsg(G, db)),
+            ]
+            for i, (what, fn) in enumerate(steps):
+                self._stage(job, sid, "running", 15 + 75 * i / len(steps), what)
+                fn()
+                job.check_cancelled()
+            for layer, ls in (("object", object_ls), ("room", room_ls)):
+                if ls:
+                    db.execute(f"MERGE (m:_Labelspace {{layer: '{layer}'}}) SET m.ids = $ids, m.names = $names",
+                               ids=[int(k) for k in ls], names=list(ls.values()))  # fmt: skip
+            db.execute(
+                "MERGE (m:_GraphMetadata {key: 'source'}) SET m.file_path = $p",
+                p=str(dsg),
+            )
+            mesh = dsg.parent / "mesh.ply"
+            if mesh.is_file() and store_mesh_path is not None:
+                store_mesh_path(db, str(mesh))
+        if reload is None:
+            from .routes.maps import bump_map_counters
 
-        bump_map_counters(db)
+            bump_map_counters(db)
         self._refresh(t, "map loaded")
         self._stage(job, sid, "done", 100, f"{t.count_nodes()} nodes")
         return G, db

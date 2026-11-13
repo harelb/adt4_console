@@ -9,6 +9,8 @@ import time
 import numpy as np
 import pytest
 
+from adt4_console.chat import ChatTurn
+
 from .conftest import make_client
 
 dsg = pytest.importorskip("spark_dsg")
@@ -767,16 +769,22 @@ def test_propose_mission_tool_validates_and_revises(mission_settings):
         "areas": [],
         "planted": [{"label": "crate", "pos": [16, 5]}],
     }
-    svc.chat._ctx.value = ctx
-    tools = [t["name"] for t in svc.chat._tools("file:grid")]
+    svc.chat.turn = ChatTurn(mission=ctx)
+    tools = [t["name"] for t in svc.chat._tools("file:grid", turn=svc.chat.turn)]
     assert "propose_mission" in tools
-    assert "Agent roster" in svc.chat._system("file:grid", None)
+    assert "Agent roster" in svc.chat._system("file:grid", None, turn=svc.chat.turn)
     args = {"name": "find crate", "agents": [{"id": "quad1", "kind": "quad"}, {"id": "spot1", "kind": "spot"}],
             "tasks": [{"id": "s", "agent": "quad1", "type": "explore_area", "area": [[12, 0], [20, 0], [20, 10], [12, 10]],
                        "params": {"query": "crate"}},
                       {"id": "g", "agent": "spot1", "type": "inspect", "target": "$found:crate"}]}  # fmt: skip
     events, out = svc.chat._run_tool(
-        "propose_mission", args, "find the crate", None, "file:grid", None
+        "propose_mission",
+        args,
+        "find the crate",
+        None,
+        "file:grid",
+        None,
+        turn=svc.chat.turn,
     )
     assert (
         out["errors"] == []
@@ -789,7 +797,7 @@ def test_propose_mission_tool_validates_and_revises(mission_settings):
     )  # filled from the context
     assert m.text == "find the crate"
     # a revision of the current mission
-    svc.chat._ctx.value = {**ctx, "mission": m.model_dump()}
+    svc.chat.turn = ChatTurn(mission={**ctx, "mission": m.model_dump()})
     args2 = {
         **args,
         "revise": True,
@@ -797,7 +805,13 @@ def test_propose_mission_tool_validates_and_revises(mission_settings):
         + [{"id": "h", "agent": "spot1", "type": "goto", "target": "O(9)"}],
     }
     events2, out2 = svc.chat._run_tool(
-        "propose_mission", args2, "and go to O9", None, "file:grid", None
+        "propose_mission",
+        args2,
+        "and go to O9",
+        None,
+        "file:grid",
+        None,
+        turn=svc.chat.turn,
     )
     assert out2["mission_id"] == m.id and out2["revision"] == 2
     assert (
@@ -806,7 +820,7 @@ def test_propose_mission_tool_validates_and_revises(mission_settings):
     assert any("O(9) is not in the scene graph" in e for e in out2["errors"])
     # invalid input comes back to the model, nothing stored
     _, out3 = svc.chat._run_tool("propose_mission", {"agents": [], "tasks": [{"id": "x", "agent": "nobody", "type": "hold"}]},
-                                 "x", None, "file:grid", None)  # fmt: skip
+                                 "x", None, "file:grid", None, turn=svc.chat.turn)  # fmt: skip
     assert "invalid mission" in out3["error"]
 
 
@@ -947,7 +961,7 @@ def test_propose_mission_assumptions_mission_areas_and_unknown_area(mission_sett
     ctx = {"roster": roster, "planted": [{"label": "crate", "pos": [16, 5]}],
            "areas": [{"name": "East", "polygon": [[12, 0], [20, 0], [20, 10], [12, 10]], "scope": "mission"}],
            "no_go": [{"name": "No-go 1", "polygon": [[5, 0], [6, 0], [6, 1], [5, 1]]}]}  # fmt: skip
-    svc.chat._ctx.value = ctx
+    svc.chat.turn = ChatTurn(mission=ctx)
     args = {"name": "find crate", "agents": [{"id": "quad1", "kind": "quad"}, {"id": "spot1", "kind": "spot"}],
             "tasks": [{"id": "s", "agent": "quad1", "type": "explore_area", "area": "east", "params": {"query": "crate"}},
                       {"id": "g", "agent": "spot1", "type": "inspect", "target": "$found:crate"}],
@@ -959,6 +973,7 @@ def test_propose_mission_assumptions_mission_areas_and_unknown_area(mission_sett
         None,
         "file:grid",
         None,
+        turn=svc.chat.turn,
     )
     assert out["errors"] == [] and events[0]["assumptions"] == [
         "'East' is the operator's area East"
@@ -976,7 +991,13 @@ def test_propose_mission_assumptions_mission_areas_and_unknown_area(mission_sett
     bad = {**args, "tasks": [{"id": "s", "agent": "quad1", "type": "explore_area", "area": "courtyard",
                               "params": {"query": "crate"}}]}  # fmt: skip
     events, out = svc.chat._run_tool(
-        "propose_mission", bad, "search the courtyard", None, "file:grid", None
+        "propose_mission",
+        bad,
+        "search the courtyard",
+        None,
+        "file:grid",
+        None,
+        turn=svc.chat.turn,
     )
     assert (
         events == []

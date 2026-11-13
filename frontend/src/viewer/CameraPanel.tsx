@@ -21,6 +21,8 @@ import {usePlatform} from "./usePlatform";
 import {VideoView} from "./VideoView";
 import {GridVideo} from "./GridVideo";
 import {FocusChip} from "./RobotFocusPicker";
+import {GRASP_CAM, GRASP_TUNE, useGraspCamera, useGraspOverride} from "../stores/graspCamera";
+import {GraspCamBadge, GraspCamToggle} from "./GraspCamBadge";
 
 const GRID_KIND_KEY = "adt4.cameraGrid.kind";
 const loadGridKind = (): "stills" | "video" => {
@@ -247,7 +249,26 @@ function RobotCameras({robot: r, live, compact: dense}: {robot: string; live: bo
 
   const platform = usePlatform(r);
   const grid = showGrid(platform, cams);
-  const effMode = mode === "grid" && !grid ? "still" : mode;
+  // a grasp in progress shows the hand camera as video; our own cam / mode stay
+  // untouched underneath, so the end of the grasp shows them again
+  const grasp = useGraspOverride(r, cams);
+  const effMode = grasp ? "video" : mode === "grid" && !grid ? "still" : mode;
+  const shownCam = grasp ? GRASP_CAM : cam;
+  /** the operator picks a camera or mode: that wins over the grasp override */
+  const takeOver = () => {
+    if (!grasp) return;
+    useGraspCamera.getState().end("manual");
+    setCam(GRASP_CAM);
+    setMode("video");
+  };
+  const pickMode = (m: "still" | "video" | "grid") => {
+    takeOver();
+    setMode(m);
+  };
+  const pickCam = (c: string) => {
+    takeOver();
+    setCam(c);
+  };
 
   // camera list per robot
   useEffect(() => {
@@ -318,14 +339,14 @@ function RobotCameras({robot: r, live, compact: dense}: {robot: string; live: bo
       {!live && !frame && <div className="small tone-warn">{r} has not reported over fleetlink yet; frames may not arrive.</div>}
       <div className="row gap-sm wrap camera-ctl">
         <div className="segmented" role="group" aria-label="Camera mode">
-          <button className={effMode === "still" ? "on" : ""} onClick={() => setMode("still")} title="On-demand still frames">
+          <button className={effMode === "still" ? "on" : ""} onClick={() => pickMode("still")} title="On-demand still frames">
             Still
           </button>
-          <button className={effMode === "video" ? "on" : ""} onClick={() => setMode("video")} title="Live video stream">
+          <button className={effMode === "video" ? "on" : ""} onClick={() => pickMode("video")} title="Live video stream">
             Video
           </button>
           {grid && (
-            <button className={effMode === "grid" ? "on" : ""} onClick={() => setMode("grid")} title="All cameras at once: stills about 1 Hz each, or live video">
+            <button className={effMode === "grid" ? "on" : ""} onClick={() => pickMode("grid")} title="All cameras at once: stills about 1 Hz each, or live video">
               {compact ? "All" : "All cameras"}
             </button>
           )}
@@ -342,7 +363,7 @@ function RobotCameras({robot: r, live, compact: dense}: {robot: string; live: bo
           </div>
         )}
         {effMode !== "grid" && (
-        <select className="input input-sm" value={cam} onChange={e => setCam(e.target.value)} aria-label="Camera stream" disabled={!cams.length}>
+        <select className="input input-sm" value={shownCam} onChange={e => pickCam(e.target.value)} aria-label="Camera stream" disabled={!cams.length}>
           {!cams.length && <option value="">no cameras</option>}
           {cams.map(c => (
             <option key={c} value={c}>
@@ -371,6 +392,8 @@ function RobotCameras({robot: r, live, compact: dense}: {robot: string; live: bo
           </>
         )}
       </div>
+      {grasp && <GraspCamBadge session={grasp} />}
+      {!compact && isSpot(platform) && cams.includes(GRASP_CAM) && <GraspCamToggle />}
       {effMode === "grid" && gridKind === "video" ? (
         <GridVideo
           key={r}
@@ -402,7 +425,7 @@ function RobotCameras({robot: r, live, compact: dense}: {robot: string; live: bo
           ))}
         </div>
       ) : effMode === "video" ? (
-        r && cam ? <VideoView key={`${r}/${cam}`} robot={r} cam={cam} /> : <div className="muted small">No camera</div>
+        r && shownCam ? <VideoView key={`${r}/${shownCam}${grasp ? "/grasp" : ""}`} robot={r} cam={shownCam} tune={grasp ? GRASP_TUNE : undefined} /> : <div className="muted small">No camera</div>
       ) : (
         stillView()
       )}

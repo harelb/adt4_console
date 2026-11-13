@@ -8,7 +8,7 @@ import {LineMaterial} from "three/examples/jsm/lines/LineMaterial.js";
 import type {GraphLayout, LayerBuffers, TextLabel, VizStyle} from "./layout";
 import {defaultEdgeOn, EDGE_COLORS, HYDRA_EDGES, PLACE_BOUNDARY} from "./layout";
 import {REGION_FILL_ALPHA, uniformOf, type ColorOpts} from "./style";
-import {declutter, labelPrio, labelSize, MAX_LABELS, type LabelBox} from "../lib/labels";
+import {declutter, labelPrio, labelSize, MAX_LABELS, MAX_PLACE_LABELS, type LabelBox} from "../lib/labels";
 import {pathColors, useViewer, type TrajPath, type TrajRobot} from "../stores/viewer";
 import {useRobotColorOf} from "../lib/palette";
 import {useMapEdit} from "../stores/mapEdit";
@@ -121,7 +121,10 @@ function RegionHulls({fill, outline}: {fill: {positions: Float32Array; colors: F
 /** Node text labels, decluttered (lib/labels.ts): one DOM layer over the canvas,
  *  re-placed on every rendered frame; of the labels on screen the most important
  *  ones that do not overlap are shown (the selected node's always, then areas,
- *  objects, places, nearest the pointer first). */
+ *  objects, places, nearest the pointer first). Only the shown labels have a DOM
+ *  element, from a pool as big as the cap, so a map with every place labelled
+ *  (thousands of texts) still has a few hundred elements; a label keeps its
+ *  element while it stays on screen. */
 function TextLabels({texts}: {texts: TextLabel[]}) {
   const {gl, camera, invalidate} = useThree();
   const anchor = useRef<THREE.Group>(null);
@@ -134,22 +137,27 @@ function TextLabels({texts}: {texts: TextLabel[]}) {
     gl.domElement.parentElement?.appendChild(host);
     return () => host.remove();
   }, [gl, host]);
-  const els = useMemo(
-    () =>
-      texts.map(t => {
-        const e = document.createElement("div");
-        e.className = `viz-text viz-text-${t.kind}`;
-        e.textContent = t.text;
-        e.style.display = "none";
-        return e;
-      }),
-    [texts],
+  // text index -> its element while shown; free elements are hidden
+  const pool = useMemo(() => ({shown: new Map<number, HTMLDivElement>(), free: [] as HTMLDivElement[]}), []);
+  useLayoutEffect(() => {
+    // new texts: the old indices mean nothing, every element goes back to the pool
+    for (const e of pool.shown.values()) {
+      e.style.display = "none";
+      pool.free.push(e);
+    }
+    pool.shown.clear();
+    invalidate();
+  }, [texts, pool, invalidate]);
+  useLayoutEffect(
+    () => () => {
+      host.replaceChildren();
+      pool.shown.clear();
+      pool.free.length = 0;
+    },
+    [host, pool],
   );
   const sizes = useMemo(() => texts.map(t => labelSize(t.text, t.kind)), [texts]);
-  useLayoutEffect(() => {
-    host.replaceChildren(...els);
-    invalidate();
-  }, [host, els, invalidate]);
+  const allPlaces = useMemo(() => texts.some(t => t.allPlaces), [texts]);
   // picked nodes: the inspected one and the map-edit selection
   const selected = useViewer(s => s.selected?.sym ?? null);
   const editSel = useMapEdit(s => s.selection);
@@ -188,30 +196,45 @@ function TextLabels({texts}: {texts: TextLabel[]}) {
     if (selected) picked.add(selected);
     const boxes: LabelBox[] = [];
     const idx: number[] = [];
-    const at: [number, number][] = [];
     if (shown)
       texts.forEach((t, i) => {
-        v.set(t.pos[0], t.pos[1], t.pos[2]).applyMatrix4(g.matrixWorld).project(camera);
+        v.set(t.pos[0], t.pos[1], t.pos[2]).applyMatrix4(g.matrixWorld);
+        // every place labelled: the nearer to the camera, the sooner
+        const depth = t.allPlaces ? v.distanceTo(camera.position) : 0;
+        v.project(camera);
         if (v.z > 1 || v.z < -1) return;
         const x = ((v.x + 1) / 2) * w;
         const y = ((1 - v.y) / 2) * h;
         const sz = sizes[i];
         if (x + sz.w / 2 < 0 || x - sz.w / 2 > w || y + sz.h / 2 < 0 || y - sz.h / 2 > h) return;
-        boxes.push({x, y, w: sz.w, h: sz.h, prio: labelPrio(t.kind, Math.hypot(x - focus.x, y - focus.y), !!t.sym && picked.has(t.sym))});
+        boxes.push({x, y, w: sz.w, h: sz.h, prio: labelPrio(t.kind, Math.hypot(x - focus.x, y - focus.y), !!t.sym && picked.has(t.sym), depth), group: t.allPlaces ? "places" : "other"});
         idx.push(i);
-        at.push([x, y]);
       });
-    const keep = new Set(declutter(boxes, MAX_LABELS).map(k => idx[k]));
-    const pos = new Map(idx.map((i, k) => [i, at[k]]));
-    els.forEach((e, i) => {
+    // every place labelled: places have a budget of their own next to the others'
+    const kept = allPlaces ? declutter(boxes, MAX_LABELS + MAX_PLACE_LABELS, 2, {places: MAX_PLACE_LABELS, other: MAX_LABELS}) : declutter(boxes, MAX_LABELS);
+    const keep = new Map(kept.map(k => [idx[k], boxes[k]]));
+    for (const [i, e] of pool.shown)
       if (!keep.has(i)) {
-        if (e.style.display !== "none") e.style.display = "none";
-        return;
+        e.style.display = "none";
+        pool.shown.delete(i);
+        pool.free.push(e);
       }
-      const [x, y] = pos.get(i)!;
-      e.style.display = "";
-      e.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) translate(-50%, -50%)`;
-    });
+    for (const [i, b] of keep) {
+      let e = pool.shown.get(i);
+      if (!e) {
+        e = pool.free.pop();
+        if (!e) {
+          e = document.createElement("div");
+          host.appendChild(e);
+        }
+        const t = texts[i];
+        e.className = `viz-text viz-text-${t.kind}`;
+        e.textContent = t.text;
+        e.style.display = "";
+        pool.shown.set(i, e);
+      }
+      e.style.transform = `translate(${b.x.toFixed(1)}px, ${b.y.toFixed(1)}px) translate(-50%, -50%)`;
+    }
   });
   return <group ref={anchor} />;
 }
@@ -263,7 +286,7 @@ export function bagName(bag: string): string {
   return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : bag;
 }
 
-export function GraphLayers({src, layout, showBBoxes, showTrajectory, trajectory, trajectoryRobots = [], edgeKinds, style = "classic", showText = false, colors, edgeInk = "#000000"}: {
+export function GraphLayers({src, layout, showBBoxes, showTrajectory, trajectory, trajectoryRobots = [], edgeKinds, style = "classic", showText = false, placeLabels = false, colors, edgeInk = "#000000"}: {
   src: string;
   layout: GraphLayout;
   showBBoxes: boolean;
@@ -273,6 +296,8 @@ export function GraphLayers({src, layout, showBBoxes, showTrajectory, trajectory
   edgeKinds: Record<string, boolean>;
   style?: VizStyle;
   showText?: boolean;
+  /** every place labelled (Display › Place labels) */
+  placeLabels?: boolean;
   colors?: ColorOpts;
   /** colour for hydra's black edges, swapped for a light grey on dark backgrounds */
   edgeInk?: string;
@@ -331,7 +356,7 @@ export function GraphLayers({src, layout, showBBoxes, showTrajectory, trajectory
           <Line key={i} points={p.points} color={perRobot?.[p.robot] ?? trajDefault} lineWidth={hydra ? 2 : 2.5} transparent={trajOpacity < 1} opacity={trajOpacity} depthWrite={trajOpacity >= 1} />
         ))}
       {showTrajectory && pathLabels && trajPoints && <PathLabels paths={trajPoints} robots={robots} colors={perRobot} fallback={trajDefault} />}
-      {showText && layout.texts.length > 0 && <TextLabels texts={layout.texts} />}
+      {(showText || placeLabels) && layout.texts.length > 0 && <TextLabels texts={layout.texts} />}
     </group>
   );
 }

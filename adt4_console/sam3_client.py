@@ -253,25 +253,44 @@ def candidates(result: dict) -> list[dict]:
 
 
 def candidate_events(result: dict, src: str | None) -> list[dict]:
-    """One ``object_candidate`` NDJSON event per candidate."""
+    """One ``object_candidate`` NDJSON event per object: same-object candidates
+    are grouped into one card (:mod:`sam3_candidates`); ``index`` is the member
+    that is committed, ``views`` every member's views (``index`` + ``view``)."""
+    from .sam3_candidates import cluster, view_refs
+
     pending = result.get("pending_id")
     expires = result.get("expires_in_s")
     out = []
-    for i, c in enumerate(candidates(result)):
+    for k in cluster(candidates(result)):
+        c, members = k["rep"], k["members"]
+        refs = view_refs(members, QUERY_MAX_VIEWS * 2)
         out.append(
             {
                 "type": "object_candidate",
                 "pending_id": pending,
-                "index": int(c.get("index", i)),
+                "index": int(c["index"]),
                 "label": c.get("label") or result.get("prompt") or "",
-                "score": round(float(c.get("score") or 0.0), 3),
-                "image_uri": best_image(c),
+                # best member score (scores are not changed)
+                "score": round(k["score"], 3),
+                "image_uri": refs[0]["image_uri"] if refs else best_image(c),
                 "centroid": _round(c.get("centroid")),
                 "bbox_min": _round(c.get("bbox_min")),
                 "bbox_max": _round(c.get("bbox_max")),
                 "num_points": c.get("num_points"),
-                "num_views": c.get("num_views") or len(c.get("views") or []),
+                "num_views": len(refs) or c.get("num_views") or 1,
+                "views": [
+                    {
+                        "index": r["index"],
+                        "view": r["view"],
+                        "image_uri": r["image_uri"],
+                    }
+                    for r in refs
+                ],
                 "num_frames": c.get("num_frames"),
+                # the other server candidates folded into this card (same object)
+                "members": [int(m["index"]) for m in members],
+                "geometry": k["tier"],
+                "flags": k["flags"],
                 # {"symbol", "distance_m"} when committing merges into a mapped object
                 "would_merge_into": _merge_target(c),
                 "expires_in_s": float(expires)
@@ -296,21 +315,28 @@ def _merge_target(c: dict) -> dict | None:
 
 def candidates_for_model(result: dict) -> dict:
     """Compact summary the LLM sees (no images)."""
-    cands = candidates(result)
+    from .sam3_candidates import cluster
+
+    cands = cluster(candidates(result))
     return {
         "pending_id": result.get("pending_id"),
         "num_candidates": len(cands),
         "candidates": [
             {
-                "index": int(c.get("index", i)),
-                "label": c.get("label"),
-                "score": round(float(c.get("score") or 0.0), 3),
-                "centroid": _round(c.get("centroid")),
-                "views": c.get("num_views") or len(c.get("views") or []),
-                "frames": c.get("num_frames"),
-                "would_merge_into": (_merge_target(c) or {}).get("symbol"),
+                "index": int(k["rep"]["index"]),
+                "label": k["rep"].get("label"),
+                "score": round(k["score"], 3),
+                "centroid": _round(k["rep"].get("centroid")),
+                "views": sum(
+                    m.get("num_views") or len(m.get("views") or []) or 1
+                    for m in k["members"]
+                ),
+                "detections_merged": len(k["members"]),
+                "geometry": k["tier"],
+                **({"flags": k["flags"]} if k["flags"] else {}),
+                "would_merge_into": (_merge_target(k["rep"]) or {}).get("symbol"),
             }
-            for i, c in enumerate(cands)
+            for k in cands
         ],
         "note": (
             "These are NOT in the map yet. The operator sees each candidate's "

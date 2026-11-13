@@ -77,11 +77,36 @@ export function autoRoster(online: readonly AutoRobot[]) {
   return online.map(r => ({id: r.name, kind: r.kind, start: null, binding: r.name}));
 }
 
-/** The robots a PDDL goal names with its -by forms (visited-poi-by gauss t1, ...). */
+/** The robots a PDDL goal names: its -by forms (visited-poi-by gauss t1, ...) and
+ *  the robot of holding / at-place / at-object, in the order they appear. */
 export function goalRobots(goal: string): string[] {
   const out: string[] = [];
-  for (const m of goal.matchAll(/\(\s*[a-z][a-z0-9_-]*-by\s+([A-Za-z_][\w-]*)/g)) if (!out.includes(m[1])) out.push(m[1]);
+  const re = /\(\s*(?:[a-z][a-z0-9_-]*-by|holding|at-place|at-object|at-poi|in-region)\s+([A-Za-z_][\w-]*)/g;
+  for (const m of goal.matchAll(re)) if (!out.includes(m[1])) out.push(m[1]);
   return out;
+}
+
+/** The robots a goal's use-robots constraints name (one team goal: only they act). */
+export function goalUseRobots(constraints: unknown): string[] {
+  const out: string[] = [];
+  if (!Array.isArray(constraints)) return out;
+  for (const c of constraints) {
+    const pred = Array.isArray(c) ? c[0] : (c as {predicate?: unknown})?.predicate;
+    const syms = Array.isArray(c) ? c.slice(1) : ((c as {symbols?: unknown})?.symbols ?? []);
+    if (String(pred ?? "").toLowerCase() !== "use-robots" || !Array.isArray(syms)) continue;
+    for (const x of syms) {
+      const n = String(x).trim().toLowerCase();
+      if (n && !out.includes(n)) out.push(n);
+    }
+  }
+  return out;
+}
+
+/** "Send to team (euclid, hamilton)" / "Send to hamilton": a team goal is sent once,
+ *  and the planner plans every robot of it. */
+export function sendLabel(robot: string | null, team?: readonly string[] | null): string {
+  if (team) return team.length ? `team (${team.join(", ")})` : "team";
+  return robot ?? "robot";
 }
 
 export interface AutoSendPlan {
@@ -97,9 +122,10 @@ export interface AutoSendPlan {
 /** Whether, and through which robot, to auto-send ``goal``. A goal naming a
  *  robot that is not online is not sent at all (the planner would assign it
  *  work it cannot do). */
-export function planAutoSend(goal: string, online: readonly AutoRobot[], skipped: readonly Skipped[]): AutoSendPlan {
+export function planAutoSend(goal: string, online: readonly AutoRobot[], skipped: readonly Skipped[], constraints?: unknown): AutoSendPlan {
   const ok = new Set(online.map(r => r.name));
-  const named = goalRobots(goal);
+  // a team goal limited by use-robots goes through (and needs) those robots
+  const named = [...goalUseRobots(constraints), ...goalRobots(goal)].filter((r, i, a) => a.indexOf(r) === i);
   const bad = named.filter(r => !ok.has(r));
   if (bad.length) {
     const why = (r: string) => skipped.find(s => s.name === r)?.reason ?? "not online";

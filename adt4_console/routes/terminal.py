@@ -1,4 +1,5 @@
-"""Fleet machine terminals (WebSocket) and tmux session stop/kill.
+"""Fleet machine terminals (WebSocket), tmux session stop/kill and stopping a
+robot's rosbag recording.
 
 Terminal protocol: binary frames are keystrokes (client -> server) and terminal
 output (server -> client); text frames are JSON control messages from the client,
@@ -13,7 +14,9 @@ import json
 import logging
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
+from .. import recording
 from .. import terminal as term
 from . import require_machine, services
 
@@ -69,6 +72,35 @@ def tmux_session_action(name: str, session: str, action: str, request: Request):
     if svc.settings.fleet_poll:
         svc.fleet.request_status_refresh()
     return {"ok": True, "machine": name, "session": session, "action": action}
+
+
+class StopRecordingBody(BaseModel):
+    # the recorder's tmux pane id (``%12``) from the status poll; None: the
+    # robot's recording
+    pane: str | None = None
+
+
+@router.post("/robots/{robot}/recording/stop")
+def recording_stop(robot: str, request: Request, body: StopRecordingBody | None = None):
+    """A job that stops ``robot``'s rosbag recording cleanly: Ctrl-C to the
+    recorder's pane only, wait for ros2 bag to close the bag, report its size
+    and metadata.yaml; offers SIGINT + SIGTERM if it hangs (never -9)."""
+    svc = services(request)
+    m = require_machine(svc, robot)
+    pane = body.pane if body else None
+    if pane is not None and not recording.PANE_RE.match(pane):
+        raise HTTPException(400, f"bad tmux pane id {pane!r}")
+
+    def run(job):
+        res = recording.stop_recording(
+            svc.helpers.ssh_cmd, m["user"], m["ip"], robot, job, pane=pane
+        )
+        if svc.settings.fleet_poll:
+            svc.fleet.request_status_refresh()
+        return res
+
+    job = svc.jobs.start("recording_stop", f"Stop bag on {robot}", run)
+    return {"ok": True, "robot": robot, "job_id": job.id}
 
 
 @router.websocket("/fleet/{name}/terminal")

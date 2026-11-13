@@ -316,7 +316,10 @@ viewer's hydra style draws them like hydra_visualizer's `RegionGrowingBoundaryPl
 Implementation notes: file sources load with `spark_dsg.DynamicSceneGraph.load`; mesh from
 `mesh.ply` via trimesh (or the graph mesh) → `codec.tile_mesh`, cached per source version.
 Neo4j sources: `heracles.graph_interface.db_to_spark_dsg(db)` → same path; mesh from
-`read_mesh_path`; `read_version` polled every 2 s → `graph/neo4j:<n>/version` on change.
+`read_mesh_path`; the map version (`_MapState.version`) and node count polled every 2 s →
+`graph/neo4j:<n>/version` on change. A change one version past the last one seen that
+recorded its nodes (heracles `map_reload.read_map_change`) is folded in as a delta, like an
+edit made in the console; anything else reloads.
 Live sources come from the fleetlink receiver (§8).
 
 ## 8. fleetlink (live robot → base)
@@ -1323,10 +1326,11 @@ heracles we use). **Every edit is one heracles `GraphUnitOfWork`**:
 * a `GraphMutation` audit node: `provenance_json` (`source: adt4_console`, `src`,
   `operator` from the `X-Operator` header, `client`, `via: ui|chat|publish`, `mission`),
   `summary`, `ops_json`, `inverse_json`, `affected`, `map_version`;
-* both version counters bumped **in the same transaction** (`_State{key:'global'}` with
-  `dirty_layers` as `"layer:partition"` and `_MapState`), so the heracles DSG publisher /
-  plan repair never see half an edit; then the console invalidates the source and
-  publishes `graph/<src>/version` and `edit/<src>`.
+* the map version (`_MapState.version`, with the changed layers as `"layer:partition"`
+  and node ids) bumped **in the same transaction**, so the heracles DSG publisher / plan
+  repair never see half an edit; an edit while the map is being reloaded or rebuilt is
+  refused (`MapRebuilding`, **409**). Then the console folds the affected nodes into its
+  copy of the graph and publishes `graph/<src>/version` and `edit/<src>`.
 
 ### 17.1 Ops (shared by every route, `/batch` and the chat)
 
@@ -1367,7 +1371,7 @@ heracles we use). **Every edit is one heracles `GraphUnitOfWork`**:
 
 | Route | |
 |---|---|
-| `GET /state` | `{mode: immediate|staged, live, launch, revision, state_version, map_version, staged, can_undo}` |
+| `GET /state` | `{mode: immediate|staged, live, launch, revision, map_version, staged, can_undo}` |
 | `POST /nodes` | `create_node` body (`layer, pos, class, name, symbol?, size?, bbox?, boundary?, props?`) |
 | `PATCH /nodes/{sym}` | `{set, unset?}` |
 | `DELETE /nodes/{sym}` | retire (`?reason=`); `?hard=true&confirm=delete` = DETACH DELETE |
@@ -1388,7 +1392,7 @@ heracles we use). **Every edit is one heracles `GraphUnitOfWork`**:
 
 Every edit route takes `expected_revision?`, `mission?` and `dry_run?`. A committed edit
 answers `{mutation_id, revision, changes[], summary[], affected[], dirty_layers,
-state_version, map_version, staged: false}`. `summary` lines read like a diff:
+map_version, staged: false}`. `summary` lines read like a diff:
 `O41 class vehicle -> crate`, `new region R0 'courtyard' containing 37 places, 5 objects`,
 `remove O7 (chair) (retired, can be undone)`.
 
@@ -1413,11 +1417,11 @@ published edit as one unit of work). The staged list is held by the console proc
 * `extras.json`: what a DSG round trip loses: room boundaries, `name`/`class`, admission
   and operator properties, the edges `db_to_spark_dsg` does not rebuild (`Room -> Object`
   `CONTAINS`, `Object -> Observation`, ...), `_GraphMetadata`;
-* `meta.json` / `info.json`: counts per layer + edges, versions, revision, name, author, mission.
+* `meta.json` / `info.json`: counts per layer + edges, `map_version`, `map_epoch`, revision, name, author, mission.
 
 **Restore** deletes every map-layer node (and `:Retired` ones) and the labelspaces,
-reloads `dsg.json` with `spark_dsg_to_db`, re-applies the extras and sets both version
-counters past where they were, so every reader reloads. Agents, observations and the
+reloads `dsg.json` with `spark_dsg_to_db`, re-applies the extras and sets the map version
+past where it was (heracles `reloading_map`: a new `map_epoch`), so every reader reloads. Agents, observations and the
 mutation history stay; edges to nodes that have no `nodeSymbol` are not restored.
 
 ### 17.5 Chat (`propose_map_edit`)
@@ -1498,21 +1502,77 @@ transient_local). In router mode they are plain ROS.
 
 | Method | Path | Body / notes |
 |---|---|---|
-| GET | `/robots/{robot}/change_detection` | `{robot, state, t, relocalized: {ok, reason}}` |
+| GET | `/robots/{robot}/change_detection` | `{robot, state, t, relocalized: {ok, state, reason, source, matches}}` |
 | POST | `/robots/{robot}/change_detection/{start \| stop \| reset \| reset_start}` | `{override}` → `{ok, results: [{cmd, ok, message \| error}], override, state, relocalized}` |
 | POST | `/change_detection/clear` | `{robots: [] = all}`: AWCD base station `clear_robots` (discovered, base-local) |
+| GET | `/change_detection/changes` | the AWCD base station's merged change set (below) |
+| GET | `/change_detection/reset_all` | what the fleet-wide reset would do: `{available, robots: [{robot, state, reachable, reason}], map: {writer, running, keep_supported, reason}}` |
+| POST | `/change_detection/reset_all` | `{keep_applied = true, robots: [] = all}` → `{ok, keep_applied, map: {action: keep \| revert \| none, ok, message}, robots: [{robot, ok, skipped, message \| error}], base, scene_repair: {dropped}}`; **409** `{keep_unsupported}` when keeping was asked of a writer without `keep_detections` |
+
+| GET | `/change_detection/fleet` | `{available, robots: [{robot, state, reachable, reason, relocalized}]}`: every robot's detector, for the fleet control |
+| POST | `/change_detection/start_all` | `{robots: [] = all, override = false}` → `{ok, cmd, robots: [{robot, ok, skipped, not_relocalized?, message \| error, state}], counts: {done, skipped, failed}}` |
+| POST | `/change_detection/stop_all` | `{robots: [] = all}` → the same shape |
 
 - **Gate:** start and reset_start return **409** `{detail, not_relocalized: true, reason}` unless the
   robot is relocalized or `override` is set. Stop and reset are never gated.
-- **What "relocalized" means on the server** (`relocalized()`):
-  - `frame_align.ok` with a global parent;
-  - at least one ROMAN prior-map match (`reloc.prior_lcs`), when the agent reports it;
-  - fewer than 2 big `map -> odom` jumps (> 3 m or 30°).
-- **UI:** the Live panel shows each robot's state badge and Start / Stop / Reset. Start
+- **What "relocalized" means on the server** (`relocalized()` →
+  `{ok, state, reason, source, matches}`), best evidence first:
+  1. hydra_multi's accepted inter-robot loop closures: the `N / M valid interrobot loop closures`
+     note of the hydra_multi row in the robot's C1 `health` table, N > 0 (`source: hydra_multi`);
+  2. fleetlink's ROMAN counter `reloc.prior_lcs` > 0 (`source: roman`);
+  3. `map -> odom` moved > 0.5 m or 2° from the initial estimate (`reloc.total`, or from identity):
+     `state: aligned`, no match count (`source: map_odom`).
+  A positive verdict with 2 or more big `map -> odom` jumps (> 3 m or 30°) is `suspect` (not ok).
+  `not_relocalized` only when there is no `map -> odom` transform, or hydra_multi reports 0
+  accepted; with no signal at all the state is `unknown` ("no relocalization signal from
+  <robot>"), not ok. Agents without `reloc` and no hydra_multi count: the transform decides.
+- **Fleet-wide reset** (`reset_all`), in this order: (1) the map: with `keep_applied` (default)
+  plan repair's scene change writer is asked to keep what change detection already put in the map
+  (`<planner_ns>/scene_change_writer/keep_detections`, heracles_ros; its change log entries move to
+  `kept/<source>`), so the detectors' empty change sets no longer withdraw them; with
+  `keep_applied: false` they do, and the map is rebuilt from the prior plus operator / chat (SGET)
+  edits. A failed keep aborts before anything is reset. No writer: nothing to do there.
+  (2) every robot the console knows (topology / live / AWCD reports) that is reachable
+  (`change_detection_unreachable`: fleetlink link down or service not relayed, or nothing serves it
+  in router mode) gets `/<robot>/change_detection/reset` in parallel; a running detector keeps
+  running. Unreachable robots are listed as skipped, not failures. (3) the AWCD base station's
+  `clear_robots` for all robots (no base station is not a failure). (4) pending replan
+  recommendations caused only by change detection are superseded (scene_repair event
+  `detections_reset`). Logged to the console log as `op.awcd_reset`.
+- **Fleet-wide start / stop** (`start_all`, `stop_all`): the robots are those of the fleet-wide
+  reset. `start_all` runs each robot's own Start (reset, then start) in parallel, each call with
+  the bridge's timeout, so one robot failing or timing out does not hold the others. A robot is
+  **skipped**, not failed, when it is unreachable (as for the reset), already running, or, without
+  `override`, not relocalized (`not_relocalized: true`, `error` = the reason). `stop_all` is never
+  gated. `ok` is true when nothing failed; a partial failure is still HTTP 200. ROS off: 503.
+  Logged as `op.awcd_start_all` / `op.awcd_stop_all`.
+- **UI:** the Live panel shows each robot's state badge and Start / Stop. The AWCD panel has
+  "Start all" / "Stop all" with a fleet summary ("2 running, 1 paused, 1 not relocalized") and a
+  one-line result naming skipped and failed robots; "Start anyway (…)…" appears only after robots
+  were skipped as not relocalized, asks for confirmation and sends `override: true` for those
+  robots. It also has
+  "Reset change detection (all robots)…", which shows the plan (robots reset / skipped, keep or
+  revert the map's applied changes) before it runs. Start
   (reset + start) is enabled only when the legend's relocalization status is **ok**. That status
   also checks the distance to a shown prior map. "Start anyway…" asks for confirmation and sends
   `override: true`.
 - Hub topic: `robot/{robot}/change_detection` (`{robot, state, t}`).
+
+**Detected changes** (`awcd_changes.py`). The console subscribes (transient_local) to the base
+station's `<base>/awcd_base_station/reconciled_changes` (`khronos_msgs/AwcdChanges`, discovered
+every 5 s; base-local, global map frame) and to the robots' `/awcd_changes` (fleetlink-relayed),
+the latter only to name the robots behind each change. `GET /change_detection/changes` and hub
+topic `awcd/changes` give `{available, error, topic, t, frame_id, counts: {added, removed},
+robots: {<r>: {t, added, removed}}, changes: [{key, kind: added|removed, id, short_id, label,
+center, dims, quat, stamp, change_confidence, confidence, frames, robots}]}`. `available` is false
+when ROS is off or khronos_msgs is missing; `topic` is null until a base station is seen.
+
+- **UI:** the Live tab's "Detected changes" card lists them (click: fly to it), switches the map
+  overlay and its labels, and clears the base station (`clear_robots`; a robot that is not also
+  Reset re-sends its latched report). The map draws each change as RViz's `AWCD Reconciled`
+  display does: a wireframe box, green = added, red = removed, label
+  `<robots> | <kind> <id> | <class> | cc=… n=…`. AWCD has no "moved" kind. Replan
+  recommendations the changes cause stay in the Plan tab (§20).
 
 ## 20. Scene changes and replan recommendations (`scene_repair.py`, `routes/scene_repair.py`)
 
@@ -1587,6 +1647,44 @@ The card shows the reason, the changes, the original and proposed goals, and the
 **Replan with O43** (only when rewritten), **Replan same goal** and **Dismiss** (a "resume
 robot" checkbox). Below it is a feed of the last 6 batches (source chip awcd / sget / console,
 kind, symbol, class, map version).
+
+## 21. Planner state (`planner_state.py`, `routes/planner_state.py`)
+
+What the planner believes before it plans the next goal, in one view, and a way to correct
+what a robot holds.
+
+**Sources.** Holding comes from the live Neo4j target's `(:Robot)-[:HOLDS]->(:Object)` edges.
+The heracles publisher writes the same edges into the published map's metadata
+(`heracles.holding`), and omniplanner plans from that (`world_state.holding_from_dsg`). A robot
+holding an object the next goal does not keep puts it down first. The robot's pose is
+`Robot.position`, written by heracles_state_updater. The planner keeps no at-* facts: it plans
+from the robot's pose. The map version, epoch and rebuild state come from `_MapState`.
+
+The bridge subscribes to three latched topics, all planner-wide:
+`/<planner_ns>/goal_manager/robot_plan_states` (String JSON `{robot: {status, plan_id, done,
+total, conjuncts, remaining}}`), `/<planner_ns>/omniplanner_node/plan_robots` (String JSON list)
+and `/<planner_ns>/omniplanner_node/map_epoch`, next to the `map_version` it already takes. A
+robot's last plan error is its newest `plan_status` refusal or `plan_failed` alert. The
+constraints are the persistent ones from §9.
+
+| Method | Path | Body / notes |
+|---|---|---|
+| GET | `/plan/planner_state` | `{t, ros, map: {source, error, version, epoch, rebuilding, rebuild_failed}, planner: {map_version, map_epoch, plan_robots, plan_robots_t, robot_plan_states_t, goal_manager}, robots: [{robot, holding[], position, in_plan, plan_state, constraints[], last_error}], last_error, corrections[], holding_source}`. Robots: `--robots` (or the fleet), plus any robot that holds something, has a plan state or an error |
+| POST | `/plan/planner_state/holding` | `{robot, object: "O22" \| null, confirm: true}`. Makes the map say `robot` holds `object` (null: nothing). Each other object the robot holds is released where the map has it (`has_position` = the object's center, so no robot pose is needed). An object held by another robot is released from that robot first, and then `object` is held. Each step is one `heracles_ros_interfaces/UpdateHoldingState` call on `/<robot>/update_holding_state` (heracles_state_updater, which bumps the map version, so the publisher republishes and the planner replans on the new holding). → `{ok, request, steps[{robot, object, action hold\|release, ok, error?, service}], holding, noop}`. 400 without `confirm`, for an unknown object or a bad symbol; 503 ROS down; 502 a step failed (the steps stop there) |
+
+Every correction is logged on the console's logger (`Planner state: <operator> set holding
+'euclid holds nothing' (done); before ..., after ...`), with the operator taken from
+`X-Operator`, and kept in `corrections` (the last 20). Hub topic `plan/planner_state` (`{t}`)
+says the state may have changed (the view refetches; it also polls every 5 s). It is pushed on
+a plan_robots / robot_plan_states / map_version / map_epoch message, a plan error, a
+constraint change and a correction.
+
+**UI:** the Plan panel's Planner state section (above the current plan) is a table: robot (map
+pose), holds, plan status (`running 1/4`, the goal conjuncts and what remains), constraints,
+and a **Correct** button. Correct opens "holds nothing / holds [O22]", then **Apply…**, then a
+confirm with **Confirm** / **Cancel**. Above the table are the map and planner versions and
+epochs (flagged when the epochs differ), and the last plan error. The Chat panel shows the
+same view folded under one line (`Planner believes: euclid holds O11 · hamilton —`).
 
 ## Deviations
 
@@ -1748,8 +1846,8 @@ Behavioural notes:
   `Object-[:HAS_OBSERVATION]->Observation`, falling back to `_GraphMetadata.image_store_paths`;
   `file:` sources read `<run>/image_store`. The `neo4j:` trajectory falls back to the source DSG file when the
   DB has no `Agent` nodes (heracles skips keyframes that have no image folder).
-* A `neo4j:` source's `version` is the cached `_State.version`, refreshed by the 2 s
-  poller (and right after an ingest).
+* A `neo4j:` source's `version` is the console's own counter, bumped when the map version
+  or node count changes (the 2 s poller, an edit, an ingest).
 
 ## Frontend notes
 

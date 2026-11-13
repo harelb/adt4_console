@@ -10,7 +10,7 @@ import {ChecksumMatrix, JobStateBadge} from "../components/Jobs";
 import {jobIdOf} from "./Fleet";
 import {launchHref} from "../lib/launchLink";
 import {fmtBytes, matchRanges} from "../lib/fuzzy";
-import {isIncomplete, loadPrefs, mapTime, savePrefs, searchMaps, sortMaps, SORT_LABELS, type MapRow, type MapsPrefs, type SearchHit, type SortKey} from "../lib/mapList";
+import {imageIndexState, isIncomplete, loadPrefs, mapTime, savePrefs, searchMaps, sortMaps, SORT_LABELS, type MapRow, type MapsPrefs, type SearchHit, type SortKey} from "../lib/mapList";
 import {COPY_STATE_TEXT, copyBadge, copyEntry, copyOfText, verifyNames} from "../lib/runCopies";
 
 type Dialog =
@@ -59,6 +59,16 @@ export function ImageStoreBadge({map}: {map: MapEntry}) {
         <Badge tone="off">no images</Badge>
       </span>
     );
+  if (st.indexed === false) {
+    const raw = st.raw;
+    return (
+      <span className="img-badge">
+        <Badge tone="warn" title={`raw image logs${raw ? `: ${raw.keyframe_archives} keyframe archives, ${raw.tracks} tracks` : ""}\nno image_store/ yet: Build image store indexes them`}>
+          images: not indexed{raw ? ` (${raw.keyframe_archives} kf logs)` : ""}
+        </Badge>
+      </span>
+    );
+  }
   const kf = st.frames?.keyframe ?? 0;
   const size = st.size_bytes != null ? ` · ${fmtBytes(st.size_bytes)}` : map.size_pending ? " · …" : "";
   const kinds = Object.entries(st.frames ?? {})
@@ -111,6 +121,8 @@ export function MapsPage() {
   const [verifyJob, setVerifyJob] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
+  // Build image store jobs by row (machine:run name); the list reloads when one ends
+  const [indexJobs, setIndexJobs] = useState<Record<string, string>>({});
   const jobs = useJobs(s => s.jobs);
   const navigate = useNavigate();
   const setPrefs = (p: Partial<MapsPrefs>) =>
@@ -191,6 +203,26 @@ export function MapsPage() {
     }
   };
 
+  useEffect(() => {
+    const done = Object.entries(indexJobs).filter(([, id]) => {
+      const st = jobs[id]?.state;
+      return st === "succeeded" || st === "failed" || st === "cancelled";
+    });
+    if (!done.length) return;
+    setIndexJobs(old => {
+      const next = {...old};
+      for (const [k] of done) delete next[k];
+      return next;
+    });
+    maps.reload();
+  }, [jobs, indexJobs, maps.reload]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const buildImageStore = async (r: SearchHit) => {
+    const key = `${r.machine}:${r.map.name}`;
+    const id = await startJob("api/maps/index_images", {machine: r.machine, name: r.map.name}, `Build image store ${key}`);
+    if (id) setIndexJobs(old => ({...old, [key]: id}));
+  };
+
   const vjob = verifyJob ? jobs[verifyJob] : null;
   const vres = vjob?.result as {rows?: {path: string; consistent: boolean; cells: Record<string, string>}[]; machines?: string[]} | undefined;
   const total = rows.length;
@@ -208,6 +240,8 @@ export function MapsPage() {
     onIngest: (r: SearchHit) => setDialog({kind: "ingest", machine: r.machine, map: r.map}),
     onOpen: (r: SearchHit) => openInViewer(r.machine, r.map),
     onLaunch: (r: SearchHit) => r.map.path && navigate(launchHref(r.machine, r.map.path)),
+    indexing: indexJobs,
+    onBuildImages: (r: SearchHit) => void buildImageStore(r),
   });
 
   return (
@@ -397,7 +431,7 @@ function CopyLine({map, local, isLocal}: {map: MapEntry; local: string; isLocal:
   );
 }
 
-function MapTable({rows, local, opening, showMachine, emptyText, onTransfer, onVerify, onOpenCopy, onIngest, onOpen, onLaunch}: {
+function MapTable({rows, local, opening, showMachine, emptyText, onTransfer, onVerify, onOpenCopy, onIngest, onOpen, onLaunch, indexing = {}, onBuildImages}: {
   rows: SearchHit[];
   local: string;
   opening: string | null;
@@ -409,6 +443,9 @@ function MapTable({rows, local, opening, showMachine, emptyText, onTransfer, onV
   onIngest: (r: SearchHit) => void;
   onOpen: (r: SearchHit) => void;
   onLaunch: (r: SearchHit) => void;
+  /** running Build image store jobs by "machine:run" */
+  indexing?: Record<string, string>;
+  onBuildImages?: (r: SearchHit) => void;
 }) {
   if (!rows.length) return <div className="muted pad">{emptyText}</div>;
   return (
@@ -429,6 +466,8 @@ function MapTable({rows, local, opening, showMachine, emptyText, onTransfer, onV
             const isLocal = r.machine === local;
             const hasCopy = !!m.copy?.name && m.copy.state !== "not_copied";
             const t = mapTime(m);
+            const idx = imageIndexState(m);
+            const building = !!indexing[`${r.machine}:${m.name}`];
             return (
               <tr key={`${r.machine}:${m.path ?? m.name}`}>
                 <td className="cell-title">
@@ -491,6 +530,11 @@ function MapTable({rows, local, opening, showMachine, emptyText, onTransfer, onV
                     {!isLocal && !hasCopy && (
                       <button className="btn btn-sm" onClick={() => onTransfer(r)}>
                         Transfer to base
+                      </button>
+                    )}
+                    {idx.canBuild && onBuildImages && (
+                      <button className={`btn btn-sm ${idx.needed ? "btn-primary" : ""}`} onClick={() => onBuildImages(r)} disabled={building} title={`${idx.title} (${r.machine})`}>
+                        {building && <Spinner />} {building ? "Building image store" : idx.label}
                       </button>
                     )}
                     <button className="btn btn-sm" onClick={() => onVerify(r)}>

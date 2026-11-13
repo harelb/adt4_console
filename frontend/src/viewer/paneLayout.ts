@@ -242,3 +242,43 @@ export function stripTabs(drive: boolean, cameraFloats: boolean): PaneTab[] {
 export function clampCameraH(h: number, panelH: number, minBelow = 220): number {
   return clamp(Math.round(h), CAM_H.min, Math.min(CAM_H.max, panelH - minBelow));
 }
+
+/** Where the drive layout's camera goes. Desktop: pinned above the side-panel
+ *  tabs, except while the Chat tab is open, where it folds to a one-line strip
+ *  so the chat gets the whole panel (`camOverChat`: the operator asked for it
+ *  there too; a grasp's hand camera always shows). Phone: picture-in-picture.
+ *  `mounted`: keep the camera tab rendered (pinned, folded or pip). */
+export function cameraPlacement(o: {
+  drive: boolean;
+  isPhone: boolean;
+  rightOpen: boolean;
+  cameraFloats: boolean;
+  dockTab: string | null;
+  camOverChat: boolean;
+  grasping: boolean;
+}): {pinned: boolean; folded: boolean; pip: boolean; mounted: boolean} {
+  const desk = o.drive && !o.isPhone && o.rightOpen && !o.cameraFloats;
+  const folded = desk && o.dockTab === "chat" && !o.camOverChat && !o.grasping;
+  const pinned = desk && !folded;
+  const pip = o.drive && o.isPhone && !o.cameraFloats;
+  // folded only hides the camera: it stays mounted (its tab host is detached
+  // from the page) so the live video stream is not stopped and restarted
+  return {pinned, folded, pip, mounted: pinned || folded || pip};
+}
+
+const CAM_OVER_CHAT_KEY = "adt4.viewer.cameraOverChat";
+/** Drive layout: show the pinned camera above the Chat tab too (default: folded). */
+export function loadCamOverChat(): boolean {
+  try {
+    return localStorage.getItem(CAM_OVER_CHAT_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
+export function saveCamOverChat(on: boolean) {
+  try {
+    localStorage.setItem(CAM_OVER_CHAT_KEY, on ? "on" : "off");
+  } catch {
+    /* blocked storage: this session keeps the choice */
+  }
+}

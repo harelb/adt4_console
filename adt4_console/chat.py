@@ -25,6 +25,7 @@ import pathlib
 import re
 import threading
 import time
+from dataclasses import dataclass, field
 
 from . import cypher_tools, sam3_client
 
@@ -139,6 +140,89 @@ TOOL_CONTENT_CHARS = 6000  # a tool result as kept in the transcript
 WRITE_TTL_S = 3600.0  # an unapproved write proposal expires
 
 
+# The chat's planning knowledge -- the team goal rules (who does what), the PDDL
+# domain with its constraints, the in-context examples, and the scene graph and
+# Cypher descriptions -- is heracles_agents' (heracles_agents.prompts), the same
+# text its plan-repair chat (examples/chatdsg_repair) uses, so the two cannot
+# drift apart. The console keeps only its own mechanics (CONSOLE_GOAL_NOTES).
+# Without heracles_agents, PDDL goals are off: there is no embedded copy.
+# heracles_agents' tool and parameter names -> the console's
+GOAL_PROMPT_NAMES = {
+    "send_pddl_goal_with_constraints": "propose_goal",
+    "run_cypher_query": "run_cypher",
+    "pddl_goal_string": "pddl_goal",
+    "constraints_json": "constraints",
+}
+GOAL_ENGINES = ("fast_downward", "grstaps")
+CONSOLE_GOAL_NOTES = """\
+PDDL GOALS IN THIS CONSOLE:
+- propose_goal with kind='pddl' is this console's send tool. It does not send: the operator \
+sees a card and approves it. So call it once per request, with the whole goal, and do not ask \
+for a confirmation in text first.
+- Before a card is made, the goal is checked against the map. "NOT PROPOSED: ..." means it \
+names a robot, object, region or id the map does not have (or it is a second goal in one \
+reply): fix the goal and call propose_goal again; ask the operator only when you cannot \
+fix it yourself (e.g. a robot name that is not in the fleet). Never resend it unchanged.
+- constraints are objects {predicate, symbols}: {predicate: 'use-robots', symbols: \
+['euclid', 'hamilton']}, {predicate: 'forbidden-poi', symbols: ['o14']}, {predicate: \
+'forbidden-edge', symbols: ['t1', 't2']} (the rules above write [["use-robots", ...]] / \
+(use-robots euclid hamilton) for the same thing).
+- The selected robot is the UI's choice, not the operator's assignment: work the operator \
+gives no robot stays robot-free even when a robot is selected, and the selected robot's \
+position is no reason to give it a task. The console sends the goal through the selected \
+robot; the goal manager plans the whole team either way.
+- engine: Fast Downward (default) plans every robot at once and allocates the tasks; it \
+takes or, at-place / at-object (that robot ends there), holding and use-robots. With \
+engine='grstaps' (GRSTAPS-X, only when the robots run it), the goal suits larger allocation \
+problems (many targets, several robots) and orderings (before), and takes holding and \
+use-robots too (robots use-robots leaves out get no tasks). GRSTAPS-X holding limits, to explain \
+up front: the robot that holds does nothing else in that plan; one holding goal per robot; an \
+object cannot be both held and placed; no husky, and no robot without an arm. GRSTAPS-X takes \
+no or / at-*: those need Fast Downward (engine='fast_downward', the planner toggle); with no or, \
+"each robot picks up a different cone" names a specific robot for each cone. The rules above are for <engine>, <engine_why>; propose PDDL goals with \
+engine='<engine>' unless the operator asks for the other engine.
+- "Goals sent from this console" below lists the last goals: when the operator adds a task, \
+re-send the tasks of the last one that are still wanted.
+"""
+
+
+# A message that starts with this is a scene graph edit request (heracles_agents'
+# plan-repair chat uses the same prefix): the turn offers no goal tool.
+SGET_PREFIX = re.compile(r"\s*sget\s*:", re.I)
+SGET_TURN_NOTE = (
+    'THIS MESSAGE STARTS WITH "SGET:": it asks you to EDIT THE SCENE GRAPH, not to move a '
+    "robot. Do not treat it as a goal: propose_goal is not available in this turn. Make the "
+    'change with the map edit tools you have (e.g. "SGET: move object 52 to t142" moves the '
+    "object O52 in the map to place t142's position: look the position up, then "
+    "move_scene_object). If no edit tool can make the change, say so; do not offer a goal "
+    "instead unless the operator asks for one."
+)
+
+
+def load_goal_prompts():
+    """``(heracles_agents.prompts, scene_graph_edit.goal_problems, None)``, or
+    ``(None, None, why)`` when heracles_agents is not importable."""
+    try:
+        from heracles_agents import prompts
+        from heracles_agents.scene_graph_edit import goal_problems
+    except Exception as e:  # noqa: BLE001 — any import failure turns PDDL goals off
+        return (
+            None,
+            None,
+            f"heracles_agents is not importable ({type(e).__name__}: {e})",
+        )
+    return prompts, goal_problems, None
+
+
+def goal_constraints_json(constraints) -> str:
+    """Console constraints -> heracles_agents' constraints_json ([[predicate, *symbols]])."""
+    from .ros_bridge import normalize_constraints
+
+    return json.dumps(
+        [[c["predicate"], *c["symbols"]] for c in normalize_constraints(constraints)]
+    )
+
+
 def price_for(model: str) -> tuple[float, float]:
     """Longest matching price-table prefix (dated snapshots share their family)."""
     best = None
@@ -151,7 +235,7 @@ def price_for(model: str) -> tuple[float, float]:
 class UsageLedger:
     """Cumulative LLM spend, persisted so the budget cap survives restarts."""
 
-    def __init__(self, path: str, budget_usd: float):
+    def __init__(self, path: str, budget_usd: float | None):
         self.path = pathlib.Path(os.path.expanduser(path))
         self.budget_usd = budget_usd
         self.lock = threading.Lock()
@@ -171,6 +255,8 @@ class UsageLedger:
         return float(self.data["spent_usd"])
 
     def remaining(self) -> float:
+        if self.budget_usd is None:  # no cap
+            return float("inf")
         return self.budget_usd - self.spent
 
     def record(self, model: str, input_tokens: int, output_tokens: int) -> float:
@@ -259,6 +345,27 @@ def search_for_model(graph, src_id, query, origin=None, limit: int = 10):
     return hits, {"total_matches": len(every), "returned": len(hits), "objects": hits}
 
 
+@dataclass
+class ChatTurn:
+    """One chat turn's own state, passed down explicitly from :meth:`ChatService.stream`
+    to the prompt, the tool loop and the tool handlers.
+
+    It is not kept on the service or in a thread-local: ``POST /api/chat`` streams
+    the turn through Starlette, which runs each step of the generator on whatever
+    threadpool worker is free, and one service serves every operator's turns."""
+
+    mission: dict | None = (
+        None  # {roster, areas, mission, planted, ...} from the planner
+    )
+    reasoning: str | None = None  # GPT-5 / 6 reasoning effort (REASONING_LEVELS)
+    engine: str | None = None  # the chat's planner toggle (GOAL_ENGINES)
+    # PDDL goals proposed in this turn (one team goal per request)
+    pddl_goals: list = field(default_factory=list)
+    history: list | None = None  # propose_mission: the request the thread started with
+    # the message starts with "SGET:": a scene graph edit request, never a goal
+    edit_only: bool = False
+
+
 class ChatService:
     def __init__(self, settings, graph, live=None, ros=None):
         self.settings = settings
@@ -275,13 +382,21 @@ class ChatService:
         self.sget = (
             None  # sget.SgetService (plan repair's scene edits, when its writer runs)
         )
-        self._ctx = (
-            threading.local()
-        )  # this turn's mission context (roster, areas, mission)
         self.ledger = UsageLedger(
             getattr(settings, "llm_usage_path", "~/.adt4_console/llm_usage.json"),
-            getattr(settings, "llm_budget_usd", 10.0),
+            getattr(settings, "llm_budget_usd", None),
         )
+        # heracles_agents' goal rules and goal check; without it PDDL goals are off
+        self.goal_prompts, self.goal_check, self.goal_prompts_error = (
+            load_goal_prompts()
+        )
+        if self.goal_prompts_error:
+            log.error(
+                "PDDL goals are OFF in the chat: %s. The chat's goal rules come only from "
+                "heracles_agents (heracles_agents.prompts): build heracles_agents in this "
+                "workspace and restart the console.",
+                self.goal_prompts_error,
+            )
 
     # ---------------------------------------------------------------- helpers
     def _default_src(self, src: str | None) -> str | None:
@@ -361,6 +476,8 @@ class ChatService:
             "model": self.model(),
             "models": self.models(),
             "reasoning_levels": list(REASONING_LEVELS),
+            # the chat's planner toggle: the engines and whether the base runs each
+            "engines": self.chat_engines(),
             "budget_usd": self.ledger.budget_usd,
             **self.ledger.data,
         }
@@ -395,6 +512,7 @@ class ChatService:
         model: str | None = None,
         mission_ctx: dict | None = None,
         reasoning: str | None = None,
+        engine: str | None = None,
     ):
         """One chat turn.  ``history``: the transcript items of earlier turns
         (the client keeps them; each turn ends with a ``transcript`` event
@@ -411,12 +529,15 @@ class ChatService:
                 "omniplanner": ok,
                 "grstaps": ok and self._grstaps_ok(),
             }
-        self._ctx.value = mission_ctx if self.missions is not None else None
-        # GPT-5 / 6 reasoning effort from the picker (REASONING_LEVELS; None / "fast": the lowest)
-        self._ctx.reasoning = reasoning if reasoning in REASONING_LEVELS else None
         history = clean_history(history)
-        self._ctx.history = (
-            history  # propose_mission: the request the thread started with
+        turn = ChatTurn(
+            mission=mission_ctx if self.missions is not None else None,
+            # GPT-5 / 6 reasoning effort (REASONING_LEVELS; None / "fast": the lowest)
+            reasoning=reasoning if reasoning in REASONING_LEVELS else None,
+            # the chat's planner toggle: the engine of the PDDL goals proposed this turn
+            engine=engine if engine in GOAL_ENGINES else None,
+            history=history,
+            edit_only=bool(SGET_PREFIX.match(message or "")),
         )
         try:
             client = self.llm_client()
@@ -430,10 +551,12 @@ class ChatService:
             if client is None:
                 yield from self._fallback(message, robot, src)
             elif self._client_provider == "openai":
-                yield from self._llm_openai(client, message, robot, src, history, model)
+                yield from self._llm_openai(
+                    client, message, robot, src, history, model, turn
+                )
             else:
                 yield from self._llm_anthropic(
-                    client, message, robot, src, history, model
+                    client, message, robot, src, history, model, turn
                 )
         except Exception as e:  # noqa: BLE001
             log.exception("chat failed")
@@ -605,30 +728,45 @@ class ChatService:
     }
     _T_PROPOSE_GOAL = {
         "name": "propose_goal",
-        "description": "Propose a robot goal for the operator to approve and send. kind='pddl' "
-        "(preferred) sends pddl_goal through the plan-repair goal manager, e.g. "
-        "'(and (visited-object o12) (visited-object o7))' (lower case, no parentheses in "
-        "symbols); with several robots, name who does what with the -by forms, e.g. "
-        "'(and (visited-object-by hamilton o12) (inspected-by euclid o7))' (unnamed tasks go to "
-        "whichever robot is closer); (at-place r t40) ends robot r there; (object-in-place o4 t598) "
-        "moves o4 to place t598 (a Spot with an arm picks it up, or drags it when it is heavy: bags, "
-        "sandbags, boxes, trash cans; a husky has no arm and never picks or drags); optional constraints "
-        "keep the planner away from places or edges: "
-        "{predicate: 'forbidden-poi', symbols: ['o14']} or {predicate: 'forbidden-edge', "
-        "symbols: ['p1', 'p2']}. engine='grstaps' (GRSTAPS-X, when the robots run it) also takes "
+        "description": "Propose a goal for the operator to approve and send. kind='pddl' "
+        "(preferred) sends pddl_goal ONCE to the plan-repair goal manager, which plans the WHOLE "
+        "TEAM at once: a new goal replaces every robot's plan, so call this once per request "
+        "with one goal holding every robot's tasks (never one goal per robot). Who does what "
+        "follows TEAM GOALS in the system prompt: robot-free forms such as "
+        "'(and (visited-object o12) (visited-object o7))' (lower case, no parentheses in symbols) "
+        "unless the operator names the robot, then the -by forms; use-robots limits the team. "
+        "(object-in-place o4 t598) moves o4 to place t598 (a Spot with an "
+        "arm picks it up, or drags it when it is heavy: bags, sandbags, boxes, trash cans; a husky "
+        "has no arm and never picks or drags -- check the fleet roster for each robot's platform); "
+        "(holding euclid o1) just picks o1 up with euclid (no destination: ask for a place only "
+        "when the operator wants the object moved or put down); (at-place euclid t40) / "
+        "(at-object euclid o20): that robot ends there (Fast Downward). Constraints: "
+        "{predicate: 'use-robots', symbols: ['euclid', 'hamilton']}, "
+        "{predicate: 'forbidden-poi', symbols: ['o14']}, {predicate: 'forbidden-edge', "
+        "symbols: ['p1', 'p2']}. With engine='grstaps' (GRSTAPS-X, when the robots run it) the "
+        "goal may also use "
         "{predicate: 'before', symbols: ['o4', 'o8']} (o4 done before o8), joint inspections "
         "(safe o4), relocation (object-in-place o4 t598) and map regions -- (visited-region r3) is one "
         "visit in r3's core, (explored-region r3) covers r3 at waypoints about 8 m apart, with -by "
-        "forms -- and returns a timed schedule; it does not take or / at-* / holding, nor a drawn "
-        "mission area (area1: those are planned in the mission planner). kind='goto' / 'tsp' visit node symbols (points) in order / in "
-        "the best order. kind='language' passes a command to the robot's language planner.",
+        "forms -- and GRSTAPS-X returns a timed schedule. GRSTAPS-X also takes use-robots and "
+        "holding (the holder does nothing else in that plan; one holding goal per robot; an object "
+        "is not both held and placed; no husky or robot without an arm), but GRSTAPS-X takes no "
+        "or / at-* (use engine='fast_downward' for those), nor a drawn mission area (area1: "
+        "those are planned in the mission planner). The goal is "
+        "checked against the map first: an unknown robot, object, region or id comes back as "
+        "NOT PROPOSED; fix the goal. kind='goto' / 'tsp' visit node symbols (points) in order / in "
+        "the best order. kind='language' passes a command to the robot's language planner: use it "
+        "only for what PDDL cannot express (visit, inspect, pick up / holding, place and drag are "
+        "PDDL).",
         "input_schema": {
             "type": "object",
             "properties": {
                 "kind": {"type": "string", "enum": ["pddl", "goto", "tsp", "language"]},
                 "robot": {
                     "type": "string",
-                    "description": "the robot to send; default: the selected robot",
+                    "description": "goto / tsp / language: the robot to send; default: the selected "
+                    "robot. Leave it out for pddl (a team goal: the robots are in the goal and "
+                    "use-robots)",
                 },
                 "pddl_goal": {"type": "string"},
                 "engine": {"type": "string", "enum": ["fast_downward", "grstaps"]},
@@ -639,7 +777,12 @@ class ChatService:
                         "properties": {
                             "predicate": {
                                 "type": "string",
-                                "enum": ["forbidden-poi", "forbidden-edge", "before"],
+                                "enum": [
+                                    "forbidden-poi",
+                                    "forbidden-edge",
+                                    "before",
+                                    "use-robots",
+                                ],
                             },
                             "symbols": {"type": "array", "items": {"type": "string"}},
                         },
@@ -668,13 +811,14 @@ class ChatService:
         },
     }
 
-    def _mission_ctx(self):
-        return getattr(self._ctx, "value", None)
+    @staticmethod
+    def _mission_ctx(turn: ChatTurn | None):
+        return turn.mission if turn is not None else None
 
-    def _tool_rounds(self) -> int:
-        return (
-            MISSION_TOOL_ROUNDS if self._mission_ctx() is not None else MAX_TOOL_ROUNDS
-        )
+    def _tool_rounds(self, turn: ChatTurn | None = None) -> int:
+        if self._mission_ctx(turn) is not None:
+            return MISSION_TOOL_ROUNDS
+        return MAX_TOOL_ROUNDS
 
     def _sget_on(self) -> bool:
         """Plan repair's scene edits replace the console's own edit tools."""
@@ -683,7 +827,7 @@ class ChatService:
         except Exception:  # noqa: BLE001
             return False
 
-    def _tools(self, src) -> list[dict]:
+    def _tools(self, src, turn: ChatTurn | None = None) -> list[dict]:
         if self._cypher_src(src) is not None:
             if self._sget_on():
                 from . import sget
@@ -700,7 +844,10 @@ class ChatService:
         else:
             tools = [self._T_FIND_OBJECTS, self._T_SHOW_IMAGES, self._T_SEARCH_IMAGES,
                      self._T_PROPOSE_GOAL]  # fmt: skip
-        ctx = self._mission_ctx()
+        if turn is not None and turn.edit_only:
+            # "SGET: ...": an edit request. No goal and no mission tool this turn.
+            return [t for t in tools if t is not self._T_PROPOSE_GOAL]
+        ctx = self._mission_ctx(turn)
         if ctx is not None:
             from .mission import llm_planner
 
@@ -730,8 +877,8 @@ class ChatService:
         self._grstaps_why = why
         return why is None
 
-    def _mission_prompt(self, src) -> str:
-        ctx = self._mission_ctx()
+    def _mission_prompt(self, src, turn: ChatTurn | None = None) -> str:
+        ctx = self._mission_ctx(turn)
         if ctx is None:
             return ""
         from .mission import llm_planner
@@ -764,14 +911,113 @@ class ChatService:
             return None
 
     # ---------------------------------------------------------------- shared
-    def _system(self, src, robot) -> str:
-        csrc = self._cypher_src(src)
+    def chat_engines(self) -> list[dict]:
+        """The chat's planner toggle: Fast Downward always; GRSTAPS-X only when the
+        base runs it (goal_manager forwards to it, or a GRSTAPS-X plugin is up in
+        the live ROS graph or the console's config)."""
+        from .ros_bridge import NO_GRSTAPS
+
+        fd = {
+            "id": "fast_downward",
+            "label": "Fast Downward",
+            "available": True,
+            "reason": None,
+        }
+        ros = self.ros
+        repair = None  # the engine plan repair (goal_manager) runs in this session
+        if ros is None or not getattr(ros, "available", False):
+            why = "ROS is not running on this console, so it cannot see a GRSTAPS-X planner"
+        else:
+            try:
+                repair = ros.goal_manager_engine()
+            except Exception:  # noqa: BLE001 — a ROS graph query; unknown
+                repair = None
+            try:
+                # the live ROS graph decides, not the console's own config: the
+                # planning session (e.g. grstaps_repair) may run another config
+                # and start after the console; grstaps_live is cached briefly
+                live = getattr(ros, "grstaps_live", None)
+                running = (
+                    repair == "grstaps"
+                    or (live is not None and live() is not None)
+                    or ros.find_plugin("grstaps") is not None
+                )
+            except Exception:  # noqa: BLE001 — a ROS graph query; unknown = not offered
+                running = False
+            why = None if running else NO_GRSTAPS
+        gr = {
+            "id": "grstaps",
+            "label": "GRSTAPS-X",
+            "available": why is None,
+            "reason": why,
+        }
+        # the other engine's goals bypass plan repair (sent to that planner directly)
+        fd["repair"] = repair == "fast_downward"
+        gr["repair"] = repair == "grstaps"
+        return [fd, gr]
+
+    @staticmethod
+    def _chosen_engine(turn: ChatTurn | None) -> str | None:
+        """The engine the operator picked in the chat's planner toggle this turn."""
+        return turn.engine if turn is not None else None
+
+    def _goal_engine(self, turn: ChatTurn | None = None) -> str:
+        """The engine whose goal rules go in the prompt: the chat's planner toggle,
+        else the one the goal manager runs; Fast Downward when unknown."""
+        chosen = self._chosen_engine(turn)
+        if chosen in GOAL_ENGINES:
+            return chosen
+        ros = self.ros
+        if ros is None or not getattr(ros, "available", False):
+            return "fast_downward"
+        try:
+            engine = ros.goal_manager_engine()
+        except Exception:  # noqa: BLE001 — a ROS graph query; unknown is fine
+            engine = None
+        return engine if engine in GOAL_ENGINES else "fast_downward"
+
+    def _goal_text(self, cypher: bool, turn: ChatTurn | None = None) -> str:
+        """The PDDL goal rules, domain and examples (heracles_agents.prompts) and the
+        console's own goal mechanics."""
+        if self.goal_prompts is None:
+            return (
+                f"PDDL GOALS ARE OFF in this console: {self.goal_prompts_error}. Do not "
+                "propose kind='pddl' goals; tell the operator that PDDL goals need "
+                "heracles_agents installed with the console. goto / tsp / language goals work."
+            )
+        engine = self._goal_engine(turn)
+        text = self.goal_prompts.repair_goal_prompt(engine, names=GOAL_PROMPT_NAMES)
+        why = (
+            "the planner the operator selected in the chat"
+            if self._chosen_engine(turn) in GOAL_ENGINES
+            else "the engine the goal manager runs now"
+        )
+        notes = CONSOLE_GOAL_NOTES.replace("<engine_why>", why).replace(
+            "<engine>", engine
+        )
+        if not cypher:
+            notes += ("- No Neo4j database is connected: look ids up with find_objects; the "
+                      "Cypher queries above do not apply.\n")  # fmt: skip
+        return text + "\n\n" + notes
+
+    def _selected_text(self, robot) -> str:
+        """The selected robot, worded so it is not taken as a PDDL task assignment."""
+        if not robot:
+            return "Selected robot: none."
         pos = self._robot_pos(robot)
         where = (
-            f" Robot {robot} is at point({{x: {pos[0]:.2f}, y: {pos[1]:.2f}, z: {pos[2]:.2f}}})."
+            f" It is at point({{x: {pos[0]:.2f}, y: {pos[1]:.2f}, z: {pos[2]:.2f}}})."
             if pos
             else ""
         )
+        return (
+            f"Selected robot: {robot} (the UI's selection: the default for goto / tsp / language "
+            "goals and what 'the robot' or 'it' means; not a robot assignment for PDDL goals)."
+            + where
+        )
+
+    def _system(self, src, robot, turn: ChatTurn | None = None) -> str:
+        csrc = self._cypher_src(src)
         if csrc is None:
             return (
                 "You are the operator assistant of a multi-robot mapping console. Answer "
@@ -780,24 +1026,108 @@ class ChatService:
                 "search_robot_images (the operator approves candidates). When the operator wants "
                 "a robot to go somewhere, call propose_goal (the operator approves goals in the "
                 "UI; never claim the robot is moving). "
-                f"Selected graph source: {src or 'none'}. Selected robot: {robot or 'none'}.{where}"
+                f"Selected graph source: {src or 'none'}. {self._selected_text(robot)}"
+                + "\n\n"
+                + self._goal_text(cypher=False, turn=turn)
+                + self._roster_text(robot)
                 + (
-                    "\n\n" + self._mission_prompt(src)
-                    if self._mission_ctx() is not None
+                    "\n\n" + self._mission_prompt(src, turn)
+                    if self._mission_ctx(turn) is not None
                     else ""
                 )
             )
+        described = []
+        if self.goal_prompts is not None:
+            # heracles_agents' scene graph and Cypher descriptions, then the console's maps
+            described = [
+                self.goal_prompts.scene_graph_description("hierarchical"),
+                self.goal_prompts.cypher_interface_description(),
+            ]
         return "\n\n".join(
             [
                 cypher_tools.SYSTEM,
-                cypher_tools.SCENE_GRAPH,
-                cypher_tools.INTERFACE,
+                *described,
+                cypher_tools.MAP_NOTES,
+                self._goal_text(cypher=True, turn=turn),
                 self._schema.text(csrc),
-                f"Database: {csrc.id}. Selected robot: {robot or 'none'}.{where}",
-            ]
+                f"Database: {csrc.id}. {self._selected_text(robot)}"
+                + self._roster_text(robot),
+            ]  # fmt: skip
             + [self._edit_note()]
-            + ([self._mission_prompt(src)] if self._mission_ctx() is not None else [])
+            + ([SGET_TURN_NOTE] if turn is not None and turn.edit_only else [])
+            + (
+                [self._mission_prompt(src, turn)]
+                if self._mission_ctx(turn) is not None
+                else []
+            )
         )
+
+    def _holding(self) -> dict:
+        """{robot: [objects it holds]} as the planner sees it ({} when unknown)."""
+        ps = getattr(self.ros, "planner_state", None)
+        return ps.holding() if ps is not None else {}
+
+    def _put_down_warning(self, goal: str, team: list, scoped: bool) -> str:
+        """The planner puts a held object down where the robot stands before a
+        goal that does not name it: say which robots and objects, for the card.
+        A robot-scoped goal touches only its robots; a team goal, every robot."""
+        words = set(re.findall(r"[a-z0-9_]+", goal.lower()))
+        parts = [
+            f"{r} is holding {', '.join(objs)}"
+            for r, held in sorted(self._holding().items())
+            if (not scoped or r in team)
+            and (objs := [o for o in held if o.lower() not in words])
+        ]
+        if not parts:
+            return ""
+        return ("; ".join(parts) + ": this goal does not name it, so it is put down where the robot "
+                "stands before the plan starts. To carry it, use object-placed-by (or keep holding in the goal)")  # fmt: skip
+
+    def _roster_text(self, selected: str | None = None) -> str:
+        """ " Fleet roster: ..." for the system prompt ("" without robots)."""
+        rows = fleet_roster(self.ros, self.live)
+        if not rows:
+            return ""
+        holding = self._holding()
+        lines = []
+        for r in rows:
+            line = f"- {r['robot']}: {r['label']} — {r['can']}"
+            if r["online"] is not None:
+                line += "; online" if r["online"] else "; offline"
+            if holding.get(r["robot"]):
+                # the planner puts a held object down before a goal that does not name it
+                line += f"; HOLDING {', '.join(holding[r['robot']])}"
+            if r["robot"] == selected:
+                line += " (selected)"
+            lines.append(line)
+        text = (
+            "\nFleet roster (platform from the fleet topology; robot names are these, "
+            "not platform names). This roster is the fleet, the one list of robots: a robot "
+            "in it is a known robot even with no Robot node in the database (Robot nodes "
+            "only say where the robots that have a position are):\n" + "\n".join(lines)
+        )
+        online = [r["robot"] for r in rows if r["online"] is True]
+        offline = [r["robot"] for r in rows if r["online"] is False]
+        if offline:
+            # availability facts only; the goal rules themselves come from heracles_agents
+            text += (
+                f"\nThe team now (online, connected): {', '.join(online) or 'none'}. "
+                f'Offline — do not assign: {", ".join(offline)}. "All robots", "the team", '
+                '"both robots" and "every robot" mean the online robots, and a platform word '
+                '("the spots", "the huskies") the online robots of that platform; never put an '
+                "offline robot in a goal or use-robots unless the operator names it. An offline "
+                "robot is a known robot: say it is offline, never that it is unknown or not in "
+                "the fleet."
+            )
+        goals = getattr(self.ros, "goals", None)
+        recent = goals.summary_lines(3) if goals is not None else []
+        if recent:
+            # the live "did the robot get it" status of goals the operator sent
+            text += (
+                "\nGoals sent from this console, latest last (live status):\n"
+                + "\n".join(f"- {x}" for x in recent)
+            )
+        return text
 
     def _edit_note(self) -> str:
         """Which edit path this turn has, for the system prompt."""
@@ -810,8 +1140,13 @@ class ChatService:
                     "propose_map_edit (the console's map editor; not plan repair's change log).")  # fmt: skip
         return ""
 
-    def _run_tool(self, name, args, message, robot, src, origin):
-        """Execute one tool call; returns (events_to_stream, result_for_model)."""
+    def _run_tool(
+        self, name, args, message, robot, src, origin, turn: ChatTurn | None = None
+    ):
+        """Execute one tool call; returns (events_to_stream, result_for_model).
+        ``turn``: the chat turn it belongs to (a new, empty one when None)."""
+        if turn is None:
+            turn = ChatTurn()
         from . import sget
 
         if name in sget.TOOLS:
@@ -874,11 +1209,15 @@ class ChatService:
                 body = {"goal": args.get("pddl_goal", "")}
                 if args.get("constraints"):
                     body["constraints"] = list(args["constraints"])
-                if args.get("engine"):
-                    body["engine"] = args["engine"]
+                # the model's engine, else the chat's planner toggle
+                engine = args.get("engine") or self._chosen_engine(turn)
+                if engine:
+                    body["engine"] = engine
             else:
                 body = {"points": list(args.get("points") or [])}
             target = str(args.get("robot") or "").strip() or robot
+            if kind == "pddl":
+                return self._propose_team_goal(body, target, src, message, turn)
             goal = {"type": "goal", "kind": kind, "body": body, "robot": target}
             return [goal], {
                 "proposed": True,
@@ -896,14 +1235,133 @@ class ChatService:
                     regions = self.edits.regions(csrc.id)
                 except Exception:  # noqa: BLE001
                     regions = None
-            return llm_planner.run_tool(args, self._mission_ctx(), self.missions, src, message, regions,
-                                        getattr(self._ctx, "history", None))  # fmt: skip
+            return llm_planner.run_tool(args, turn.mission, self.missions, src, message, regions,
+                                        turn.history)  # fmt: skip
         if name == "plan_ground_mission" and self.missions is not None:
             from .mission import llm_planner
 
-            return llm_planner.run_plan_tool(args, self._mission_ctx(), self.missions, src, message,
-                                             getattr(self._ctx, "history", None))  # fmt: skip
+            return llm_planner.run_plan_tool(args, turn.mission, self.missions, src, message,
+                                             turn.history)  # fmt: skip
         return [], {"error": f"unknown tool {name}"}
+
+    def _goal_problems(self, goal: str, constraints, src) -> str:
+        """heracles_agents' goal check (scene_graph_edit.goal_problems) on the
+        planner's map: unknown robots, objects, places and regions, and constraint ids
+        the map lacks. "" when the goal is fine or cannot be checked here."""
+        if self.goal_check is None:
+            return ""
+        csrc = self._cypher_src(src)
+        if csrc is None:
+            return ""  # no Neo4j map to check against
+        try:
+            constraints_json = goal_constraints_json(constraints)
+        except ValueError as e:
+            return f"bad constraint: {e}."
+        from .sget import _Conf
+
+        try:
+            return str(
+                self.goal_check(goal, constraints_json, _Conf(csrc.uri, *csrc.creds))
+                or ""
+            )
+        except Exception as e:  # noqa: BLE001 — the map is unreachable: do not block the goal
+            log.warning("goal check skipped (%s): %s", csrc.id, e)
+            return ""
+
+    def _propose_team_goal(
+        self, body, target, src=None, message: str = "", turn: ChatTurn | None = None
+    ):
+        """A PDDL proposal: one team goal. It is sent once, through ``via`` (a robot
+        it names, else the selected robot; goal_manager plans the whole team), and
+        the card lists the team it may use. A goal heracles_agents' goal check finds
+        wrong on the map is not proposed: the error goes back to the model. A second
+        PDDL goal in the same reply would preempt the first when both are sent, so it
+        is refused unless it keeps every task of the first (then it replaces that
+        proposal).
+
+        Offline robots (fleetlink not connected: :func:`fleet_roster`) are never
+        on the team: a goal naming one (a conjunct or use-robots) is NOT PROPOSED,
+        unless the operator's own ``message`` names that robot; then the card
+        carries a warning."""
+        from .ros_bridge import TEAM_TASK, goal_named_robots, is_team_goal, use_robots
+
+        goal = str(body.get("goal") or "")
+        if self.goal_prompts is None:
+            return [], {
+                "error": f"NOT PROPOSED: PDDL goals are off in this console ({self.goal_prompts_error}). "
+                "Tell the operator; goto / tsp / language goals still work."
+            }
+        roster = fleet_roster(self.ros, self.live)
+        offline = {r["robot"] for r in roster if r["online"] is False}
+        online = [r["robot"] for r in roster if r["online"] is True]
+        named = goal_named_robots(goal)
+        allowed = use_robots(body.get("constraints"))
+        asked = operator_named_robots(message, offline)
+        bad = [
+            r for r in dict.fromkeys(allowed + named) if r in offline and r not in asked
+        ]
+        if bad:
+            return [], {
+                "error": f"NOT PROPOSED: {', '.join(bad)} {'is' if len(bad) == 1 else 'are'} offline "
+                f"(not connected); online robots: {', '.join(online) or 'none'}. Give the tasks to "
+                'the online robots only ("all robots" / "the team" means the online robots) '
+                "and call propose_goal again."
+            }
+        problems = self._goal_problems(goal, body.get("constraints"), src)
+        if problems:
+            return [], {
+                "error": f"NOT PROPOSED: {problems} Fix the goal and call propose_goal again; "
+                "do not resend it unchanged. Ask the operator only when you cannot fix it."
+            }
+        tasks = goal_atoms(goal)
+        earlier = turn.pddl_goals if turn is not None else None
+        replaces = False
+        if earlier:
+            missing = sorted(goal_atoms(earlier[-1]) - tasks)
+            if missing:
+                return [], {
+                    "error": "NOT PROPOSED: this reply already proposed the goal "
+                    f"{earlier[-1]!r}. One goal covers the whole team and a second send replaces the "
+                    "first, so never propose one goal per robot. Call propose_goal once more with ONE "
+                    "goal that holds every task (both robots' tasks in one (and ...); use-robots for "
+                    f"'both robots'); it replaces the earlier proposal. Missing now: {' '.join(missing)}"
+                }
+            replaces = True
+        if earlier is not None:
+            earlier.append(goal)
+        team = list(dict.fromkeys(allowed + named))
+        unnamed = bool(TEAM_TASK.search(goal)) and not allowed
+        if unnamed:
+            # robot-free tasks without use-robots: any robot of the fleet may get them
+            for r in roster:
+                if r["robot"] not in team and r["robot"] not in offline:
+                    team.append(r["robot"])
+        # the card's team (and "Send to team (...)") is the online robots only;
+        # an offline robot the operator named themselves stays in the goal, flagged
+        warned = [r for r in team if r in offline]
+        team = [r for r in team if r not in offline]
+        if team and target not in team:
+            target = (allowed or named or team)[0]
+            if target in offline:
+                target = team[0]
+        card = {"type": "goal", "kind": "pddl", "body": body, "robot": target}
+        if is_team_goal(goal, body.get("constraints")):
+            card["team"] = team
+        if warned:
+            card["warning"] = (f"{', '.join(warned)} {'is' if len(warned) == 1 else 'are'} offline "
+                               "(not connected): its tasks wait until it connects")  # fmt: skip
+        put_down = self._put_down_warning(goal, team, scoped=not unnamed)
+        if put_down:
+            card["warning"] = "; ".join(x for x in (card.get("warning"), put_down) if x)
+        if replaces:
+            card["replaces"] = True
+        note = "The operator approves and sends it once, to the whole team."
+        if replaces:
+            note += " It replaces the goal proposed earlier in this reply."
+        out = {"proposed": True, "note": note, "team": team, "sent_through": target}
+        if card.get("warning"):
+            out["warning"] = card["warning"]
+        return [card], out
 
     def _show_images(self, symbols, src):
         """``images`` event (URLs the chat renders) + per-node counts for the model."""
@@ -1070,17 +1528,24 @@ class ChatService:
 
     # ---------------------------------------------------------------- Anthropic
     def _llm_anthropic(
-        self, client, message, robot, src, history=(), requested_model=None
+        self,
+        client,
+        message,
+        robot,
+        src,
+        history=(),
+        requested_model=None,
+        turn: ChatTurn | None = None,
     ):
         """Anthropic tool loop; tools run through ``_run_tool`` (shared with OpenAI)."""
         import anthropic
 
         model = self.model(requested_model)
-        turn = self._turn(message)
+        items = self._turn(message)
         origin = self._robot_pos(robot)
-        tools = self._tools(src)
-        system = self._system(src, robot)
-        rounds = self._tool_rounds()
+        tools = self._tools(src, turn)
+        system = self._system(src, robot, turn)
+        rounds = self._tool_rounds(turn)
         try:
             for i in range(rounds):
                 if self.ledger.remaining() <= 0:
@@ -1095,7 +1560,7 @@ class ChatService:
                     max_tokens=4000,
                     system=system + ("\n\n" + LAST_ROUND_NOTE if last else ""),
                     tools=tools,
-                    messages=to_anthropic(list(history) + turn),
+                    messages=to_anthropic(list(history) + items),
                     # server-side refusal fallback; the installed SDK predates the
                     # typed params, so they travel in extra_body
                     betas=["server-side-fallback-2026-07-01"],
@@ -1144,23 +1609,23 @@ class ChatService:
                                 "args": dict(block.input or {}),
                             }
                         )
-                turn.append({"role": "assistant", "text": text, "calls": calls})
+                items.append({"role": "assistant", "text": text, "calls": calls})
                 if not calls:
                     return
                 for c in calls:
                     events, out = self._run_tool(
-                        c["name"], c["args"], message, robot, src, origin
+                        c["name"], c["args"], message, robot, src, origin, turn
                     )
                     yield from events
-                    turn.append({"role": "tool", "id": c["id"], "name": c["name"],
+                    items.append({"role": "tool", "id": c["id"], "name": c["name"],
                                  "content": _clip(json.dumps(out, default=str))})  # fmt: skip
                 if resp.stop_reason != "tool_use":
                     return
         finally:
-            yield {"type": "transcript", "items": turn}
+            yield {"type": "transcript", "items": items}
 
     # ------------------------------------------------------------------ OpenAI
-    def _openai_tools(self, src=None):
+    def _openai_tools(self, src=None, turn: ChatTurn | None = None):
         return [
             {
                 "type": "function",
@@ -1170,20 +1635,27 @@ class ChatService:
                     "parameters": t["input_schema"],
                 },
             }
-            for t in self._tools(src)
+            for t in self._tools(src, turn)
         ]
 
     def _llm_openai(
-        self, client, message, robot, src, history=(), requested_model=None
+        self,
+        client,
+        message,
+        robot,
+        src,
+        history=(),
+        requested_model=None,
+        turn: ChatTurn | None = None,
     ):
         import openai
 
         model = self.model(requested_model)
-        turn = self._turn(message)
+        items = self._turn(message)
         origin = self._robot_pos(robot)
-        tools = self._openai_tools(src)
-        system = self._system(src, robot)
-        rounds = self._tool_rounds()
+        tools = self._openai_tools(src, turn)
+        system = self._system(src, robot, turn)
+        rounds = self._tool_rounds(turn)
         try:
             for i in range(rounds):
                 if self.ledger.remaining() <= 0:
@@ -1194,14 +1666,14 @@ class ChatService:
                     return
                 last = i == rounds - 1
                 try:
-                    budget = 4000 if self._mission_ctx() is not None else 1500
+                    budget = 4000 if self._mission_ctx(turn) is not None else 1500
                     sys_text = system + ("\n\n" + LAST_ROUND_NOTE if last else "")
-                    effort = getattr(self._ctx, "reasoning", None) or "fast"
+                    effort = (turn.reasoning if turn is not None else None) or "fast"
                     if is_reasoning_model(model) and (
                         uses_responses_api(model) or effort != "fast"
                     ):
                         resp = _ResponsesReply(client.responses.create(
-                            model=model, instructions=sys_text, input=to_responses(list(history) + turn),
+                            model=model, instructions=sys_text, input=to_responses(list(history) + items),
                             tools=[{"type": "function", **t["function"]} for t in tools],
                             tool_choice="none" if last else "auto",
                             max_output_tokens=budget * (8 if effort in ("medium", "high") else 4),
@@ -1219,7 +1691,7 @@ class ChatService:
                         resp = client.chat.completions.create(
                             model=model,
                             messages=[{"role": "system", "content": sys_text}]
-                            + to_openai(list(history) + turn),
+                            + to_openai(list(history) + items),
                             tools=tools,
                             tool_choice="none" if last else "auto",
                             **knobs,
@@ -1244,7 +1716,7 @@ class ChatService:
                         resp.usage.completion_tokens,
                     )
                     log.info(
-                        "chat LLM %s: %d in / %d out tokens, $%.5f (total $%.4f of $%.2f)",
+                        "chat LLM %s: %d in / %d out tokens, $%.5f (total $%.4f, cap %s)",
                         resp.model, resp.usage.prompt_tokens, resp.usage.completion_tokens,
                         cost, self.ledger.spent, self.ledger.budget_usd,
                     )  # fmt: skip
@@ -1258,20 +1730,20 @@ class ChatService:
                     except ValueError:
                         args = {}
                     calls.append({"id": c.id, "name": c.function.name, "args": args})
-                turn.append(
+                items.append(
                     {"role": "assistant", "text": msg.content or "", "calls": calls}
                 )
                 if not calls:
                     return
                 for c in calls:
                     events, out = self._run_tool(
-                        c["name"], c["args"], message, robot, src, origin
+                        c["name"], c["args"], message, robot, src, origin, turn
                     )
                     yield from events
-                    turn.append({"role": "tool", "id": c["id"], "name": c["name"],
+                    items.append({"role": "tool", "id": c["id"], "name": c["name"],
                                  "content": _clip(json.dumps(out, default=str))})  # fmt: skip
         finally:
-            yield {"type": "transcript", "items": turn}
+            yield {"type": "transcript", "items": items}
 
 
 class _ResponsesReply:
@@ -1354,6 +1826,89 @@ class EditProposals(WriteProposals):
                 "t": now,
             }
             return eid
+
+
+PLATFORM_CAN = {
+    "spot": (
+        "Spot (legged, with arm)",
+        "navigates, inspects (gaze), picks up, places and drags objects",
+    ),
+    "phoenix": (
+        "Husky (phoenix, wheeled, NO arm)",
+        "navigates and inspects only; never picks, places or drags",
+    ),
+    "husky": (
+        "Husky (wheeled, NO arm)",
+        "navigates and inspects only; never picks, places or drags",
+    ),
+}
+
+
+def operator_named_robots(message: str, robots) -> set[str]:
+    """The ``robots`` the operator's message names as words."""
+    text = (message or "").lower()
+    return {
+        r
+        for r in robots
+        if re.search(rf"(?<![a-z0-9_-]){re.escape(r.lower())}(?![a-z0-9_-])", text)
+    }
+
+
+def fleet_roster(ros, live) -> list[dict]:
+    """[{robot, platform, label, can, online, arm}] for every robot the console
+    knows: the fleet topology's robots plus robots live over fleetlink. A
+    Spot is assumed to have its arm (the topology has no arm flag); a live
+    camera named hand* confirms it.  ``online``: the fleetlink link is
+    connected (fresh); False when it is not, or when fleetlink reports other
+    robots but never this one; None when the console has no link state at all."""
+    names: list[str] = []
+    fleet = getattr(ros, "fleet", None) if ros is not None else None
+    try:
+        names += list(fleet.robots()) if fleet is not None else []
+    except Exception:  # noqa: BLE001
+        pass
+    links = {}
+    if live is not None:
+        try:
+            names += [r for r in live.robots() if r not in names]
+            links = (live.links() or {}).get("robots") or {}
+        except Exception:  # noqa: BLE001
+            links = {}
+    out = []
+    for r in names:
+        try:
+            platform = ros.platform(r) if ros is not None else "spot"
+        except Exception:  # noqa: BLE001
+            platform = "spot"
+        label, can = PLATFORM_CAN.get(platform, (platform, "navigates and inspects"))
+        hand = False
+        if live is not None and platform == "spot":
+            try:
+                hand = any(str(c).startswith("hand") for c in live.cameras(r) or [])
+            except Exception:  # noqa: BLE001
+                hand = False
+        if hand:
+            label = "Spot (legged, with arm: hand camera live)"
+        link = links.get(r)
+        if isinstance(link, dict):
+            online = bool(link.get("connected"))
+        else:
+            online = False if links else None  # fleetlink is up but never heard of it
+        out.append({"robot": r, "platform": platform, "label": label, "can": can,
+                    "online": online, "arm": platform == "spot"})  # fmt: skip
+    return out
+
+
+_ATOM = re.compile(r"\(\s*([a-z][a-z0-9_-]*)((?:\s+[a-z0-9_?-]+)+)\s*\)")
+
+
+def goal_atoms(goal: str) -> set[str]:
+    """The ground predicates of a PDDL goal, normalized ("(visited-object o2)")."""
+    return {
+        f"({m.group(1)} {' '.join(m.group(2).split())})"
+        for m in _ATOM.finditer((goal or "").lower())
+        if m.group(1) not in ("and", "or", "not")
+    }
 
 
 def _clip(text: str, n: int = TOOL_CONTENT_CHARS) -> str:

@@ -48,8 +48,25 @@ export interface FleetMachines {
   machines: Machine[];
 }
 
+/** A robot's rosbag recording, from the status poll (`ros2 bag record` found by process). */
+export interface RecordingStatus {
+  active: boolean;
+  /** tmux pane id (`%12`) that owns the recorder; null when it is not in tmux */
+  pane: string | null;
+  output: string | null;
+  /** epoch seconds */
+  started: number | null;
+  size_bytes: number | null;
+  pid?: number;
+  /** `session:window.pane` */
+  target?: string | null;
+  count?: number;
+  error?: string;
+}
+
 export interface RemoteStatus {
   tmux_sessions?: string;
+  recording?: RecordingStatus;
   ros2_procs?: string;
   load?: string;
   mem?: string;
@@ -110,6 +127,10 @@ export interface ImageStoreInfo {
   sensors: number;
   schema_version?: string | null;
   keyframes_unanchored?: number;
+  /** false: the run has raw image logs (keyframes/, tracks/) but no image_store/ yet */
+  indexed?: boolean;
+  /** counts of the run's raw image logs (what `image_store index` reads) */
+  raw?: {keyframe_archives: number; tracks: number; events?: boolean} | null;
   /** du of <run>/image_store; null while sizes are pending */
   size_bytes?: number | null;
   check: {ok: boolean; problems: string[]};
@@ -447,6 +468,8 @@ export interface GoalSendResult {
   warning?: string;
   constraints?: ConstraintFact[];
   plugin?: string;
+  /** the goal's live status id (api/goal_tracks/<track>, hub goal_track/<track>) */
+  track?: string;
 }
 
 export interface RobotPlan {
@@ -612,6 +635,14 @@ export interface LaunchPlan {
   record: boolean;
   base_station: string | null;
   bs_session: string | null;
+  /** platform (spot | phoenix) -> robot session; overrides `session` per platform */
+  sessions?: Record<string, string>;
+  /** launch only the base station's session (robots ignored) */
+  base_only?: boolean;
+  /** (re)launch only `robots`; the base station's session is not touched */
+  robots_only?: boolean;
+  /** robots only: Stop & save each robot before it is relaunched */
+  save_first?: boolean;
   /** network the robot <-> base links use; null = the topology default */
   link_network?: string | null;
   /** "router" | "fleetlink" for this launch; null = the topology default */
@@ -656,5 +687,73 @@ export interface LaunchDefaults {
   link_mode?: string | null;
   /** base station that runs the fleetlink router */
   fleetlink_base?: string | null;
+  /** robot -> platform (spot | phoenix) */
+  robot_platforms?: Record<string, string>;
+  /** the mode's preset robot session per platform (fleet_defaults.sessions) */
+  platform_sessions?: Record<string, string>;
+  /** robot session -> "mapping" | "relocalize" (experiment manifest); the robot
+   * session pickers list the selected mode's */
+  session_modes?: Record<string, string>;
+  /** the mode these defaults are for */
+  mode?: string;
   [k: string]: unknown;
+}
+
+// ---- Planner state view (API: GET api/plan/planner_state) ----
+/** goal_manager's ~/robot_plan_states entry for one robot. */
+export interface RobotPlanStateEntry {
+  status: "running" | "done" | "failed" | "stalled" | "preempted" | string;
+  plan_id?: string;
+  done?: number;
+  total?: number | null;
+  conjuncts?: string[];
+  remaining?: string[];
+}
+
+export interface PlanErrorEntry {
+  t: number | null;
+  text: string;
+  source: string;
+  robot?: string;
+}
+
+export interface PlannerRobotState {
+  robot: string;
+  /** objects the map (Neo4j HOLDS, published as heracles.holding) says it holds */
+  holding: string[];
+  /** last pose the state updater wrote (Robot.position), map frame */
+  position: number[] | null;
+  /** in omniplanner's last plan_robots (null: not known) */
+  in_plan: boolean | null;
+  plan_state: RobotPlanStateEntry | null;
+  constraints: ConstraintFact[];
+  last_error: PlanErrorEntry | null;
+}
+
+export interface HoldingCorrection {
+  t: number;
+  author: string;
+  request: string;
+  ok: boolean;
+  before: Record<string, string[]>;
+  after: Record<string, string[]>;
+  steps: {robot: string; object: string; action: "hold" | "release"; ok: boolean; error?: string; service: string}[];
+}
+
+export interface PlannerStateSnapshot {
+  t: number;
+  ros: boolean;
+  map: {source: string | null; error: string | null; version: number | null; epoch: string | null; rebuilding: boolean; rebuild_failed: string};
+  planner: {
+    map_version: number | null;
+    map_epoch: string | null;
+    plan_robots: string[] | null;
+    plan_robots_t: number | null;
+    robot_plan_states_t: number | null;
+    goal_manager: boolean;
+  };
+  robots: PlannerRobotState[];
+  last_error: PlanErrorEntry | null;
+  corrections: HoldingCorrection[];
+  holding_source: string;
 }

@@ -35,6 +35,22 @@ def plan_robots(request: Request):
     ]
 
 
+@router.get("/goal_tracks")
+def goal_tracks(request: Request, n: int = 20):
+    """The latest goals the console sent, each with its live status (goal_tracker)."""
+    return services(request).ros.goals.recent(n)
+
+
+@router.get("/goal_tracks/{gid}")
+def goal_track(gid: str, request: Request):
+    """One sent goal's live status: planned / received / executing / paused / done ...
+    (also pushed on the hub as ``goal_track/<gid>``)."""
+    v = services(request).ros.goals.view(gid)
+    if v is None:
+        raise HTTPException(404, f"no tracked goal {gid}")
+    return v
+
+
 @router.get("/robots/{robot}/plan")
 def robot_plan(robot: str, request: Request):
     return services(request).ros.plan(robot)

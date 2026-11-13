@@ -288,13 +288,15 @@ def _launch_deps():
 def _launch(c, svc, **plan):
     body = {
         "robots": ["euclid"],
-        "session": "spot-default",
+        "session": "spot_relocalize-relocalize",
         "experiment": "reloc_1",
         "mode": "relocalize",
         "preflight": False,
         **plan,
     }
-    job = _wait(svc, c.post("/api/launch", json=body).json()["job_id"])
+    r = c.post("/api/launch", json=body)
+    assert r.status_code == 200, r.json()
+    job = _wait(svc, r.json()["job_id"])
     assert job["state"] == "succeeded", job["log"]
     return job
 
@@ -334,7 +336,7 @@ def test_launch_registers_base_copy_of_prior_and_survives_restart(
         settings, helpers=fleet.helpers(), launch_deps=_launch_deps()
     )
     with c3:
-        _launch(c3, svc3, mode="mapping")
+        _launch(c3, svc3, mode="mapping", session="spot-default")
         assert c3.get("/api/launch/active").json()["default_sources"] == ["live:euclid"]
 
 

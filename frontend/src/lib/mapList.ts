@@ -77,6 +77,39 @@ export function keyframes(m: MapEntry): number {
   return m.image_store?.frames?.keyframe ?? 0;
 }
 
+export interface ImageIndexState {
+  /** the run has raw image logs (keyframes/, tracks/) to build an image store from */
+  canBuild: boolean;
+  /** no image store yet, or fewer indexed keyframes than keyframe archives */
+  needed: boolean;
+  /** button label */
+  label: string;
+  /** button tooltip */
+  title: string;
+}
+
+/** Maps → "Build image store": can / should this run's image store be (re)built. */
+export function imageIndexState(m: MapEntry): ImageIndexState {
+  const st = m.image_store;
+  const raw = st?.raw;
+  const subdirs = m.subdirs ?? [];
+  const canBuild = raw ? raw.keyframe_archives > 0 || raw.tracks > 0 : subdirs.includes("keyframes") || subdirs.includes("tracks");
+  if (!canBuild) return {canBuild: false, needed: false, label: "", title: ""};
+  const indexed = !!st && m.has_image_store !== false && st.indexed !== false;
+  const archives = raw?.keyframe_archives ?? 0;
+  const kf = st?.frames?.keyframe ?? 0;
+  const behind = indexed && archives > kf;
+  const logs = raw ? `${raw.keyframe_archives} keyframe archives, ${raw.tracks} tracks` : "raw image logs";
+  if (!indexed)
+    return {canBuild, needed: true, label: "Build image store", title: `Index ${logs} into <run>/image_store on the machine that holds the run`};
+  return {
+    canBuild,
+    needed: behind,
+    label: behind ? "Update image store" : "Re-index images",
+    title: behind ? `${archives} keyframe archives, ${kf} indexed: index the rest` : `Rebuild <run>/image_store from ${logs} (updates in place)`,
+  };
+}
+
 const byName = (a: SearchHit, b: SearchHit) => a.map.name.localeCompare(b.map.name, undefined, {numeric: true});
 const byNewest = (a: SearchHit, b: SearchHit) => (mapTime(b.map) ?? -Infinity) - (mapTime(a.map) ?? -Infinity);
 

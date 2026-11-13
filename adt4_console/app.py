@@ -75,6 +75,7 @@ class Services:
     launch_deps: object = None  # fleet.launch_workflow.LaunchDeps (None → real)
     helpers: object = field(default_factory=_fleet_helpers)  # fleet_helpers (or a fake)
     launch_state: object = None  # launch_state.LaunchState
+    launch_memory: object = None  # launch_state.LaunchMemory (the form's last choices)
     teleop: TeleopService | None = None
     geo: GeoService | None = None
     missions: object = None  # mission.service.MissionService
@@ -85,6 +86,9 @@ class Services:
         None  # scene_repair.SceneRepair: scene change -> replan (API.md §20)
     )
     manipulation: ManipulationApprovalService | None = None
+    planner_state: object = (
+        None  # planner_state.PlannerState: what the planner believes
+    )
 
     def start(self) -> None:
         if self.settings.fleet_poll:
@@ -167,12 +171,17 @@ def build_services(
         default_robot=lambda: (settings.robots or fleet.robots() or ["euclid"])[0],
     )
     ros.manipulation = svc.manipulation
+    from .planner_state import PlannerState
+
+    svc.planner_state = PlannerState(settings, ros, svc.maps, fleet, hub)
+    ros.planner_state = svc.planner_state
     if helpers is not None:
         svc.helpers = helpers
     from . import launch_state
 
     svc.launch_state = launch_state.LaunchState(settings.launch_state_path)
     launch_state.restore(svc)
+    svc.launch_memory = launch_state.LaunchMemory(settings.launch_memory_path)
     from .edit_service import EditService
 
     svc.edits = EditService(settings, graph, hub, jobs,
@@ -384,6 +393,7 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
         mission,
         network,
         plan,
+        planner_state,
         quad,
         sam3,
         scene_repair,
@@ -393,7 +403,7 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
     )
 
     for mod in (fleet, launch, jobs, network, maps, graph, plan, live, chat, sam3, teleop, terminal,
-                geo, mission, quad, edit, change_detection, scene_repair, manipulation, ws):  # fmt: skip
+                geo, mission, quad, edit, change_detection, scene_repair, manipulation, planner_state, ws):  # fmt: skip
         app.include_router(mod.router)
     app.include_router(live.robots_router)
 

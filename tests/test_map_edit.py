@@ -18,6 +18,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
+from adt4_console.chat import ChatTurn
+
 from .conftest import NEO4J_AUTH, NEO4J_URI, make_client, port_open
 
 ge = pytest.importorskip("heracles.graph_edit")
@@ -408,17 +410,19 @@ def test_mission_records_map_revision_and_goes_stale(penn):
     ).json()
     rsym = room["changes"][-1]["symbol"]
     # the mission planner's chat context lists the region; an area by name becomes its polygon
-    svc.chat._ctx.value = {
-        "roster": [{"id": "quad1", "kind": "quad", "start": [FAR, FAR]}],
-        "areas": [],
-    }
-    assert "mission test yard" in svc.chat._mission_prompt(SRC)
+    svc.chat.turn = ChatTurn(
+        mission={
+            "roster": [{"id": "quad1", "kind": "quad", "start": [FAR, FAR]}],
+            "areas": [],
+        }
+    )
+    assert "mission test yard" in svc.chat._mission_prompt(SRC, turn=svc.chat.turn)
     args = {"name": "search the yard", "agents": [{"id": "quad1", "kind": "quad"}],
             "tasks": [{"id": "s", "agent": "quad1", "type": "explore_area", "area": "mission test yard",
                        "params": {"query": "crate"}},
                       {"id": "g", "agent": "quad1", "type": "goto", "target": rsym}]}  # fmt: skip
     events, out = svc.chat._run_tool(
-        "propose_mission", args, "search the yard", None, SRC, None
+        "propose_mission", args, "search the yard", None, SRC, None, turn=svc.chat.turn
     )
     assert "mission_id" in out, out
     m = svc.missions.get(out["mission_id"])

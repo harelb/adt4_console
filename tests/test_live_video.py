@@ -334,3 +334,105 @@ def test_mosaic_stream_passes_cameras_and_tiles(vlive):
     got = [msgpack.unpackb(f)["data"] for _, f in c.pop_all()]
     assert got[0]["tiles"] == [["frontleft", 0, 0, 320, 240, 7.0, 0.1]]
     assert relay.streams("euclid")["mosaic"]["params"]["cameras"] == cams[:3]
+
+
+# -- grace: a view that unmounts and comes back does not restart the stream ----
+
+
+def test_stop_with_grace_lingers_and_a_remount_reuses_the_stream(vlive):
+    client, svc, rx, relay = vlive
+    clock = relay.clock
+    base = "/api/robots/euclid/video/rgb"
+    asked = []
+    rx.request_keyframe = lambda robot, cam: asked.append((robot, cam)) or True
+    client.post(f"{base}/start", json={"viewer": "a"})
+    starts = [c for c in rx.video_calls if c[2]]
+    assert len(starts) == 1
+    for seq, key in [(0, True), (1, False), (2, False)]:
+        relay.on_frame("euclid", _frame(seq, key))
+    # the view unmounts (side-tab switch): deferred stop, nothing sent to the robot
+    r = client.post(f"{base}/stop", json={"viewer": "a", "grace": True}).json()
+    assert r["active"] is True and r["viewers"] == 0 and r["grace_s"] == relay.grace_s
+    assert not any(c[2] is False for c in rx.video_calls)
+    # the robot keepalive goes on while it lingers
+    n = len(rx.video_calls)
+    for _ in range(12):  # 6 s
+        clock.t += 0.5
+        relay.tick()
+    assert len(rx.video_calls) > n and all(c[2] for c in rx.video_calls[n:])
+    assert all(c[3] is False for c in rx.video_calls[n:])  # keepalives, not starts
+    assert relay.streams("euclid")["rgb"]["lingering_s"] == pytest.approx(4.0)
+    # the view remounts with the same parameters: same stream, no robot restart
+    c = svc.hub.add_client()
+    r = client.post(f"{base}/start", json={"viewer": "b"}).json()
+    assert r["changed"] is False
+    assert len([x for x in rx.video_calls if x[3] is True]) == 1  # still one start
+    assert asked == []  # the GOP cache covers it: no key frame needed
+    # ... and its subscription replays the cached GOP from the key frame on
+    svc.hub.subscribe(c, ["video/euclid/rgb"])
+    got = [msgpack.unpackb(f)["data"]["seq"] for _, f in c.pop_all()]
+    assert got == [0, 1, 2]
+    # well past the old grace deadline: still alive (a viewer holds it now)
+    for _ in range(10):
+        clock.t += 0.5
+        relay.keepalive("euclid", "rgb", "b")
+        relay.tick()
+    assert not any(x[2] is False for x in rx.video_calls)
+    assert svc.hub.gop("video/euclid/rgb")["frames"] == 3
+
+
+def test_grace_expires_then_the_stream_stops(vlive):
+    client, svc, rx, relay = vlive
+    clock = relay.clock
+    base = "/api/robots/euclid/video/rgb"
+    client.post(f"{base}/start", json={"viewer": "a"})
+    relay.on_frame("euclid", _frame(0, True))
+    client.post(f"{base}/stop", json={"viewer": "a", "grace": True})
+    clock.t += relay.grace_s - 0.5
+    relay.tick()
+    assert not any(c[2] is False for c in rx.video_calls)
+    clock.t += 1.0
+    relay.tick()
+    assert rx.video_calls[-1][:3] == ("euclid", "rgb", False)
+    assert relay.streams("euclid")["rgb"]["active"] is False
+    assert svc.hub.gop("video/euclid/rgb")["frames"] == 0
+    # keepalive after it stopped: 404 → the browser starts it afresh
+    assert client.post(f"{base}/keepalive", json={"viewer": "a"}).status_code == 404
+
+
+def test_stop_without_grace_still_stops_at_once(vlive):
+    client, svc, rx, relay = vlive
+    base = "/api/robots/euclid/video/rgb"
+    client.post(f"{base}/start", json={"viewer": "a"})
+    r = client.post(f"{base}/stop", json={"viewer": "a"}).json()
+    assert r == {"ok": True, "active": False}
+    assert rx.video_calls[-1][:3] == ("euclid", "rgb", False)
+
+
+def test_grace_stop_with_another_viewer_left_does_not_linger(vlive):
+    client, svc, rx, relay = vlive
+    base = "/api/robots/euclid/video/rgb"
+    client.post(f"{base}/start", json={"viewer": "a"})
+    client.post(f"{base}/start", json={"viewer": "b"})
+    r = client.post(f"{base}/stop", json={"viewer": "a", "grace": True}).json()
+    assert r == {"ok": True, "active": True}
+    assert relay.streams("euclid")["rgb"]["lingering_s"] == 0.0
+
+
+def test_remount_without_cached_gop_and_withheld_frames_request_a_keyframe(vlive):
+    client, svc, rx, relay = vlive
+    base = "/api/robots/euclid/video/rgb"
+    asked = []
+    rx.request_keyframe = lambda robot, cam: asked.append((robot, cam)) or True
+    client.post(f"{base}/start", json={"viewer": "a"})
+    assert asked == []  # a new stream starts with a key frame anyway
+    client.post(f"{base}/stop", json={"viewer": "a", "grace": True})
+    # nothing cached (no frame arrived yet): the remount asks for a key frame
+    client.post(f"{base}/start", json={"viewer": "b"})
+    assert asked == [("euclid", "rgb")]
+    # a delta after lost frames is withheld → ask for a key frame now
+    relay.on_frame("euclid", _frame(5, False, gap=True))
+    assert asked == [("euclid", "rgb")] * 2
+    relay.on_frame("euclid", _frame(6, True))
+    relay.on_frame("euclid", _frame(7, False))
+    assert len(asked) == 2

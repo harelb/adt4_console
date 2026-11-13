@@ -6,9 +6,10 @@ operator approves the exact query (``ChatService.execute_write``).  Results go
 to the model as JSON-able rows: points become ``[x, y, z]``, nodes their
 properties plus labels, capped at ``MAX_ROWS``.
 
-The prompt is heracles_agents' (system, scene-graph description, labelspace,
-Cypher interface), with the schema part read live from the database so it
-cannot drift from what heracles writes.
+The prompt's scene-graph and Cypher descriptions are heracles_agents'
+(heracles_agents.prompts, added by chat.ChatService._system); this module adds
+the console's system text, what its maps add (MAP_NOTES), and the schema read
+live from the database so it cannot drift from what heracles writes.
 """
 
 from __future__ import annotations
@@ -138,14 +139,24 @@ nodes): the operator sees a diff card and approves or rejects it. Use \
 propose_cypher_write (the exact query) only for changes those ops cannot express. Do \
 not claim a change happened until you are told it was approved.
 - To show what an object looks like, call show_object_images with its symbols.
-- Check "Object classes in the map" above before querying: it lists every class \
-that has objects. If an object is not in the map (its class or a synonym is not \
-in that list, or the operator asks to look in the robot's images), call \
-search_robot_images right away; do not try more Cypher spellings. Its candidates are not in the map; the \
-operator sees each candidate's image and approves or discards it.
-- To send a robot somewhere, call propose_goal; the operator approves goals in \
-the UI. Never claim a robot is moving. Prefer kind='pddl' with object/place \
-symbols in lower case without parentheses, e.g. (visited-object o12).
+- To find an object, look in the map FIRST: check "Object classes in the map" above \
+for its label and synonyms (e.g. panda bear -> teddy bear, stuffed animal, toy) and \
+run one run_cypher lookup by label / name (case-insensitive CONTAINS on the label and \
+its synonyms). Only when the map has none (or the operator asks to look in the \
+robot's images) call search_robot_images; do not try more than a couple of Cypher \
+spellings. Tell the operator which you did ("found in the map" / "not in the map, \
+searching the robot's images"). Image candidates are not in the map; the operator \
+sees each candidate's image and approves or discards it.
+- To send a robot somewhere or have it act on an object, call propose_goal; the \
+operator approves goals in the UI. Never claim a robot is moving. Use kind='pddl' \
+for everything the PDDL domain expresses (visit, inspect, pick up / hold, place, \
+drag) with object/place symbols in lower case without parentheses, e.g. \
+(visited-object o12), (holding euclid o1); kind='language' only for what PDDL \
+cannot express.
+- Robot names and platforms are in the fleet roster below: "spot" or "husky" is a \
+platform, not a robot name (when the operator says "it's a spot", they mean the \
+robot being discussed or the selected robot). Never guess a robot's platform or \
+arm from its name: use the roster.
 - Messages starting with [operator] report the operator's decisions in the UI (an \
 approved or rejected write, an approved or discarded image candidate). Acknowledge \
 them in one line and continue only what the operator asked for before (e.g. \
@@ -155,37 +166,32 @@ still on screen and the operator may approve more of them.
 - Keep answers short. When a count or distribution fits, an ASCII bar chart is welcome.
 """
 
-SCENE_GRAPH = """\
-The 3D scene graph (Hydra) is hierarchical. Layers, bottom to top: Objects \
-(symbols O<n>), Places (p<n>, 3D free space) and MeshPlaces (P<n>, 2D traversable \
-ground segments, with a semantic class such as road or sidewalk), Rooms (R<n>) and \
-Buildings (B<n>). An object's parent is a Place or MeshPlace. Rooms are also the \
-operator's named regions (class 'region', a name such as 'courtyard', a boundary \
-polygon): a region CONTAINS the places inside it and those places CONTAIN the objects, so \
-MATCH (r:Room {name: 'courtyard'})-[:CONTAINS*1..2]->(o:Object) lists its objects (always use *1..2: \
-on fused maps objects hang off mesh places). Several Rooms can share a name (e.g. three \
-'intersection' or three 'parking lot' rooms): tell them apart by their centre (r.center). Agent nodes (a<n>, or \
-a robot-prefixed symbol) are trajectory keyframes of the robots; Observation nodes \
-hold where/how an object was seen in a camera image.
-"""
-
-INTERFACE = """\
-Cypher conventions:
-- (a)-[:CONTAINS]->(b): b is contained in a, between layers (higher contains lower); \
-(a)-[:CONTAINS*]->(b) matches transitively. Within a layer: OBJECT_CONNECTED, \
-PLACE_CONNECTED, MESH_PLACE_CONNECTED, ROOM_CONNECTED, BUILDING_CONNECTED. \
+# What the console's maps add to heracles_agents' scene graph and Cypher
+# descriptions (heracles_agents.prompts, put before this in the prompt).
+MAP_NOTES = """\
+About the maps in this console (these notes win over the descriptions above):
+- Node symbols in the database have NO parentheses or quotes ("O12", not "O(12)"). Mesh \
+places can be P<n> (with a semantic class such as road or sidewalk) or t<n> (traversability \
+places, no class), depending on the map; the schema below says which this map has. Place \
+nodes (3D free space) are not planner targets: goals use MeshPlace and Object ids.
+- Rooms are also the operator's named regions (class 'region', a name such as 'courtyard', \
+a boundary polygon): a region CONTAINS the places inside it and those places CONTAIN the \
+objects, so MATCH (r:Room {name: 'courtyard'})-[:CONTAINS*1..2]->(o:Object) lists its objects \
+(always use *1..2: on fused maps objects hang off mesh places). Several Rooms can share a name \
+(e.g. three 'intersection' rooms): tell them apart by their centre (r.center).
+- Agent nodes (a<n>, or a robot-prefixed symbol) are trajectory keyframes of the robots; \
+Observation nodes hold where/how an object was seen in a camera image: \
 (o:Object)-[:HAS_OBSERVATION]->(:Observation).
 - center is a 3D POINT in metres (map frame), NOT a list: its coordinates are center.x, \
 center.y, center.z (center[1] is an error; results show it as [x, y, z]). North = +y, east = +x. \
-Use point.distance(a.center, b.center). \
 Robot positions are given below when known: point({x: .., y: .., z: ..}).
 - class is the semantic label name (see the labelspace).
-- Objects may carry admission_status: trusted_prior / admitted are confirmed, \
-candidate is unconfirmed, rejected was rejected. Leave out only rejected objects \
-unless asked otherwise, null-safe (older maps have no admission_status): \
+- Objects may carry admission_status: trusted_prior / admitted are confirmed, candidate is \
+unconfirmed, rejected was rejected. Leave out only rejected objects unless asked otherwise, \
+null-safe (older maps have no admission_status): \
 WHERE coalesce(o.admission_status, '') <> 'rejected'.
-- is_active and is_predicted are Hydra bookkeeping (still in the active mapping \
-window / predicted), NOT whether an object exists: never filter on them.
+- is_active and is_predicted are Hydra bookkeeping (still in the active mapping window / \
+predicted), NOT whether an object exists: never filter on them.
 - Do not use apoc functions. Labels starting with _ are bookkeeping.
 """
 

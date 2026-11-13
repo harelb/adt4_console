@@ -18,6 +18,8 @@ import {ChatPanel} from "./ChatPanel";
 import {LivePanel} from "./LivePanel";
 import {LiveOverlaysPanel} from "./LiveOverlays";
 import {RobotLegend} from "./RobotLegend";
+import {ClearPathsButton} from "./ClearPaths";
+import {GraspApprovalBadge} from "./ManipulationApproval";
 import {CameraPanel} from "./CameraPanel";
 import {DriveFullscreen, requestPageFullscreen} from "./DriveFullscreen";
 import {TeleopPanel} from "./TeleopPanel";
@@ -30,7 +32,7 @@ import {Icon} from "../components/Shell";
 import {BottomSheet} from "./BottomSheet";
 import {ControlsHelpButton, TopViewHint} from "./ControlsHelp";
 import {FloatingWindow, Splitter, TabPortal, TabSlot, useElementSize, usePaneLayout, useTabHosts, useTabTearOff} from "./Panes";
-import {CAM_H, FLOAT_MQ, LEFT, MIN_CANVAS, PANE_TABS, RIGHT, clampCameraH, clampWidths, dock, driveOn, popOut, raise, stripTabs, toggleDrive, updateWin, type PaneTab} from "./paneLayout";
+import {CAM_H, FLOAT_MQ, LEFT, MIN_CANVAS, PANE_TABS, RIGHT, clampCameraH, cameraPlacement, clampWidths, dock, driveOn, loadCamOverChat, saveCamOverChat, popOut, raise, stripTabs, toggleDrive, updateWin, type PaneTab} from "./paneLayout";
 import {RobotFocusPicker} from "./RobotFocusPicker";
 import {useFocusedRobot, useRobotRoster} from "./useRobotFocus";
 import {cycleFocus} from "./robotFocus";
@@ -48,6 +50,7 @@ import {AreaPopover} from "./AreaTools";
 import {ToolBanner} from "./ToolBanner";
 import {LoadBar} from "./LoadBar";
 import {autoDetail} from "../lib/meshPlan";
+import {useGraspCamera} from "../stores/graspCamera";
 
 type Tab = PaneTab;
 const TAB_TITLE: Record<Tab, string> = {inspect: "Inspect", mission: "Mission", map: "Map", plan: "Plan", teleop: "Teleop", chat: "Chat", images: "Images", live: "Live link", camera: "Camera"};
@@ -90,6 +93,11 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   const [leftOpen, setLeftOpenRaw] = useState(() => window.innerWidth > (missionMode ? 900 : 1100));
   const [rightOpen, setRightOpenRaw] = useState(() => window.innerWidth > 900);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [camOverChat, setCamOverChatRaw] = useState(loadCamOverChat);
+  const setCamOverChat = useCallback((on: boolean) => {
+    saveCamOverChat(on);
+    setCamOverChatRaw(on);
+  }, []);
   const viewerRef = useRef<HTMLDivElement>(null);
   const area = useElementSize(viewerRef);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -448,11 +456,47 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   // tabs; phone: picture-in-picture over the map) unless it floats
   // the mission planner shows the chat as its left pane
   const strip = stripTabs(drive, floats("camera")).filter(t => !(missionMode && t === "chat"));
-  const camPinned = drive && !isPhone && rightOpen && !floats("camera");
-  const camPip = drive && isPhone && !floats("camera");
   // the docked side panel shows the selected tab, or the first strip tab that is not floating
   const dockTab: Tab | null = strip.includes(tab) && !floats(tab) ? tab : (strip.find(t => !floats(t)) ?? null);
-  const mounted = (t: Tab) => floats(t) || (rightOpen && t === dockTab) || (t === "camera" && (camPinned || camPip));
+  // a grasp in progress (stores/graspCamera.ts) shows the hand camera: bring the
+  // Camera tab forward if no camera view is showing, and put the old tab back after
+  const graspRobot = useGraspCamera(s => s.session?.robot ?? null);
+  // the Chat tab gets the whole panel: the drive layout's pinned camera folds to
+  // a one-line strip while Chat is open (unless the operator asked for it there,
+  // remembered per browser; a grasp's hand camera always shows)
+  const {pinned: camPinned, folded: camFolded, pip: camPip, mounted: camMounted} = cameraPlacement({
+    drive,
+    isPhone,
+    rightOpen,
+    cameraFloats: floats("camera"),
+    dockTab,
+    camOverChat,
+    grasping: !!graspRobot,
+  });
+  const shown = (t: Tab) => floats(t) || (rightOpen && t === dockTab) || (t === "camera" && (camPinned || camPip));
+  // folded under Chat the camera stays mounted (its host is just detached from
+  // the page): hiding it must not stop / restart the video stream
+  const mounted = (t: Tab) => shown(t) || (t === "camera" && camMounted);
+  const cameraShown = shown("camera") || (v.driveFull && !!focused);
+  const graspTab = useRef<{tab: Tab; open: boolean} | null>(null);
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+  const rightOpenRef = useRef(rightOpen);
+  rightOpenRef.current = rightOpen;
+  useEffect(() => {
+    if (graspRobot && !cameraShown && !graspTab.current) {
+      graspTab.current = {tab: tabRef.current, open: rightOpenRef.current};
+      showTabRef.current("camera");
+    } else if (!graspRobot && graspTab.current) {
+      const prev = graspTab.current;
+      graspTab.current = null;
+      // only if the operator stayed on the Camera tab
+      if (tabRef.current === "camera" && !floatsRef.current("camera")) {
+        setTabRaw(prev.tab);
+        if (!prev.open) setRightOpen(false);
+      }
+    }
+  }, [graspRobot]); // eslint-disable-line react-hooks/exhaustive-deps
   const pop = useCallback(
     (t: Tab, at?: {x: number; y: number}) => {
       const r = viewerRef.current?.getBoundingClientRect();
@@ -589,6 +633,12 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   const camHead = (
     <header className="drive-cam-head">
       <span className="small muted">{focused ? `Camera · ${focused}` : "Cameras · all robots"}</span>
+      <span className="grow" />
+      {dockTab === "chat" && camOverChat && (
+        <button className="btn btn-xs" onClick={() => setCamOverChat(false)} title="Fold the camera away while Chat is open (remembered in this browser)" data-testid="cam-over-chat-hide">
+          Hide over chat
+        </button>
+      )}
       {wide && (
         <button className="pop-btn" onClick={() => pop("camera")} aria-label="Pop out Camera" title="Pop the camera out into a floating window">
           ⧉
@@ -713,6 +763,7 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
                 <Icon name="search" size={20} />
               </button>
               <span className="grow" />
+              <GraspApprovalBadge compact />
               {missionMode && hasMission && (
                 <button className="btn icon-only panel-btn" onClick={() => fitMission()} aria-label="Fit mission" title="Frame the open mission" data-testid="fit-mission">
                   ⌖
@@ -735,12 +786,14 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
               <SearchBox onPicked={showInspect} />
             </div>
             <div className="vtoolbar top-right" ref={topRightRef}>
+              <GraspApprovalBadge compact={narrow} />
               {missionMode && (
                 <button className="btn btn-sm panel-btn" disabled={!hasMission} onClick={() => fitMission()} title={hasMission ? "Frame the open mission: its agents, paths and areas (F)" : "Open a mission first"} data-testid="fit-mission">
                   {narrow ? "⌖" : "⌖ Fit mission"}
                 </button>
               )}
               {!narrow && follow}
+              {!narrow && <ClearPathsButton />}
               {!narrow && driveBtn}
               {!narrow && fullBtn}
               {camera}
@@ -751,6 +804,7 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
                 <ToolbarMore>
                   <RobotFocusPicker />
                   {follow}
+                  <ClearPathsButton />
                   {driveBtn}
                   {fullBtn}
                   <ScreenshotButton onDone={setToast} />
@@ -769,6 +823,7 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
             <RobotFocusPicker compact />
             <span className="grow" />
             <ScreenshotButton onDone={setToast} compact />
+            <ClearPathsButton compact />
             {follow}
             {driveBtn}
             {fullBtn}
@@ -830,6 +885,14 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
                 onReset={() => setLayout(l => ({...l, cameraH: CAM_H.def}))}
               />
             </>
+          )}
+          {camFolded && (
+            <div className="drive-cam-folded" data-testid="cam-folded">
+              <span className="small muted">{focused ? `Camera · ${focused}` : "Cameras"} · hidden while Chat is open</span>
+              <button className="btn btn-xs" onClick={() => setCamOverChat(true)} title="Show the camera above the chat (remembered in this browser)" data-testid="cam-over-chat-show">
+                Show camera
+              </button>
+            </div>
           )}
           {tabs}
           {rightBody}

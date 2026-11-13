@@ -3,6 +3,7 @@ import {frameAlignOf, useRobots} from "../stores/robots";
 import {AlignStatus} from "./RobotLegend";
 import {RelocDetails} from "./RelocDetails";
 import {ChangeDetectionControl} from "./ChangeDetection";
+import {AwcdChangesPanel} from "./AwcdChanges";
 import {useViewer} from "../stores/viewer";
 import {errorText, getJSON, postJSON} from "../lib/api";
 import {fmtRate} from "../lib/fuzzy";
@@ -141,9 +142,16 @@ export function LivePanel() {
   // a robot focus shows that robot's link only (fleet totals with "all robots")
   const robots = focused ? all.filter(([r]) => r === focused) : all;
   if (err && !all.length) return <ErrorBox error={err} />;
-  if (loaded && !all.length) return <Empty title="No live robots">fleetlink has not heard from any robot. Is the console running with fleetlink enabled?</Empty>;
+  if (loaded && !all.length)
+    return (
+      <div className="live-panel">
+        <AwcdChangesPanel />
+        <Empty title="No live robots">fleetlink has not heard from any robot. Is the console running with fleetlink enabled?</Empty>
+      </div>
+    );
   return (
     <div className="live-panel">
+      <AwcdChangesPanel />
       {focused && (
         <div className="row gap-sm">
           <FocusChip robot={focused} />

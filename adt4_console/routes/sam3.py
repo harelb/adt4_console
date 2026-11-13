@@ -12,7 +12,7 @@
 
 Chat's ``search_robot_images`` streams dry-run candidates; the operator's
 "Add to Neo4j" / "Discard" click lands here and is forwarded to the SAM3 query
-server, which writes Neo4j (and bumps both version counters) on commit.  The
+server, which writes Neo4j (and bumps the map version) on commit.  The
 console then refreshes its Neo4j source so the viewer shows the new object.
 """
 
@@ -102,9 +102,8 @@ def _refresh(svc, src: str | None, out: dict | None = None) -> list[str]:
     for sid in ids:
         try:
             if sid == target and out.get("symbol"):
-                graph.apply_change(
-                    sid, "sam3", out.get("state_version"), [out["symbol"]]
-                )
+                # openset_query answers the map version its commit bumped to
+                graph.apply_change(sid, "sam3", out.get("map_version"), [out["symbol"]])
             else:
                 graph.sources[sid].invalidate()
                 graph.notify_version(sid, "sam3")

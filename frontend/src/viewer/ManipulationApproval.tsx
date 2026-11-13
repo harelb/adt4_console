@@ -1,6 +1,9 @@
 import {useEffect, useRef, useState, type MouseEvent} from "react";
 import {ApiError, getJSON, postJSON} from "../lib/api";
 import {withToken} from "../lib/auth";
+import {bindGraspCamera, useGraspCamera} from "../stores/graspCamera";
+import {GraspCamToggle} from "./GraspCamBadge";
+import {pendingLabel, useManipulation} from "../stores/manipulation";
 import "./manipulationApproval.css";
 
 export interface ManipulationImage {
@@ -139,7 +142,6 @@ export function ManipulationApprovalHost() {
   const [pending, setPending] = useState<Pending>({available: false, error: null, requests: []});
   const [connected, setConnected] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   const [answered, setAnswered] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
   const [demoBusy, setDemoBusy] = useState(false);
@@ -165,12 +167,32 @@ export function ManipulationApprovalHost() {
     return () => { controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
   }, []);
 
+  // auto hand camera during a grasp: fed by robot plans + a timeout tick
+  useEffect(() => bindGraspCamera(), []);
+
   const requests = pending.requests.filter(request => !answered.has(request.id));
-  const active = requests.find(request => !dismissed.has(request.id));
+  // a request never opens the panel by itself: the operator opens it from a
+  // badge (here, the viewer toolbar, the robot's legend chip); the robot waits
+  const openId = useManipulation(s => s.openId);
+  const viewerBadges = useManipulation(s => s.badges);
+  const active = requests.find(request => request.id === openId);
+  const pendingKey = requests.map(request => `${request.id}:${request.robot}:${request.simulated ? 1 : 0}`).join(",");
+  useEffect(() => {
+    useManipulation.getState().setPending(requests.map(({id, robot, simulated}) => ({id, robot, simulated})));
+    // the open request was answered elsewhere or expired: close its panel
+    const st = useManipulation.getState();
+    if (st.openId && connected && !requests.some(request => request.id === st.openId)) st.close();
+  }, [pendingKey, connected]); // eslint-disable-line react-hooks/exhaustive-deps
+  // a new request from a grasping robot ends its hand-camera view (the dialog takes over)
+  useEffect(() => {
+    for (const request of requests) useGraspCamera.getState().requestSeen(request.robot, request.id);
+  }, [requests.map(request => request.id).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
   const respond = async (request: ManipulationRequest, body: ResponseBody) => {
     const result = await postJSON<ResponseResult>(
       `api/manipulation/requests/${encodeURIComponent(request.id)}/respond`, body);
     setAnswered(old => new Set([...old, request.id]));
+    if (useManipulation.getState().openId === request.id) useManipulation.getState().close();
+    if (result.status !== "simulated") void graspCamera(request, body);
     const kind = body.approve ? "approval" : body.walk_to ? "walk-to" : "rejection";
     setNotice(result.status === "simulated"
       ? "Simulation response recorded. No robot message was sent."
@@ -182,12 +204,16 @@ export function ManipulationApprovalHost() {
   const demo = async () => {
     setDemoBusy(true);
     try {
-      await postJSON("api/manipulation/demo");
+      const before = new Set(pending.requests.map(request => request.id));
+      const made = await postJSON<{id?: string} | null>("api/manipulation/demo");
       const state = await getJSON<Pending>("api/manipulation/pending");
       setPending(state);
       setConnected(true);
       setFetchError(null);
-      setDismissed(new Set());
+      // the test dialog opens at once (it is what the operator asked for)
+      const fresh = state.requests.find(request => request.id === made?.id)
+        ?? state.requests.find(request => request.simulated && !before.has(request.id));
+      if (fresh) useManipulation.getState().open({id: fresh.id});
     } catch (error) {
       setNotice(detail(error));
     } finally {
@@ -200,9 +226,11 @@ export function ManipulationApprovalHost() {
       <span>{notice}</span>
       <button type="button" className="icon-btn" aria-label="Dismiss manipulation status" onClick={() => setNotice(null)}>×</button>
     </div>}
-    {!active && requests.length > 0 && <button type="button" className="manipulation-pending btn btn-primary"
-      onClick={() => setDismissed(new Set())}>
-      Review manipulation approval ({requests.length})
+    {!active && requests.length > 0 && viewerBadges === 0 && <button type="button"
+      className="manipulation-pending btn btn-primary is-pulsing" data-testid="grasp-approval-open"
+      title="A robot is waiting for a grasp decision: open the approval panel"
+      onClick={() => useManipulation.getState().open()}>
+      {pendingLabel(requests)}
     </button>}
     {!active && requests.length === 0 && <button type="button" className="manipulation-demo btn"
       disabled={demoBusy} onClick={() => void demo()} title="Open a simulated manipulation request; no robot command is sent">
@@ -211,10 +239,25 @@ export function ManipulationApprovalHost() {
     {active && <ManipulationApprovalDialog key={active.id} request={active}
       available={connected && (pending.available || Boolean(active.simulated))}
       serviceError={fetchError || (!active.simulated ? pending.error : null)}
-      onDismiss={() => setDismissed(old => new Set([...old, active.id]))}
+      onDismiss={() => useManipulation.getState().close()}
       onRespond={body => respond(active, body)}
       headingSelection={WALK_TO_HEADING_SELECTION} />}
   </>;
+}
+
+/** Tell the grasp camera about an answer; approvals need the robot's camera list (hand?). */
+async function graspCamera(request: ManipulationRequest, body: ResponseBody) {
+  const kind = body.approve ? "approve" : body.walk_to ? "walk" : "reject";
+  let cams: string[] | null = null;
+  if (kind === "approve" && useGraspCamera.getState().enabled) {
+    try {
+      const d = await getJSON<{cameras: string[]} | string[]>(`api/robots/${encodeURIComponent(request.robot)}/cameras`);
+      cams = Array.isArray(d) ? d : (d.cameras ?? []);
+    } catch {
+      cams = null; // unknown: leave the camera alone
+    }
+  }
+  useGraspCamera.getState().answered({robot: request.robot, requestId: request.id, kind, cams});
 }
 
 export function ManipulationApprovalDialog({request, available = true, serviceError,
@@ -243,6 +286,9 @@ export function ManipulationApprovalDialog({request, available = true, serviceEr
   const [imageError, setImageError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Walk To moves the robot instead of grasping: it needs an explicit confirmation
+  const [walkConfirm, setWalkConfirm] = useState(false);
+  const [walkAck, setWalkAck] = useState(false);
   const close = useRef<HTMLButtonElement>(null);
   const dialog = useRef<HTMLDivElement>(null);
   const image = request.images[shown];
@@ -302,10 +348,13 @@ export function ManipulationApprovalDialog({request, available = true, serviceEr
       .finally(() => { depthQuery.current.busy = false; });
   };
 
+  // a changed point needs a fresh walk confirmation
+  useEffect(() => { setWalkConfirm(false); setWalkAck(false); }, [selection, standPoint]);
+
   const answer = async (kind: Answer) => {
     if (busy || !available || expired) return;
     if (kind === "approve" && !canApprove) return;
-    if (kind === "walk" && !canWalk) return;
+    if (kind === "walk" && (!canWalk || !walkAck)) return;
     setBusy(true);
     setError(null);
     try {
@@ -439,17 +488,49 @@ export function ManipulationApprovalDialog({request, available = true, serviceEr
         {error && <p className="manipulation-error" role="alert">{error}</p>}
       </div>
       <footer className="manipulation-foot">
-        <button type="button" className="btn" disabled={busy} onClick={onDismiss}>Close without response</button>
+        <div className="row gap">
+          <button type="button" className="btn" disabled={busy} onClick={onDismiss}>Close without response</button>
+          <GraspCamToggle />
+        </div>
         <div className="row gap">
           <button type="button" className="btn btn-danger" disabled={busy || !available || expired}
             onClick={() => void answer("reject")}>Reject grasp</button>
-          <button type="button" className="btn" disabled={!canWalk}
-            title="Do not grasp yet: walk toward the selected point, then take new images and ask again"
-            onClick={() => void answer("walk")}>Walk to selected point{walkLabel}</button>
+          <button type="button" className={`btn ${walkConfirm ? "on" : ""}`} disabled={!canWalk}
+            aria-expanded={walkConfirm}
+            title="Do not grasp yet: walk toward the selected point, then take new images and ask again (asks for confirmation)"
+            onClick={() => { setWalkConfirm(open => !open); setWalkAck(false); }}>Walk to selected point{walkLabel}</button>
           <button type="button" className="btn btn-primary" disabled={!canApprove}
             onClick={() => void answer("approve")}>{busy ? "Sending response…" : "Approve selected grasp"}</button>
         </div>
       </footer>
+      {walkConfirm && <div className="manipulation-walk-confirm" role="group" aria-label="Confirm Walk To" data-testid="walk-confirm">
+        <label><input type="checkbox" checked={walkAck} disabled={busy}
+          onChange={event => setWalkAck(event.target.checked)} /> I want {request.robot} to walk to this point (not grasp)</label>
+        <span className="muted">{walkLabel ? `Walk To${walkLabel}. ` : ""}The robot moves, then takes new images and asks again.</span>
+        <div className="row gap">
+          <button type="button" className="btn" disabled={busy} onClick={() => { setWalkConfirm(false); setWalkAck(false); }}>Cancel</button>
+          <button type="button" className="btn btn-primary" disabled={!canWalk || !walkAck}
+            onClick={() => void answer("walk")}>{busy ? "Sending response…" : "Send walk-to"}</button>
+        </div>
+      </div>}
     </div>
   </div>;
+}
+
+/** The viewer's pending-approval badge (toolbar). While one is mounted the
+ *  global floating button steps aside. */
+export function GraspApprovalBadge({compact = false}: {compact?: boolean}) {
+  const pending = useManipulation(s => s.pending);
+  const openId = useManipulation(s => s.openId);
+  useEffect(() => {
+    useManipulation.getState().addBadge(1);
+    return () => useManipulation.getState().addBadge(-1);
+  }, []);
+  if (!pending.length || openId) return null;
+  const label = pendingLabel(pending);
+  return <button type="button" className="btn btn-sm btn-primary grasp-approval-badge is-pulsing"
+    data-testid="grasp-approval-open" title="A robot is waiting for a grasp decision: open the approval panel"
+    aria-label={label} onClick={() => useManipulation.getState().open()}>
+    {compact ? `Grasp ${pending.length}` : label}
+  </button>;
 }

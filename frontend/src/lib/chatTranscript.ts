@@ -54,6 +54,27 @@ export function fmtLeft(s: number): string {
   return `${m}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 }
 
+/** The candidate card's countdown, labelled (the server holds a dry-run search
+ *  this long; approving after it fails): "expires in 0:57" / "expired". */
+export function fmtExpiry(s: number): string {
+  return s <= 0 ? "expired" : `expires in ${fmtLeft(s)}`;
+}
+
+/** The candidate card header's meta line: "score 0.94 · 1 of 8 · expires in 0:57"
+ *  (each part separated, so it never reads "1 of 80:57"); the countdown is left
+ *  out once the card was acted on (``left`` null). */
+export function candidateMeta(score: number, ord: {k: number; n: number} | null, left: number | null): string[] {
+  const parts = [`score ${score.toFixed(2)}`];
+  if (ord && ord.n > 1) parts.push(`${ord.k} of ${ord.n}`);
+  if (left !== null) parts.push(fmtExpiry(left));
+  return parts;
+}
+
+/** One extent as text: below 5 cm "<0.05" (a 0.0 m size reads as broken). */
+export function fmtExtent(v: number): string {
+  return v < 0.05 ? "<0.05" : v.toFixed(1);
+}
+
 /** A Cypher result cell as short text (points / lists / objects compact). */
 export function cellText(v: unknown): string {
   if (v === null || v === undefined) return "";
