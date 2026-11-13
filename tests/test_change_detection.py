@@ -1,6 +1,11 @@
 """Change detection start / stop / reset (API.md §19): the relocalization gate."""
 
-from adt4_console.routes.change_detection import hydra_matches, relocalized
+from adt4_console.routes.change_detection import (
+    RELOC_MIN_HYDRA_LCS,
+    hydra_matches,
+    hydra_optimization,
+    relocalized,
+)
 
 from .conftest import make_client
 
@@ -43,9 +48,10 @@ def test_relocalized_verdicts():
         {
             "frame_align": FA_OK,
             "reloc": {"prior_lcs": 3, "recent_jumps": [{"dxy": 4.0, "dyaw": 1}]},
+            "health": _hydra("6 / 8"),
         }
     )
-    assert ok["ok"] and "3 prior-map matches" in ok["reason"]
+    assert ok["ok"] and "6 accepted prior-map loop closures" in ok["reason"]
     sus = relocalized(
         {
             "frame_align": FA_OK,
@@ -53,6 +59,7 @@ def test_relocalized_verdicts():
                 "prior_lcs": 3,
                 "recent_jumps": [{"dxy": 4, "dyaw": 0}, {"dxy": 0.1, "dyaw": 45}],
             },
+            "health": _hydra("6 / 8"),
         }
     )
     assert not sus["ok"] and "suspect" in sus["reason"]
@@ -104,7 +111,10 @@ def test_routes_gate_start_until_relocalized(settings):
             and r["override"]
             and ros.calls[-2:] == [("euclid", "reset"), ("euclid", "start")]
         )
-        states["euclid"]["reloc"]["prior_lcs"] = 2
+        states["euclid"]["reloc"]["prior_lcs"] = 2  # ROMAN alone is not enough
+        r = client.post("/api/robots/euclid/change_detection/start", json={})
+        assert r.status_code == 409
+        states["euclid"]["health"] = _hydra("5 / 7")
         r = client.post("/api/robots/euclid/change_detection/start", json={}).json()
         assert r["ok"] and not r["override"] and ros.calls[-1] == ("euclid", "start")
         assert (
@@ -261,7 +271,7 @@ def test_hydra_multi_count_is_the_best_evidence():
         "hamilton",
     )
     assert r["ok"] and r["state"] == "relocalized" and r["source"] == "hydra_multi"
-    assert r["matches"] == 44 and "44 accepted prior-map matches" in r["reason"]
+    assert r["matches"] == 44 and "44 accepted prior-map loop closures" in r["reason"]
     assert "not relocalized" not in r["reason"]
     # bare nickname, and no reloc at all (older agent) still count
     r = relocalized(
@@ -269,8 +279,9 @@ def test_hydra_multi_count_is_the_best_evidence():
     )
     assert r["ok"] and r["matches"] == 14
     # even before the agent sends a usable transform
-    r = relocalized({"frame_align": {**FA_OK, "ok": False}, "health": _hydra("2 / 2")})
+    r = relocalized({"frame_align": {**FA_OK, "ok": False}, "health": _hydra("5 / 5")})
     assert r["ok"] and r["source"] == "hydra_multi"
+    assert r["hydra"] == {"accepted": 5, "total": 5, "needed": RELOC_MIN_HYDRA_LCS}
     # a positive count is still suspect after two big jumps
     jumpy = {
         **RELOC_ZERO,
@@ -295,23 +306,54 @@ def test_hydra_matches_parses_only_the_count_note():
     assert hydra_matches(other) is None
 
 
-def test_roman_counter_is_second():
+def test_roman_counter_alone_is_not_relocalized():
     r = relocalized(
         {"frame_align": FA_OK, "reloc": {**RELOC_ZERO, "prior_lcs": 3}},
         "hamilton",
     )
-    assert r["ok"] and r["source"] == "roman" and r["matches"] == 3
+    assert not r["ok"] and r["state"] == "unknown" and r["source"] == "roman"
+    assert r["roman"] == 3 and "no hydra_multi loop-closure count" in r["reason"]
 
 
-def test_map_odom_move_is_a_weaker_aligned_signal():
+def test_relocalized_needs_five_hydra_multi_loop_closures():
+    assert RELOC_MIN_HYDRA_LCS == 5
+    r = relocalized(
+        {"frame_align": FA_OK, "reloc": {**RELOC_ZERO, "prior_lcs": 9}, "health": _hydra("4 / 9")},
+        "hamilton",
+    )  # fmt: skip
+    assert not r["ok"] and r["state"] == "not_relocalized" and r["matches"] == 4
+    assert r["reason"].startswith("relocalizing: hydra_multi accepted 4 / 9")
+    assert "ROMAN: 9" in r["reason"] and r["roman"] == 9
+    r = relocalized(
+        {"frame_align": FA_OK, "reloc": RELOC_ZERO, "health": _hydra("5 / 9")},
+        "hamilton",
+    )
+    assert r["ok"] and r["state"] == "relocalized" and r["matches"] == 5
+
+
+def test_hydra_optimization_from_the_monitor_note():
+    h = _hydra("44 / 51")
+    h["nodes"][1]["notes"] += "; last optimization took 0.412 s, 12.3 s ago"
+    assert hydra_matches(h) == (44, 51)
+    assert hydra_optimization(h) == {"took_s": 0.412, "ago_s": 12.3}
+    r = relocalized({"frame_align": FA_OK, "reloc": RELOC_ZERO, "health": h})
+    assert r["ok"] and r["optimization"] == {"took_s": 0.412, "ago_s": 12.3}
+    first = _hydra("0 / 0")
+    first["nodes"][1]["notes"] += "; no optimization yet"
+    assert hydra_matches(first) == (0, 0) and hydra_optimization(first) is None
+    assert hydra_optimization(_hydra("3 / 4")) is None  # older hydra_multi: no timing
+    assert hydra_optimization(None) is None
+
+
+def test_map_odom_move_is_reported_but_not_relocalized():
     # from identity (agent started after the relocalization: no move of its own)
     r = relocalized({"frame_align": FA_MOVED, "reloc": RELOC_ZERO}, "hamilton")
-    assert r["ok"] and r["state"] == "aligned" and r["source"] == "map_odom"
-    assert "no match count" in r["reason"] and "26.1 m" in r["reason"]
+    assert not r["ok"] and r["state"] == "aligned" and r["source"] == "map_odom"
+    assert "no hydra_multi count" in r["reason"] and "26.1 m" in r["reason"]
     # since the agent's first sample
     moved = {**RELOC_ZERO, "total": {"dxy": 0.1, "dyaw": 12.0}}
     r = relocalized({"frame_align": FA_OK, "reloc": moved})
-    assert r["ok"] and r["state"] == "aligned" and "12°" in r["reason"]
+    assert not r["ok"] and r["state"] == "aligned" and "12°" in r["reason"]
     # optimizer noise is not a move
     noise = {**FA_OK, "T": [0.2, 0.1, 0, 1, 0, 0, 0]}
     assert (
@@ -557,7 +599,11 @@ class StartRos(FakeRos):
         return {"ok": True, "cmd": cmd, "message": cmd}
 
 
-RELOCALIZED = {"frame_align": FA_OK, "reloc": {"prior_lcs": 3}}
+RELOCALIZED = {
+    "frame_align": FA_OK,
+    "reloc": {"prior_lcs": 3},
+    "health": _hydra("6 / 8"),
+}
 NOT_RELOCALIZED = {"frame_align": FA_OK, "reloc": {"prior_lcs": 0}, "health": _hydra("0 / 3")}  # fmt: skip
 
 

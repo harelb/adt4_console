@@ -64,19 +64,24 @@ export function DirectRouteButtons({routes, yaws}: {routes: Record<string, numbe
   };
   return (
     <div className="direct-route small" data-testid="direct-route">
+      <div className="muted">Bypass omniplanner (confirm each):</div>
       {list.map(([robot, path]) => {
         const s = st[robot];
         return (
-          <div key={robot} className="row gap wrap">
+          <div key={robot} className="direct-route-row">
             {s?.state === "confirm" ? (
               <>
+                {/* the warning takes the button's place (a double click lands on
+                    text, not on the confirm); Cancel comes before the send */}
                 <span className="tone-warn" data-testid={`direct-route-warning-${robot}`}>{directRouteWarning(robot)}</span>
-                <button className="btn btn-xs btn-danger" onClick={() => void send(robot, path)}>
-                  Send to {robot}
-                </button>
-                <button className="btn btn-xs" onClick={() => put(robot, null)}>
-                  Cancel
-                </button>
+                <span className="direct-route-confirm">
+                  <button className="btn btn-xs" onClick={() => put(robot, null)}>
+                    Cancel
+                  </button>
+                  <button className="btn btn-xs btn-danger" onClick={() => void send(robot, path)}>
+                    Send to {robot}
+                  </button>
+                </span>
               </>
             ) : (
               <button className="btn btn-xs" disabled={s?.state === "busy"} title={`Send this previewed route straight to ${robot}'s executor (bypasses omniplanner)`} onClick={() => put(robot, {state: "confirm"})}>

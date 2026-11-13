@@ -41,6 +41,13 @@ def goal_tracks(request: Request, n: int = 20):
     return services(request).ros.goals.recent(n)
 
 
+@router.get("/goal_events")
+def goal_events(request: Request, n: int = 20):
+    """The latest "a robot's part of a goal ended" events (also pushed on the
+    hub as ``goal_event``): {goal, robot, stage, text, summary, kind, t}."""
+    return services(request).ros.goals.recent_notices(n)
+
+
 @router.get("/goal_tracks/{gid}")
 def goal_track(gid: str, request: Request):
     """One sent goal's live status: planned / received / executing / paused / done ...

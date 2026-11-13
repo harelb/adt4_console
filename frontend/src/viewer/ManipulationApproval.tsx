@@ -137,6 +137,16 @@ function detail(error: unknown): string {
   return error instanceof ApiError ? error.detail : error instanceof Error ? error.message : String(error);
 }
 
+/** The "Test manipulation dialog" button (a simulated request, no robot command) is a
+ *  developer tool: shown only with `?manipulation-demo` in the console URL. */
+export function manipulationDemoEnabled(): boolean {
+  try {
+    return new URLSearchParams(window.location.search).has("manipulation-demo");
+  } catch {
+    return false;
+  }
+}
+
 /** Global host: pending requests are independent of the currently selected console page. */
 export function ManipulationApprovalHost() {
   const [pending, setPending] = useState<Pending>({available: false, error: null, requests: []});
@@ -232,7 +242,7 @@ export function ManipulationApprovalHost() {
       onClick={() => useManipulation.getState().open()}>
       {pendingLabel(requests)}
     </button>}
-    {!active && requests.length === 0 && <button type="button" className="manipulation-demo btn"
+    {!active && requests.length === 0 && manipulationDemoEnabled() && <button type="button" className="manipulation-demo btn"
       disabled={demoBusy} onClick={() => void demo()} title="Open a simulated manipulation request; no robot command is sent">
       {demoBusy ? "Opening test…" : "Test manipulation dialog"}
     </button>}

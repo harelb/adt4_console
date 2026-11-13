@@ -17,7 +17,14 @@ on the hub.  The status is built only from what already reaches the console:
 * executor: ``~/action_result`` (per action, with plan_id), ``~/teleop_state``
   (``plan_executing`` / ``plan_paused``, no plan id) and ``~/runtime_guards``
   (lease owned / owner / known);
-* the console's own pause / resume / stop commands.
+* the console's own pause / resume / stop commands;
+* arrival by position, for a navigation-only plan (FOLLOW actions) of a robot
+  that reports no per-action results (a Husky): the robot's relocalized map
+  position within ``ARRIVE_M`` of the plan's last waypoint is "reached".
+
+When a robot's part of a goal ends (done / failed / preempted) or the goal's
+planning fails, ``notify`` gets one event (``goal_event`` on the hub): the
+console shows it as a toast and a line in the chat.
 
 Pure python (no ROS): ros_bridge feeds the ``on_*`` methods, tests feed fakes.
 """
@@ -40,6 +47,10 @@ IDLE_S = 8.0
 TELEOP_FRESH_S = 5.0
 MAX_GOALS = 100
 MAX_EVENTS = 40
+# a navigation-only plan of a robot without per-action results is reached this close
+# to its last waypoint (map frame, xy)
+ARRIVE_M = 1.5
+MAX_NOTICES = 50
 
 TERMINAL = ("done", "failed", "preempted")
 FAIL_WORDS = ("FAIL", "ABORT", "ERROR", "REJECT", "CANCEL")
@@ -52,6 +63,19 @@ def owner_text(owner: str) -> str:
     if "spotapp" in o or "android" in o or "tablet" in o.lower():
         return f"the tablet ({o})"
     return o
+
+
+def plan_end(plan: dict) -> tuple[float, float] | None:
+    """The (x, y) where a plan's last action takes the robot: the last FOLLOW
+    waypoint, else the last action's point; None without either."""
+    for a in reversed(plan.get("actions") or []):
+        path = a.get("path") or []
+        if path:
+            return float(path[-1][0]), float(path[-1][1])
+        p = a.get("robot_point") or a.get("point")
+        if p:
+            return float(p[0]), float(p[1])
+    return None
 
 
 class RobotTrack:
@@ -72,6 +96,10 @@ class RobotTrack:
         self.terminal: str | None = None  # done / failed / preempted
         self.detail = ""
         self.last_progress: float | None = None
+        self.end: tuple[float, float] | None = None  # the plan's last waypoint (xy)
+        self.nav_only = (
+            False  # every action is a FOLLOW (arrival can be seen by position)
+        )
         self.events: collections.deque = collections.deque(maxlen=MAX_EVENTS)
 
     @property
@@ -243,8 +271,12 @@ class Goal:
 
 
 class GoalTracker:
-    def __init__(self, publish=None, clock=time.time):
+    def __init__(self, publish=None, clock=time.time, notify=None):
         self._publish = publish  # (gid, view) -> None
+        self._notify = notify  # (event) -> None: a robot's part of a goal ended
+        self._announced: set[tuple] = set()
+        self._results_seen: set[str] = set()  # robots whose executor reports results
+        self.notices: collections.deque = collections.deque(maxlen=MAX_NOTICES)
         self.clock = clock
         self._goals: collections.OrderedDict[str, Goal] = collections.OrderedDict()
         self._ids = itertools.count(1)
@@ -299,6 +331,7 @@ class GoalTracker:
             while len(self._goals) > MAX_GOALS:
                 old = self._goals.popitem(last=False)[0]
                 self._sent.pop(old, None)
+                self._announced = {k for k in self._announced if k[0] != old}
             self._emit(g)
             return gid
 
@@ -319,6 +352,7 @@ class GoalTracker:
         t = self.clock() if t is None else t
         pid = str(plan.get("plan_id") or "")
         actions = [str(a.get("type") or "?") for a in plan.get("actions") or []]
+        end = plan_end(plan)
         with self._lock:
             owner = self._claimant(robot, t) or self._goal_manager_owner(robot, t)
             for g in self._live(t):
@@ -346,7 +380,7 @@ class GoalTracker:
                 elif owner is None and rt.terminal is None:
                     # not from a console goal: plan repair replanned it, or another sender
                     old = rt.plan_id
-                    self._attach(rt, pid, actions, t)
+                    self._attach(rt, pid, actions, t, end)
                     rt.event(
                         t,
                         f"replaced: plan {old[:8]} → {pid[:8]} (plan repair replan or another sender), {len(actions)} actions",
@@ -358,7 +392,7 @@ class GoalTracker:
                     rt = owner.robots[robot] = RobotTrack(robot, False)
                 if rt.plan_id != pid:
                     old = rt.plan_id
-                    self._attach(rt, pid, actions, t)
+                    self._attach(rt, pid, actions, t, end)
                     what = f"{len(actions)} action{'s' if len(actions) != 1 else ''} ({', '.join(actions) or 'none'})"
                     if old is None:
                         rt.event(t, f"planned: plan {pid[:8]}, {what}")
@@ -377,8 +411,10 @@ class GoalTracker:
                         )
                     self._emit(owner)
 
-    def _attach(self, rt: RobotTrack, pid, actions, t):
+    def _attach(self, rt: RobotTrack, pid, actions, t, end=None):
         rt.plan_id, rt.actions, rt.t_plan = pid, actions, t
+        rt.end = end
+        rt.nav_only = bool(actions) and all(a == "FOLLOW" for a in actions)
         rt.delivered = rt.received = None
         rt.received_how = ""
         rt.results = []
@@ -527,6 +563,7 @@ class GoalTracker:
         status = str(res.get("status") or "").upper()
         idx = int(res.get("action_index") or 0)
         with self._lock:
+            self._results_seen.add(robot)
             for g, rt in self._tracks(robot, t, pid):
                 self._received(rt, t, "action result")
                 rt.results.append({"action_index": idx, "status": status, "t": t})
@@ -559,6 +596,54 @@ class GoalTracker:
                         t, f"{what}: {status}" + (f" ({detail})" if detail else "")
                     )
                 self._emit(g)
+
+    def wants_pose(self, t=None) -> list[str]:
+        """Robots with a running navigation-only plan whose arrival only their
+        position can show (no per-action results from their executor)."""
+        t = self.clock() if t is None else t
+        with self._lock:
+            out = []
+            for g in self._live(t):
+                for r, rt in g.robots.items():
+                    if self._by_position(r, rt) and r not in out:
+                        out.append(r)
+            return out
+
+    def _by_position(self, robot, rt: RobotTrack) -> bool:
+        return (
+            rt.plan_id is not None
+            and rt.terminal is None
+            and rt.nav_only
+            and rt.end is not None
+            and robot not in self._results_seen
+        )
+
+    def on_pose(self, robot: str, xy, t=None) -> None:
+        """The robot's relocalized map-frame (x, y): a navigation-only plan of a
+        robot without per-action results is reached within ``ARRIVE_M`` of its
+        last waypoint."""
+        if xy is None:
+            return
+        t = self.clock() if t is None else t
+        x, y = float(xy[0]), float(xy[1])
+        with self._lock:
+            for g in self._live(t):
+                rt = g.robots.get(robot)
+                if rt is None or not self._by_position(robot, rt):
+                    continue
+                d = ((x - rt.end[0]) ** 2 + (y - rt.end[1]) ** 2) ** 0.5
+                if d <= ARRIVE_M:
+                    rt.terminal, rt.detail = (
+                        "done",
+                        f"reached the goal ({d:.1f} m from the plan's end)",
+                    )
+                    rt.last_progress = t
+                    rt.event(t, rt.detail)
+                    self._emit(g)
+
+    def recent_notices(self, n: int = 20) -> list[dict]:
+        with self._lock:
+            return list(self.notices)[-n:]
 
     def _received(self, rt: RobotTrack, t, how) -> bool:
         if rt.received is not None:
@@ -674,7 +759,42 @@ class GoalTracker:
                     self._emit(g)
 
     # ------------------------------------------------------------- output
+    def _announce(self, g: Goal) -> None:
+        """One event per robot whose part of ``g`` ended, and one for a goal
+        whose planning failed (it has no robot track then)."""
+        out = []
+        if g.planner in ("failed", "skipped", "send_failed"):
+            key = (g.id, "", "planner")
+            if key not in self._announced:
+                self._announced.add(key)
+                out.append((g.robot, "failed", g.overall()[1] or g.planner_error))
+        for r, rt in g.robots.items():
+            if rt.terminal is None or rt.plan_id is None:
+                continue
+            key = (g.id, r, rt.plan_id, rt.terminal)
+            if key in self._announced:
+                continue
+            self._announced.add(key)
+            out.append((r, rt.terminal, rt.detail))
+        for robot, stage, text in out:
+            ev = {
+                "goal": g.id,
+                "robot": robot,
+                "stage": stage,
+                "text": text,
+                "summary": g.summary,
+                "kind": g.kind,
+                "t": self.clock(),
+            }
+            self.notices.append(ev)
+            if self._notify is not None:
+                try:
+                    self._notify(ev)
+                except Exception:  # noqa: BLE001
+                    pass
+
     def _emit(self, g: Goal) -> None:
+        self._announce(g)
         if self._publish is None:
             return
         v = g.view()

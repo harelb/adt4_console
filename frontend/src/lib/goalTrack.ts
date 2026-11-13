@@ -123,10 +123,21 @@ export function stageLabel(stage: string): string {
   return LABEL[stage] ?? stage;
 }
 
-/** One robot's step, e.g. "received · executing 2/3 (GAZE)". */
+const ENDED = new Set(["done", "failed", "preempted"]);
+
+function clock(t: number): string {
+  const d = new Date(t * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** One robot's step, e.g. "received · executing 2/3 (GAZE)"; an ended step
+ *  says when ("done: all 2 actions succeeded · at 18:04:12"). */
 export function robotLine(r: RobotTrackView): string {
   const got = r.received != null ? "received" : r.delivered != null ? "delivered" : r.plan_id ? "not yet received" : "";
-  return [got && r.stage !== "done" && r.stage !== "no_plan" ? got : "", r.text].filter(Boolean).join(" · ");
+  const last = r.events.length ? r.events[r.events.length - 1].t : null;
+  const when = ENDED.has(r.stage) && last != null ? `at ${clock(last)}` : "";
+  return [got && r.stage !== "done" && r.stage !== "no_plan" ? got : "", r.text, when].filter(Boolean).join(" · ");
 }
 
 /** Stages worth telling the chat model about (once each). */

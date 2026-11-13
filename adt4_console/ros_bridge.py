@@ -885,6 +885,21 @@ class RosBridge:
                 {r: list(d.values()) for r, d in self._status_nodes.items()}
             )
 
+    # ------------------------------------------------- on-demand overlays (nav_viz)
+    def nav_subscribe(self, topic: str, msg_type: str, cb):
+        """Best-effort depth-1 subscription made on the executor thread; the
+        handle goes back to :meth:`nav_unsubscribe` (nav_viz.NavViz)."""
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+        cls = import_type(msg_type)
+        qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
+                         durability=DurabilityPolicy.VOLATILE)  # fmt: skip
+        return self.run(lambda: self.node.create_subscription(cls, topic, cb, qos))
+
+    def nav_unsubscribe(self, sub) -> None:
+        if self.available:
+            self.run(lambda: self.node.destroy_subscription(sub))
+
     def _subscribe_link_status(self) -> None:
         cls = import_type("std_msgs/msg/String")
         self.node.create_subscription(cls, LINK_STATUS_TOPIC, self._on_link_status, 10)
@@ -1481,12 +1496,20 @@ class RosBridge:
         if g is None:
             from .goal_tracker import GoalTracker
 
-            g = self.__dict__["_goals"] = GoalTracker(publish=self._publish_track)
+            g = self.__dict__["_goals"] = GoalTracker(
+                publish=self._publish_track, notify=self._publish_goal_event
+            )
         return g
 
     def _publish_track(self, gid: str, view: dict) -> None:
         if getattr(self, "hub", None) is not None:
             self.hub.publish(f"goal_track/{gid}", view)
+
+    def _publish_goal_event(self, ev: dict) -> None:
+        """A robot's part of a goal ended (reached / failed / preempted): one
+        ``goal_event`` frame (the console's toast and chat line)."""
+        if getattr(self, "hub", None) is not None:
+            self.hub.publish("goal_event", ev)
 
     @_logged_callback
     def _on_repair_alert(self, default_robot, kind: str, text: str) -> None:

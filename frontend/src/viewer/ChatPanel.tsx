@@ -2,6 +2,7 @@
 // the scene graph (heracles_agents chatdsg). Nothing changes the map or moves a
 // robot without the operator: writes, SAM3 objects and goals arrive as cards to
 // approve, and each decision goes back to the assistant as a note.
+import {eventLine, type GoalEvent} from "../lib/goalEvents";
 import {useEffect, useRef, useState} from "react";
 import {useViewer} from "../stores/viewer";
 import {getToken, withToken} from "../lib/auth";
@@ -49,7 +50,8 @@ export type ChatItem =
   | SceneEditItem
   | ImagesItem
   | ObjectCandidate
-  | AutoSendItem;
+  | AutoSendItem
+  | {type: "goal_event"; event: GoalEvent};
 
 /** A plan the chat sent by itself ("Auto-send to online robots"): local only. */
 export interface AutoSendItem {
@@ -802,6 +804,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           if (it.type === "tool") return <ToolCard key={i} it={it} />;
           if (it.type === "mission") return <MissionCard key={i} it={it} />;
           if (it.type === "autosend") return <AutoSendCard key={i} it={it} />;
+          if (it.type === "goal_event") return <GoalEventLine key={i} event={it.event} />;
           return <GoalCard key={i} it={it} robot={it.robot ?? planRobot} src={src ?? null} onSend={() => void sendProposal(i)} />;
         })}
         {busy && <Spinner label="thinking" />}
@@ -1149,22 +1152,6 @@ export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type:
             </>
           )}
         </span>
-        <span className="row gap-sm">
-          {it.kind === "pddl" && b.goal && (
-            <button className="btn btn-sm" disabled={pv?.busy} onClick={() => void preview()} title="Plan it here with omniplanner and draw each robot's route on the map">
-              {pv?.busy ? "planning…" : shown ? "Hide preview" : "Preview"}
-            </button>
-          )}
-          <button
-            className="btn btn-sm btn-primary"
-            disabled={Boolean(it.superseded) || Boolean(sent && sent.tone !== "err")}
-            onClick={onSend}
-            title={it.team ? "One goal for the whole team: the planner plans every robot at once and allocates the tasks" : undefined}
-            data-testid="goal-send"
-          >
-            Send to {sendLabel(robot, it.team)}
-          </button>
-        </span>
       </div>
       {it.superseded && <div className="small tone-warn">replaced by the combined goal below (one goal covers the whole team)</div>}
       {it.warning && (
@@ -1185,6 +1172,25 @@ export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type:
           ))}
         </div>
       )}
+      {/* Preview and Send on their own row under the goal, far apart: squeezed
+          beside the title they overlapped and a click on Preview sent the goal.
+          Preview's results go below this row, so nothing moves under the pointer. */}
+      <div className="goal-actions" data-testid="goal-actions">
+        {it.kind === "pddl" && b.goal && (
+          <button className="btn btn-sm goal-preview-btn" disabled={pv?.busy} onClick={() => void preview()} title="Plan it here with omniplanner and draw each robot's route on the map" data-testid="goal-preview-btn">
+            {pv?.busy ? "planning…" : shown ? "Hide preview" : "Preview"}
+          </button>
+        )}
+        <button
+          className="btn btn-sm btn-primary goal-send-btn"
+          disabled={Boolean(it.superseded) || Boolean(sent && sent.tone !== "err")}
+          onClick={onSend}
+          title={it.team ? "One goal for the whole team: the planner plans every robot at once and allocates the tasks" : undefined}
+          data-testid="goal-send"
+        >
+          Send to {sendLabel(robot, it.team)}
+        </button>
+      </div>
       {pv?.err && (
         <div className="small tone-err">
           preview: {pv.err}
@@ -1344,6 +1350,17 @@ function AutoSendCard({it}: {it: AutoSendItem}) {
           skipped: {it.skipped.map(s => `${s.name} (${s.reason})`).join(", ")}
         </div>
       )}
+    </div>
+  );
+}
+
+/** A robot reached / failed its goal (lib/goalEvents): one line in the log. */
+function GoalEventLine({event}: {event: GoalEvent}) {
+  const tone = event.stage === "done" ? "ok" : event.stage === "failed" ? "err" : "warn";
+  return (
+    <div className={`msg msg-goal-event tone-${tone}`} data-testid="goal-event-line" title={event.text}>
+      <span aria-hidden="true">{event.stage === "done" ? "✓" : event.stage === "failed" ? "✕" : "■"}</span> {eventLine(event)}
+      {event.text && <div className="small muted">{event.text}</div>}
     </div>
   );
 }
