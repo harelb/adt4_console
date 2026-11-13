@@ -1526,16 +1526,22 @@ transient_local). In router mode they are plain ROS.
 - **Gate:** start and reset_start return **409** `{detail, not_relocalized: true, reason}` unless the
   robot is relocalized or `override` is set. Stop and reset are never gated.
 - **What "relocalized" means on the server** (`relocalized()` →
-  `{ok, state, reason, source, matches}`), best evidence first:
-  1. hydra_multi's accepted inter-robot loop closures: the `N / M valid interrobot loop closures`
-     note of the hydra_multi row in the robot's C1 `health` table, N > 0 (`source: hydra_multi`);
-  2. fleetlink's ROMAN counter `reloc.prior_lcs` > 0 (`source: roman`);
-  3. `map -> odom` moved > 0.5 m or 2° from the initial estimate (`reloc.total`, or from identity):
-     `state: aligned`, no match count (`source: map_odom`).
-  A positive verdict with 2 or more big `map -> odom` jumps (> 3 m or 30°) is `suspect` (not ok).
-  `not_relocalized` only when there is no `map -> odom` transform, or hydra_multi reports 0
-  accepted; with no signal at all the state is `unknown` ("no relocalization signal from
-  <robot>"), not ok. Agents without `reloc` and no hydra_multi count: the transform decides.
+  `{ok, state, reason, source, matches, hydra, roman, optimization}`): hydra_multi has accepted
+  at least `RELOC_MIN_HYDRA_LCS` (5) inter-robot (prior-map) loop closures for the robot: the
+  `N / M valid interrobot loop closures` note of the hydra_multi row in the robot's C1 `health`
+  table (`source: hydra_multi`). Fewer is `not_relocalized` ("relocalizing: ... needs 5"; "no
+  prior-map match yet" at 0). With 2 or more big `map -> odom` jumps (> 3 m or 30°) a relocalized
+  robot is `suspect` (not ok). Without a hydra_multi count, fleetlink's ROMAN counter
+  `reloc.prior_lcs` (`source: roman`, state `unknown`) and a `map -> odom` move > 0.5 m or 2° from
+  the initial estimate (`source: map_odom`, state `aligned`) are reported but are not ok; with no
+  signal at all the state is `unknown` ("no relocalization signal from <robot>"). Agents without
+  `reloc` and no hydra_multi count (older agents, mapping sessions): the transform decides.
+  `hydra` = `{accepted, total, needed}` or null, `roman` = `reloc.prior_lcs` or null,
+  `optimization` = `{took_s, ago_s}` of hydra_multi's last optimization, from its note
+  (`...; last optimization took 0.412 s, 12.3 s ago`, Hydra `feat/hydra-multi-status-optimization`),
+  or null. The robot legend's status chip shows the same verdict with the hydra count
+  ("relocalized · hydra 7 LCs", "relocalizing · hydra 3/5 LCs"); clicking it lists the hydra and
+  ROMAN counts and the last optimization (how long ago, live, and how long it took).
 - **Fleet-wide reset** (`reset_all`), in this order: (1) the map: with `keep_applied` (default)
   plan repair's scene change writer is asked to keep what change detection already put in the map
   (`<planner_ns>/scene_change_writer/keep_detections`, heracles_ros; its change log entries move to
