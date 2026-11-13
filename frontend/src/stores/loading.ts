@@ -61,7 +61,8 @@ export function progressTask(id: string, done: number, total?: number | null) {
 
 export function endTask(id: string, ok = true) {
   const t = tasks.get(id);
-  if (!t) return;
+  // (ending an ended task again must not restart the finished batch's linger)
+  if (!t || t.state !== "active") return;
   t.state = ok ? "done" : "error";
   if (ok && t.total !== null) t.done = t.total;
   if (![...tasks.values()].some(x => x.state === "active")) doneAt = now();

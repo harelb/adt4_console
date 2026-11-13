@@ -213,6 +213,8 @@ export const useViewer = create<ViewerStore>((set, get) => ({
     } else {
       subs.get(id)?.();
       subs.delete(id);
+      // a hidden source loads nothing: its bars leave the load bar
+      for (const t of [`graph:${id}`, `mesh:${id}`, `traj:${id}`]) dropTask(t);
     }
   },
 
@@ -272,8 +274,12 @@ async function fetchTracked(path: string, task: string, label: string, accept?: 
 
 async function loadManifest(id: string, after: Promise<void>) {
   const task = `mesh:${id}`;
-  // until the tile loader takes over: the server may still be building the mesh
-  beginTask(task, "Mesh", "bytes", null, "preparing");
+  // until the tile loader takes over: the server may still be building the mesh.
+  // Only on a first load: a reload (every map version bump of a live source) keeps
+  // the mesh on screen, and the tile loader reports any tiles it has to fetch.
+  const had = useViewer.getState().sources[id]?.manifest;
+  const first = !had || !Object.keys(had.tiles ?? {}).length;
+  if (first) beginTask(task, "Mesh", "bytes", null, "preparing");
   let manifest: TileManifest | null = null;
   try {
     manifest = await getJSON<TileManifest>(`${srcPath(id)}/mesh/manifest`);
