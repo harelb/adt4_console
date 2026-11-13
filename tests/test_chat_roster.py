@@ -17,9 +17,9 @@ from adt4_console.ros_bridge import RosBridge
 HERE = Path(__file__).parent
 # ADT4_TOPOLOGY (e.g. the superproject's network_diagnostics/config/topology.yaml),
 # else the repo's test copy of it
-TOPOLOGIES = [
-    Path(p) for p in [os.environ.get("ADT4_TOPOLOGY")] if p
-] + [HERE / "fixtures" / "topology.yaml"]
+TOPOLOGIES = [Path(p) for p in [os.environ.get("ADT4_TOPOLOGY")] if p] + [
+    HERE / "fixtures" / "topology.yaml"
+]
 
 
 def topology() -> dict:
@@ -34,7 +34,9 @@ class Fleet:
         self.topo = topo
 
     def robots(self):
-        return sorted(n for n, m in self.topo["machines"].items() if m.get("role") == "robot")
+        return sorted(
+            n for n, m in self.topo["machines"].items() if m.get("role") == "robot"
+        )
 
 
 class Ros:
@@ -51,7 +53,9 @@ class Live:
         return ["euclid", "simbot"]
 
     def links(self):
-        return {"robots": {"euclid": {"connected": True}, "simbot": {"connected": False}}}
+        return {
+            "robots": {"euclid": {"connected": True}, "simbot": {"connected": False}}
+        }
 
     def cameras(self, robot):
         return ["frontleft", "hand_color_image"] if robot == "euclid" else []
@@ -59,7 +63,9 @@ class Live:
 
 def chat(live=None):
     c = ChatService(NS(llm=False), None, live, Ros(topology()))
-    c.turn = ChatTurn()  # the turn the tests' calls belong to (ChatService.stream makes one per turn)
+    c.turn = (
+        ChatTurn()
+    )  # the turn the tests' calls belong to (ChatService.stream makes one per turn)
     return c
 
 
@@ -79,7 +85,9 @@ def test_husky_has_no_arm_and_live_state_is_shown():
     assert rows["euclid"]["platform"] == "spot" and rows["euclid"]["arm"] is True
     assert rows["euclid"]["online"] is True and "hand camera" in rows["euclid"]["label"]
     huskies = [r for r in rows.values() if r["platform"] == "phoenix"]
-    assert huskies and all("NO arm" in r["label"] and r["arm"] is False for r in huskies)
+    assert huskies and all(
+        "NO arm" in r["label"] and r["arm"] is False for r in huskies
+    )
     assert rows["simbot"]["online"] is False  # live only, not in the topology
 
 
@@ -102,5 +110,7 @@ def test_map_first_then_images_and_platform_is_not_a_robot_name():
 
     assert "look in the map FIRST" in cypher_tools.SYSTEM
     assert "search_robot_images" in cypher_tools.SYSTEM
-    assert "is a \\\nplatform, not a robot name" not in cypher_tools.SYSTEM  # one line in the prompt
+    assert (
+        "is a \\\nplatform, not a robot name" not in cypher_tools.SYSTEM
+    )  # one line in the prompt
     assert "platform, not a robot name" in cypher_tools.SYSTEM

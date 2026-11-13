@@ -263,7 +263,9 @@ class VideoRelay:
                 else:
                     st.waiting_key = False
                     st.relayed += 1
-                    st.last = {k: frame.get(k) for k in ("codec", "width", "height", "seq")}
+                    st.last = {
+                        k: frame.get(k) for k in ("codec", "width", "height", "seq")
+                    }
         if withheld:
             # don't freeze every viewer until the next GOP boundary (up to 2 s)
             self._keyframe(st)

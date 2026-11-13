@@ -377,8 +377,15 @@ class FleetRos(FakeRos):
         self.cleared.append(list(robots))
         self.calls.append(("base", "clear"))
         if not self.base_ok:
-            return {"ok": False, "error": "no awcd_base_station clear_robots service on the base station"}
-        return {"ok": True, "message": "cleared euclid", "service": "/willow/awcd_base_station/clear_robots"}
+            return {
+                "ok": False,
+                "error": "no awcd_base_station clear_robots service on the base station",
+            }
+        return {
+            "ok": True,
+            "message": "cleared euclid",
+            "service": "/willow/awcd_base_station/clear_robots",
+        }
 
 
 class FakeSget:
@@ -425,9 +432,13 @@ def test_reset_all_keeps_map_changes_then_resets_every_robot_and_the_base(settin
         assert by["gauss"]["skipped"] and "offline" in by["gauss"]["error"]
         assert not by["hamilton"]["ok"] and not by["hamilton"]["skipped"]
         assert r["base"]["ok"]
-        assert r["ok"] is False  # hamilton failed; gauss (offline) alone would not fail it
+        assert (
+            r["ok"] is False
+        )  # hamilton failed; gauss (offline) alone would not fail it
         events = svc.scene_repair.state()["events"]
-        assert events[-1]["kind"] == "detections_reset" and "euclid" in events[-1]["text"]
+        assert (
+            events[-1]["kind"] == "detections_reset" and "euclid" in events[-1]["text"]
+        )
 
 
 def test_reset_all_offline_robots_and_no_base_station_are_not_failures(settings):
@@ -437,7 +448,9 @@ def test_reset_all_offline_robots_and_no_base_station_are_not_failures(settings)
         ros.change_detection_cmd = lambda robot, cmd: (ros.calls.append((robot, cmd)), {"ok": True, "message": "reset requested"})[1]  # fmt: skip
         svc.ros = ros
         svc.chat.sget = FakeSget(ros, running=False)
-        r = client.post("/api/change_detection/reset_all", json={"keep_applied": True}).json()
+        r = client.post(
+            "/api/change_detection/reset_all", json={"keep_applied": True}
+        ).json()
         assert r["ok"] and r["map"]["action"] == "none"
         assert ("writer", "keep_detections") not in ros.calls
         assert [x["robot"] for x in r["robots"] if x["skipped"]] == ["gauss"]
@@ -452,9 +465,14 @@ def test_reset_all_revert_skips_keep_and_unsupported_keep_is_refused(settings):
         r = client.post("/api/change_detection/reset_all", json={})
         assert r.status_code == 409 and r.json()["keep_unsupported"]
         assert ros.calls == []  # nothing reset
-        r = client.post("/api/change_detection/reset_all", json={"keep_applied": False}).json()
+        r = client.post(
+            "/api/change_detection/reset_all", json={"keep_applied": False}
+        ).json()
         assert r["map"]["action"] == "revert" and "reverted" in r["map"]["message"]
-        assert ("writer", "keep_detections") not in ros.calls and ("euclid", "reset") in ros.calls
+        assert ("writer", "keep_detections") not in ros.calls and (
+            "euclid",
+            "reset",
+        ) in ros.calls
 
 
 def test_reset_all_aborts_when_keeping_fails(settings):
@@ -463,7 +481,9 @@ def test_reset_all_aborts_when_keeping_fails(settings):
         ros = FleetRos()
         svc.ros = ros
         svc.chat.sget = FakeSget(ros, keep_ok=False)
-        r = client.post("/api/change_detection/reset_all", json={"robots": ["euclid"]}).json()
+        r = client.post(
+            "/api/change_detection/reset_all", json={"robots": ["euclid"]}
+        ).json()
         assert not r["ok"] and "Neo4j down" in r["error"]
         assert ros.calls == [("writer", "keep_detections")]  # no robot was reset
 
@@ -471,8 +491,12 @@ def test_reset_all_aborts_when_keeping_fails(settings):
 def test_reset_all_ros_off_is_503(settings):
     client, svc = make_client(settings)
     with client:
-        assert client.post("/api/change_detection/reset_all", json={}).status_code == 503
-        assert client.get("/api/change_detection/reset_all").json()["available"] is False
+        assert (
+            client.post("/api/change_detection/reset_all", json={}).status_code == 503
+        )
+        assert (
+            client.get("/api/change_detection/reset_all").json()["available"] is False
+        )
 
 
 def test_scene_repair_drops_only_detection_recommendations():
@@ -485,7 +509,10 @@ def test_scene_repair_drops_only_detection_recommendations():
                        "origin": "perception",
                        "changes": [{"source": "awcd/reconciled"}, {"source": "sget/chat"}]}  # fmt: skip
     assert sr.on_detections_reset("change detection reset") == 1
-    assert sr._recs["sr1"]["status"] == "superseded" and sr._recs["sr2"]["status"] == "pending"
+    assert (
+        sr._recs["sr1"]["status"] == "superseded"
+        and sr._recs["sr2"]["status"] == "pending"
+    )
     assert "1 pending recommendation" in sr.state()["events"][-1]["text"]
 
 

@@ -50,6 +50,7 @@ def _logged_callback(fn):
 
     return wrapper
 
+
 STATUS_TABLE_TOPIC = "/global/ros_system_monitor/table_in"
 # fleetlink-bridge (fleetlink mode): one std_msgs/String JSON per robot,
 # fleetlink.relay.RelayCore.status() — link state + per-topic acks
@@ -99,7 +100,9 @@ ENGINE_PLUGIN_MARK = {"grstaps": "grstaps", "fast_downward": "pddl_constrained"}
 ENGINE_NAME = {"grstaps": "GRSTAPS-X", "fast_downward": "Fast Downward"}
 
 
-def plugin_topic_candidates(names_and_types, planner_ns: str, engine: str = "grstaps") -> list[str]:
+def plugin_topic_candidates(
+    names_and_types, planner_ns: str, engine: str = "grstaps"
+) -> list[str]:
     """Topics of an engine's constrained-PDDL plugin in the ROS graph, independent
     of the console's own omniplanner config: ``.../<plugin>/pddl_goal`` whose
     plugin name has :data:`ENGINE_PLUGIN_MARK` (e.g. goal_manager's
@@ -119,6 +122,8 @@ def plugin_topic_candidates(names_and_types, planner_ns: str, engine: str = "grs
 
 def grstaps_topic_candidates(names_and_types, planner_ns: str) -> list[str]:
     return plugin_topic_candidates(names_and_types, planner_ns, "grstaps")
+
+
 # plan repair v3: goal_manager (master.launch.yaml, launch_omniplanner_repair)
 # takes operator goals on /<planner_ns>/commanded_goal, pauses the running plan,
 # skips replanning when it already satisfies the goal, else forwards to
@@ -136,7 +141,12 @@ CONSTRAINT_PREDICATES = (
     "use-robots",
 )  # before: GRSTAPS-X only
 # use-robots takes one or more robot names (None: at least one)
-CONSTRAINT_ARITY = {"forbidden-poi": 1, "forbidden-edge": 2, "before": 2, "use-robots": None}
+CONSTRAINT_ARITY = {
+    "forbidden-poi": 1,
+    "forbidden-edge": 2,
+    "before": 2,
+    "use-robots": None,
+}
 # per goal, never in a robot's standing set: before orders this goal's targets,
 # use-robots limits this goal to the robots it names (omniplanner multi-robot FD)
 PER_GOAL_CONSTRAINTS = ("before", "use-robots")
@@ -539,9 +549,13 @@ def lease_from_guards(msg) -> dict:
 # a PDDL predicate naming the robot that must achieve it: (visited-poi-by hamilton t1)
 GOAL_BY_ROBOT = re.compile(r"-by\s+([A-Za-z_][A-Za-z0-9_]*)")
 # predicates whose first argument is a robot (besides the -by forms)
-GOAL_ROBOT_ARG = re.compile(r"\(\s*(?:holding|at-place|at-object|at-poi|in-region)\s+([A-Za-z_][A-Za-z0-9_]*)")
+GOAL_ROBOT_ARG = re.compile(
+    r"\(\s*(?:holding|at-place|at-object|at-poi|in-region)\s+([A-Za-z_][A-Za-z0-9_]*)"
+)
 # robot-free tasks: any robot may do them, the planner allocates
-TEAM_TASK = re.compile(r"\(\s*(?:visited-(?:place|object|poi|region)|explored-region|safe|object-in-place)\s")
+TEAM_TASK = re.compile(
+    r"\(\s*(?:visited-(?:place|object|poi|region)|explored-region|safe|object-in-place)\s"
+)
 
 
 def use_robots(constraints) -> list[str]:
@@ -566,7 +580,10 @@ def goal_named_robots(goal: str) -> list[str]:
     """Robots a PDDL goal names: -by forms, holding / at-* first arguments."""
     out: list[str] = []
     text = goal or ""
-    for m in sorted([*GOAL_BY_ROBOT.finditer(text), *GOAL_ROBOT_ARG.finditer(text)], key=lambda m: m.start()):
+    for m in sorted(
+        [*GOAL_BY_ROBOT.finditer(text), *GOAL_ROBOT_ARG.finditer(text)],
+        key=lambda m: m.start(),
+    ):
         name = m.group(1).lower()
         if name not in out:
             out.append(name)
@@ -576,7 +593,11 @@ def goal_named_robots(goal: str) -> list[str]:
 def is_team_goal(goal: str, constraints=None) -> bool:
     """A PDDL goal the planner allocates across the fleet: it has a robot-free
     task, or names several robots / use-robots."""
-    return bool(TEAM_TASK.search(goal or "")) or bool(use_robots(constraints)) or len(goal_named_robots(goal)) > 1
+    return (
+        bool(TEAM_TASK.search(goal or ""))
+        or bool(use_robots(constraints))
+        or len(goal_named_robots(goal)) > 1
+    )
 
 
 LEASE_REPUBLISH_S = 5.0
@@ -909,11 +930,22 @@ class RosBridge:
         map epoch (all latched), for the Planner state view."""
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
-        latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        latched = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
         string = import_type("std_msgs/msg/String")
         n = self.node
-        n.create_subscription(string, self.robot_plan_states_topic(), self._on_robot_plan_states, latched)
-        n.create_subscription(string, f"/{self.planner_ns}/omniplanner_node/plan_robots", self._on_plan_robots, latched)
+        n.create_subscription(
+            string, self.robot_plan_states_topic(), self._on_robot_plan_states, latched
+        )
+        n.create_subscription(
+            string,
+            f"/{self.planner_ns}/omniplanner_node/plan_robots",
+            self._on_plan_robots,
+            latched,
+        )
         n.create_subscription(string, f"/{self.planner_ns}/omniplanner_node/map_epoch",
                               lambda m: self._planner_set(map_epoch=str(m.data)), latched)  # fmt: skip
 
@@ -942,7 +974,9 @@ class RosBridge:
         except ValueError:
             return
         if isinstance(robots, list):
-            self._planner_set(plan_robots=[str(r) for r in robots], plan_robots_t=time.time())
+            self._planner_set(
+                plan_robots=[str(r) for r in robots], plan_robots_t=time.time()
+            )
 
     def planner_view(self) -> dict:
         with self._lock:
@@ -977,8 +1011,12 @@ class RosBridge:
         if position is not None and not is_holding:
             point = import_type("geometry_msgs/msg/Point")
             fields["has_position"] = True
-            fields["position"] = point(x=float(position[0]), y=float(position[1]), z=float(position[2]))
-        return self.call_service(holding_service(robot), HOLDING_SERVICE_TYPE, fields, timeout=timeout)
+            fields["position"] = point(
+                x=float(position[0]), y=float(position[1]), z=float(position[2])
+            )
+        return self.call_service(
+            holding_service(robot), HOLDING_SERVICE_TYPE, fields, timeout=timeout
+        )
 
     def _on_scene_changes(self, msg) -> None:
         if self.scene_repair is None:
@@ -1042,7 +1080,10 @@ class RosBridge:
             except Exception:  # noqa: BLE001
                 return
             for name, _types in names:
-                if name.endswith(AWCD_RECONCILED_SUFFIX) and name not in self._awcd_topics:
+                if (
+                    name.endswith(AWCD_RECONCILED_SUFFIX)
+                    and name not in self._awcd_topics
+                ):
                     self._awcd_topics.add(name)
                     self.awcd.set_topic(name)
                     self.node.create_subscription(
@@ -1080,7 +1121,9 @@ class RosBridge:
         with self._link_cv:
             self._link_status[robot] = (time.time(), st)
             self._link_cv.notify_all()
-        topic = (st.get("topics") or {}).get(f"/{robot}/omniplanner_node/compiled_plan_out") or {}
+        topic = (st.get("topics") or {}).get(
+            f"/{robot}/omniplanner_node/compiled_plan_out"
+        ) or {}
         acked = int(topic.get("acked") or 0)
         # robot -> fleetlink's acked count of its compiled_plan_out (delivery)
         acks = self.__dict__.setdefault("_plan_acked", {})
@@ -1562,7 +1605,11 @@ class RosBridge:
         its use-robots constraint lets act."""
         out = [robot]
         names = list(GOAL_BY_ROBOT.findall(json.dumps(fields, default=str)))
-        goal = (fields.get("goal") or {}).get("pddl_goal") if isinstance(fields.get("goal"), dict) else fields.get("pddl_goal")
+        goal = (
+            (fields.get("goal") or {}).get("pddl_goal")
+            if isinstance(fields.get("goal"), dict)
+            else fields.get("pddl_goal")
+        )
         names += goal_named_robots(goal if isinstance(goal, str) else "")
         names += use_robots(fields.get("constraints"))
         for name in names:
@@ -1610,8 +1657,14 @@ class RosBridge:
                     fleetlink[f"fleetlink_{r}"] = self.link_status(r) is not None
                 except Exception:  # noqa: BLE001
                     fleetlink[f"fleetlink_{r}"] = False
-            goal = (fields.get("goal") or {}).get("pddl_goal") if isinstance(fields.get("goal"), dict) else fields.get("pddl_goal")
-            team = kind == "pddl" and is_team_goal(goal if isinstance(goal, str) else "", fields.get("constraints"))
+            goal = (
+                (fields.get("goal") or {}).get("pddl_goal")
+                if isinstance(fields.get("goal"), dict)
+                else fields.get("pddl_goal")
+            )
+            team = kind == "pddl" and is_team_goal(
+                goal if isinstance(goal, str) else "", fields.get("constraints")
+            )
             return self.goals.goal_sent(
                 robot, robots, kind, via=(extra or {}).get("via"), summary=goal_summary(fields),
                 platforms=fleetlink, direct=kind == "direct_path", team=team,
@@ -1640,7 +1693,14 @@ class RosBridge:
             self.goals.send_failed(gid, f"nothing subscribes to {topic}")
         self._last_goal_robot = robot
         extra = {k: v for k, v in (extra or {}).items() if v is not None}
-        out = {"ok": True, "topic": topic, "msg": fields, "subscribers": subs, "track": gid, **extra}
+        out = {
+            "ok": True,
+            "topic": topic,
+            "msg": fields,
+            "subscribers": subs,
+            "track": gid,
+            **extra,
+        }
         entry = {
             "t": time.time(),
             "kind": kind,
@@ -1676,7 +1736,9 @@ class RosBridge:
                 "before orders one goal's targets: send it with the goal (GRSTAPS-X), not as a standing constraint"
             )
         if any(f["predicate"] == "use-robots" for f in new):
-            raise ValueError("use-robots names the robots of one goal: send it with the goal, not as a standing constraint")
+            raise ValueError(
+                "use-robots names the robots of one goal: send it with the goal, not as a standing constraint"
+            )
         with self._lock:
             cur = self._plan[robot].constraints
             for f in new:
@@ -1771,7 +1833,9 @@ class RosBridge:
         if g is None:
             return self.find_plugin(ENGINE_KIND[engine])
         name = g["topic"].strip("/").split("/")[-2]
-        msg_type = PLUGIN_TYPES["Grstaps" if engine == "grstaps" else "MultiRobotPddlConstrained"][2]
+        msg_type = PLUGIN_TYPES[
+            "Grstaps" if engine == "grstaps" else "MultiRobotPddlConstrained"
+        ][2]
         return {"name": name, "kind": ENGINE_KIND[engine], "suffix": "pddl_goal",
                 "msg_type": msg_type, "topic": g["topic"]}  # fmt: skip
 
@@ -1838,9 +1902,15 @@ class RosBridge:
             else self.constraints(robot)
         )
         gm = self.goal_manager_subscribers() if route != "planner" else 0
-        if gm > 0 and engine == "fast_downward" and self.goal_manager_engine() == "grstaps":
+        if (
+            gm > 0
+            and engine == "fast_downward"
+            and self.goal_manager_engine() == "grstaps"
+        ):
             # plan repair here runs GRSTAPS-X: never let it plan a Fast Downward goal
-            return self._send_engine_direct(robot, goal, "fast_downward", active + per_goal, route)
+            return self._send_engine_direct(
+                robot, goal, "fast_downward", active + per_goal, route
+            )
         if gm > 0:
             fields = {
                 "goal": {"robot_id": robot, "pddl_goal": goal},
@@ -1879,13 +1949,20 @@ class RosBridge:
         # it must be loaded in the running session (the console's own config
         # may list it, but the planning session can run another one)
         live = self.live_plugin(engine)
-        p = self.engine_plugin(engine) if live is not None or getattr(self, "node", None) is None else None
+        p = (
+            self.engine_plugin(engine)
+            if live is not None or getattr(self, "node", None) is None
+            else None
+        )
         if p is None:
             raise LookupError(f"{name} is not loaded in this session and plan repair (goal_manager) runs "
                               f"{other}: pick {other}, or start a session that runs {name}")  # fmt: skip
         warning = (f"sent to {name} directly; plan repair (goal_manager) runs {other} in this session, "
                    "so this goal is not repair-tracked")  # fmt: skip
-        fields = {"goal": {"robot_id": robot, "pddl_goal": goal}, "constraints": list(constraints)}
+        fields = {
+            "goal": {"robot_id": robot, "pddl_goal": goal},
+            "constraints": list(constraints),
+        }
         return self._send(robot, "pddl", p.get("topic") or goal_topic(self.planner_ns, p), p["msg_type"], fields,
                           {"via": "planner", "engine": engine, "warning": warning,
                            "constraints": list(constraints), "plugin": p["name"]})  # fmt: skip
