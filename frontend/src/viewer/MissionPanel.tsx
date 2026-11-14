@@ -645,7 +645,8 @@ function MissionFileButtons({current}: {current: Mission | null}) {
   const input = useRef<HTMLInputElement>(null);
   const busy = useMission(s => s.busy === "save");
   return (
-    <span className="row gap-xs">
+    <div className="row gap-xs wrap">
+      <span className="small muted">Mission file:</span>
       {current ? (
         <a className="btn btn-xs" href={exportUrl(current.id)} download title="Download this mission as a JSON file (agents, tasks, areas, its chat and saved run)" data-testid="mission-export">
           Export
@@ -670,7 +671,7 @@ function MissionFileButtons({current}: {current: Mission | null}) {
           if (f) void importMission(f);
         }}
       />
-    </span>
+    </div>
   );
 }
 
@@ -732,8 +733,8 @@ function MissionPanelBody() {
               🗑
             </button>
           )}
-          <MissionFileButtons current={current} />
         </header>
+        <MissionFileButtons current={current} />
         {plannerOnly && (
           <div className="small muted" data-testid="planner-sim-only">
             Simulation only: nothing here reaches a robot. Use Deploy in Robot view to bind agents to robots and execute.
