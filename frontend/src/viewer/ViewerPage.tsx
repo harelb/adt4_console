@@ -37,7 +37,7 @@ import {RobotFocusPicker} from "./RobotFocusPicker";
 import {useFocusedRobot, useRobotRoster} from "./useRobotFocus";
 import {cycleFocus} from "./robotFocus";
 import {DetectionToast, ImageViewer, MissionPanel} from "./MissionPanel";
-import {fitMission, loadGeo, onMapClick, useMission} from "../stores/mission";
+import {fitMission, loadGeo, onMapClick, openMission, useMission} from "../stores/mission";
 import {enterMissionView, leaveMissionView} from "../stores/missionView";
 import {useMapShortcuts} from "./shortcuts";
 import {exitMapFull, toggleMapFull, useMapFull} from "./mapFull";
@@ -60,14 +60,15 @@ const CHAT_MIN_W = 300;
 export const NARROW_MAP_W = 700;
 /** the same on /mission, whose toolbar has the extra "Fit mission" button */
 export const NARROW_MISSION_MAP_W = 1000;
-/** the mission planner's side-panel tabs; the others are under "More" (desktop) */
+/** the mission planner's side-panel tabs. The live-robot tabs (Plan, Teleop, Live
+ *  link, Camera) are left out: the planner only simulates; the Robot view has them. */
 export const MISSION_TABS: Tab[] = ["mission", "map", "inspect", "images"];
 
-/** The side-panel strip on /mission (desktop): Mission | Map | Inspect | Images, the
- *  rest in the More menu; elsewhere (and on phones) every tab is on the strip. */
-export function splitTabs(strip: Tab[], missionMode: boolean, phone: boolean): {shown: Tab[]; more: Tab[]} {
-  if (!missionMode || phone) return {shown: strip, more: []};
-  return {shown: MISSION_TABS.filter(t => strip.includes(t)), more: strip.filter(t => !MISSION_TABS.includes(t))};
+/** The side-panel strip: on /mission only the mission tabs (desktop and phone),
+ *  elsewhere every tab. ``more`` is kept for the strip's overflow menu. */
+export function splitTabs(strip: Tab[], missionMode: boolean, _phone: boolean): {shown: Tab[]; more: Tab[]} {
+  if (!missionMode) return {shown: strip, more: []};
+  return {shown: MISSION_TABS.filter(t => strip.includes(t)), more: []};
 }
 
 /** ``mode="mission"``: the mission planner (route /mission) — the chat is the
@@ -87,7 +88,8 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   // pane layout: splitter widths + popped-out tabs (floating windows only on wide screens)
   const [layout, setLayout, resetLayout] = usePaneLayout();
   const wide = useMedia(FLOAT_MQ) && !isPhone;
-  const floats = useCallback((t: Tab) => wide && !!layout.windows[t], [wide, layout.windows]);
+  // a tab the page does not offer (/mission: the live-robot tabs) never floats
+  const floats = useCallback((t: Tab) => wide && !!layout.windows[t] && (!missionMode || MISSION_TABS.includes(t)), [wide, layout.windows, missionMode]);
   const floatsRef = useRef(floats);
   floatsRef.current = floats;
   const [leftOpen, setLeftOpenRaw] = useState(() => window.innerWidth > (missionMode ? 900 : 1100));
@@ -125,7 +127,8 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   const camPaneRef = useRef<HTMLElement>(null);
   const focused = useFocusedRobot();
   const roster = useRobotRoster();
-  const drive = driveOn(layout, focused);
+  // no drive layout (teleop + camera) in the mission planner
+  const drive = !missionMode && driveOn(layout, focused);
   // phones show one panel at a time, as a bottom sheet
   const phoneRef = useRef(isPhone);
   phoneRef.current = isPhone;
@@ -168,6 +171,14 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   const plans = useRobots(s => s.plan);
   const wsUp = useWsStatus(s => s.connected);
   const initDone = useRef(false);
+
+  // ?mission=<id>: a mission handed over by the mission planner (Deploy in Robot
+  // view) opens in the Mission tab, where its agents are bound and it executes
+  const handoff = params.get("mission");
+  useEffect(() => {
+    if (!handoff || missionMode) return;
+    void openMission(handoff, {fit: true}).then(() => showTab("mission"));
+  }, [handoff, missionMode, showTab]);
 
   // catalog + initial source selection (?src=... or the first prior/neo4j source)
   useEffect(() => {
@@ -544,7 +555,7 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
       case "inspect":
         return <Inspector onVisit={onVisit} onGoto={gotoNode} />;
       case "mission":
-        return <MissionPanel />;
+        return <MissionPanel plannerOnly={missionMode} />;
       case "map":
         return <MapEditPanel />;
       case "plan":
@@ -701,7 +712,9 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
 
   return (
     <div ref={viewerRef} className={`viewer ${leftOpen ? "left-open" : ""} ${rightOpen ? "right-open" : ""} ${isPhone ? "phone" : ""} ${narrow ? "map-narrow" : ""}`}>
-      {PANE_TABS.filter(mounted).map(t => (
+      {PANE_TABS.filter(t => !missionMode || MISSION_TABS.includes(t))
+        .filter(mounted)
+        .map(t => (
         <TabPortal key={t} host={hosts[t]}>
           {tabContent(t)}
         </TabPortal>
@@ -763,7 +776,7 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
                 <Icon name="search" size={20} />
               </button>
               <span className="grow" />
-              <GraspApprovalBadge compact />
+              {!missionMode && <GraspApprovalBadge compact />}
               {missionMode && hasMission && (
                 <button className="btn icon-only panel-btn" onClick={() => fitMission()} aria-label="Fit mission" title="Frame the open mission" data-testid="fit-mission">
                   ⌖
@@ -782,31 +795,35 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
               <button className="btn btn-sm panel-btn" onClick={() => setLeftOpen(o => !o)} aria-label="Toggle layers panel">
                 {leftOpen ? (narrow ? "Hide" : "Hide panel") : missionMode ? "Chat" : "Layers"}
               </button>
-              {!narrow && <RobotFocusPicker />}
+              {!narrow && !missionMode && <RobotFocusPicker />}
               <SearchBox onPicked={showInspect} />
             </div>
             <div className="vtoolbar top-right" ref={topRightRef}>
-              <GraspApprovalBadge compact={narrow} />
+              {!missionMode && <GraspApprovalBadge compact={narrow} />}
               {missionMode && (
                 <button className="btn btn-sm panel-btn" disabled={!hasMission} onClick={() => fitMission()} title={hasMission ? "Frame the open mission: its agents, paths and areas (F)" : "Open a mission first"} data-testid="fit-mission">
                   {narrow ? "⌖" : "⌖ Fit mission"}
                 </button>
               )}
-              {!narrow && follow}
-              {!narrow && <ClearPathsButton />}
-              {!narrow && driveBtn}
-              {!narrow && fullBtn}
+              {!narrow && !missionMode && follow}
+              {!narrow && !missionMode && <ClearPathsButton />}
+              {!narrow && !missionMode && driveBtn}
+              {!narrow && !missionMode && fullBtn}
               {camera}
               {!narrow && <ScreenshotButton onDone={setToast} />}
               {!narrow && <ControlsHelpButton mode={v.topDown ? "top" : "3d"} withLayout={wide} mission={missionMode} />}
               {!isPhone && mapFullBtn}
               {narrow && (
                 <ToolbarMore>
-                  <RobotFocusPicker />
-                  {follow}
-                  <ClearPathsButton />
-                  {driveBtn}
-                  {fullBtn}
+                  {!missionMode && (
+                    <>
+                      <RobotFocusPicker />
+                      {follow}
+                      <ClearPathsButton />
+                      {driveBtn}
+                      {fullBtn}
+                    </>
+                  )}
                   <ScreenshotButton onDone={setToast} />
                   <ControlsHelpButton mode={v.topDown ? "top" : "3d"} withLayout={wide} mission={missionMode} />
                 </ToolbarMore>
@@ -820,13 +837,17 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
         {/* the second phone toolbar row steps aside while a map tool needs the map */}
         {isPhone && !searchOpen && armed.owner === "none" && (
           <div className="vtoolbar phone-bar phone-bar2">
-            <RobotFocusPicker compact />
+            {!missionMode && <RobotFocusPicker compact />}
             <span className="grow" />
             <ScreenshotButton onDone={setToast} compact />
-            <ClearPathsButton compact />
-            {follow}
-            {driveBtn}
-            {fullBtn}
+            {!missionMode && (
+              <>
+                <ClearPathsButton compact />
+                {follow}
+                {driveBtn}
+                {fullBtn}
+              </>
+            )}
           </div>
         )}
         {camPip && (
@@ -901,7 +922,7 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
       {wide &&
         // stable DOM order (moving a window's node mid-click would swallow the click); stacking via z-index
         PANE_TABS.map(t => {
-          const w = layout.windows[t];
+          const w = floats(t) ? layout.windows[t] : undefined;
           const i = layout.order.indexOf(t);
           if (!w) return null;
           return (
@@ -970,8 +991,7 @@ function ToolbarMore({children}: {children: ReactNode}) {
   );
 }
 
-/** The side panel's "More" tabs on /mission (desktop): Plan, Teleop, Images,
- *  Live link, Camera. Shows the open one's name while it is selected. */
+/** The side panel's overflow tabs menu. Shows the open one's name while it is selected. */
 function TabMore({tabs, active, label, onPick}: {tabs: Tab[]; active: Tab | null; label: (t: Tab) => ReactNode; onPick: (t: Tab) => void}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);

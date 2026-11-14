@@ -274,8 +274,10 @@ describe("GRSTAPS-X region goals", () => {
       {name: "Dock", polygon: [[0, 0], [1, 0], [1, 1]]},
       {name: "Yard", polygon: [[0, 0], [2, 0], [2, 2]]},
     ];
-    const row = {key: "", name: "Yard", purpose: "search" as const, scope: "mission" as const, color: ""};
+    const row = {key: "", name: "Yard", purpose: "search" as const, scope: "mission" as const, color: "", index: 1};
     expect(regionGoalSymbol(row, areas)).toBe("area2");
+    // same names: told apart by their place in the list
+    expect(regionGoalSymbol({...row, index: 1}, [areas[0], {...areas[1], name: "Dock"}])).toBe("area2");
     expect(regionGoalSymbol({...row, scope: "map", region: {symbol: "R(6)"} as never}, areas)).toBe("r6");
     expect(regionGoalSymbol({...row, purpose: "no_go"}, areas)).toBeNull();
   });

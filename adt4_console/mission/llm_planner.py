@@ -370,21 +370,33 @@ def run_plan_tool(
     return mission_card(m, service.put(m), assumptions, planned)
 
 
+AMBIGUOUS = "ambiguous"
+
+
 def _area_lookup(regions, ctx: dict | None = None) -> dict:
-    """symbol / lower-case name -> area with a polygon: map areas (Room nodes) and
-    the operator's mission-only areas (``ctx["areas"]``)."""
-    out = {}
+    """symbol / lower-case name -> area with a polygon: map areas (Room nodes, by
+    symbol) and the operator's mission-only areas (``ctx["areas"]``, by area1,
+    area2, ...). Names may repeat (two "loading dock" Rooms): a name shared by
+    several areas maps to ``{"ambiguous": [symbols]}``."""
+    from .omni_planner import area_symbols
+
+    out, by_name = {}, {}
     for r in regions or []:
         if not r.get("polygon"):
             continue
         if r.get("symbol"):
             out.setdefault(r["symbol"], r)
         if (r.get("name") or "").strip():
-            out.setdefault(r["name"].strip().lower(), r)
-    for a in (ctx or {}).get("areas") or []:
-        if isinstance(a, dict) and a.get("polygon") and (a.get("name") or "").strip():
-            out.setdefault(a["name"].strip().lower(), {"symbol": None, "name": a["name"].strip(),
-                                                        "polygon": a["polygon"]})  # fmt: skip
+            by_name.setdefault(r["name"].strip().lower(), []).append((r.get("symbol"), r))
+    for sym, a in area_symbols((ctx or {}).get("areas")).items():
+        area = {"symbol": None, "name": a["name"].strip(), "polygon": a["polygon"]}
+        out.setdefault(sym, area)
+        if a["name"].strip():
+            by_name.setdefault(a["name"].strip().lower(), []).append((sym, area))
+    for name, hits in by_name.items():
+        if name in out:
+            continue
+        out[name] = hits[0][1] if len(hits) == 1 else {AMBIGUOUS: [s for s, _ in hits if s]}
     return out
 
 
@@ -393,16 +405,15 @@ _region_lookup = _area_lookup  # the old name (tests, callers)
 
 def merged_areas(ctx: dict | None, regions=None) -> list[dict]:
     """One list of named areas for the model: the map's (Room nodes, with a
-    symbol) and the operator's mission-only ones.  A mission area with a map
-    area's name is the same thing (listed once, as the map's)."""
-    out, seen = [], set()
+    symbol) and the operator's mission-only ones (area1, area2, ...). Names may
+    repeat: each area is its own entry, told apart by its symbol."""
+    out = []
     for r in regions or []:
         if not (r.get("polygon") or r.get("name")):
             continue
         out.append({"name": r.get("name") or r["symbol"], "symbol": r["symbol"], "scope": "map",
                     "members": r.get("members"),
                     "polygon": [[round(x, 1), round(y, 1)] for x, y in (r.get("polygon") or [])]})  # fmt: skip
-        seen.add((r.get("name") or "").strip().lower())
     from .omni_planner import area_symbols
 
     # area1, area2, ...: what a GRSTAPS-X goal names a drawn area by (numbered as
@@ -412,9 +423,8 @@ def merged_areas(ctx: dict | None, regions=None) -> list[dict]:
                                            if isinstance(a, dict) and len(a.get("polygon") or []) >= 3])}  # fmt: skip
     for a in (ctx or {}).get("areas") or []:
         name = str(a.get("name") or "").strip() if isinstance(a, dict) else ""
-        if not name or name.lower() in seen or not a.get("polygon"):
+        if not name or not a.get("polygon"):
             continue
-        seen.add(name.lower())
         out.append({"name": name, "scope": "mission", **({"symbol": symbol_of[id(a)]} if id(a) in symbol_of else {}),
                     "polygon": [[round(x, 1), round(y, 1)] for x, y in a["polygon"]]})  # fmt: skip
     return out
@@ -549,8 +559,12 @@ def run_tool(
     for t in args.get("tasks") or []:  # an area named as `area` becomes its polygon
         if isinstance(t, dict) and isinstance(t.get("area"), str):
             r = lookup.get(t["area"]) or lookup.get(t["area"].strip().lower())
+            if r is not None and AMBIGUOUS in r:
+                return [], {"error": f"task {t.get('id')}: several areas are called {t['area']!r} "
+                                     f"({', '.join(r[AMBIGUOUS])}). Name the one meant by its symbol, "
+                                     "or ask the operator which."}  # fmt: skip
             if r is None:
-                known = sorted({x["name"] or x["symbol"] for x in lookup.values()})
+                known = sorted({x["name"] or x["symbol"] for x in lookup.values() if AMBIGUOUS not in x})
                 return [], {"error": f"task {t.get('id')}: there is no area {t['area']!r}. Do not substitute "
                                      "another area: ask the operator to draw it on the map or to pick one of "
                                      f"{known or 'the areas they draw'}."}  # fmt: skip

@@ -142,13 +142,15 @@ describe("areas: popover, scope, one list", () => {
     act(() => button(h, "Save to map")!.click());
     expect(h.querySelector("[data-testid=area-map-warning]")?.textContent).toMatch(/staged until you publish/);
   });
-  it("rejects a name in use in either scope", async () => {
+  it("allows a name already in use (names may repeat)", async () => {
     useMapEdit.setState({regions: [region("R0", "Courtyard")]});
     useMission.setState({pendingArea: [[0, 0], [5, 0], [5, 5]]});
-    expect(await saveArea("courtyard", "search", "mission")).toMatch(/already an area/);
+    expect(await saveArea("  ", "search", "mission")).toMatch(/name/);
     expect(await saveArea("Lot", "no_go", "map")).toMatch(/mission only/);
-    expect(await saveArea("Lot", "search", "mission")).toBeNull();
-    expect(useMission.getState().areas.map(a => a.name)).toEqual(["Lot"]);
+    expect(await saveArea("courtyard", "search", "mission")).toBeNull();
+    useMission.setState({pendingArea: [[0, 0], [5, 0], [5, 5]]});
+    expect(await saveArea("courtyard", "search", "mission")).toBeNull();
+    expect(useMission.getState().areas.map(a => a.name)).toEqual(["courtyard", "courtyard"]);
   });
   it("map scope makes a Room through the edit API", async () => {
     const batch = vi.spyOn(editApi, "batch").mockResolvedValue({mutation_id: "m1", revision: 2, changes: [], summary: ["area Lot"], affected: [], map_version: 3, staged: false});
@@ -163,13 +165,17 @@ describe("areas: popover, scope, one list", () => {
     expect(useMission.getState().pendingArea).toBeNull();
     expect(useMission.getState().areas).toEqual([]); // not a mission area too
   });
-  it("lists both scopes once: a mission area named like a map area is the map's", () => {
-    const rows = areaRows([{name: "A1"}, {name: "Gate"}], [{id: "No-go 1"}], [region("R0", "a1")]);
+  it("lists both scopes; same names are separate areas, a staged one is the map's", () => {
+    const rows = areaRows([{name: "a1"}, {name: "Gate"}, {name: "Gate"}, {name: "Dock", staged: true}], [{id: "No-go 1"}], [region("R0", "a1"), region("R1", "a1")]);
     expect(rows.map(r => [r.name, r.scope, r.purpose])).toEqual([
       ["a1", "map", "search"],
+      ["a1", "map", "search"],
+      ["a1", "mission", "search"],
+      ["Gate", "mission", "search"],
       ["Gate", "mission", "search"],
       ["No-go 1", "mission", "no_go"],
     ]);
+    expect(new Set(rows.map(r => r.key)).size).toBe(rows.length);
   });
 });
 

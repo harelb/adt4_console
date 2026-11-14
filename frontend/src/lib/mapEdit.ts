@@ -92,6 +92,10 @@ export interface SnapshotInfo {
   /** heracles' map_epoch: changes on every full load of the map */
   map_epoch?: string;
   revision: number;
+  /** where it was written (newer consoles): the folder and its dsg.json */
+  dir?: string;
+  dsg?: string;
+  mesh?: boolean;
 }
 
 const base = (src: string) => `api/edit/${encodeURIComponent(src)}`;
@@ -111,7 +115,7 @@ export const editApi = {
   publish: (src: string, confirm: string) => postJSON<EditResult & {published: number}>(`${base(src)}/staged/publish`, {confirm}),
   discard: (src: string, index?: number) => deleteJSON<{count: number}>(`${base(src)}/staged${index === undefined ? "" : `/${index}`}`),
   snapshots: (src: string) => getJSON<{snapshots: SnapshotInfo[]}>(`${base(src)}/snapshots`),
-  snapshot: (src: string, name: string) => postJSON<SnapshotInfo>(`${base(src)}/snapshots`, {name}),
+  snapshot: (src: string, name: string, opts: {include_mesh?: boolean} = {}) => postJSON<SnapshotInfo>(`${base(src)}/snapshots`, {name, ...opts}),
   restore: (src: string, id: string) => postJSON<{job_id: string}>(`${base(src)}/snapshots/${encodeURIComponent(id)}/restore`),
   downloadUrl: (src: string, id: string) => `${base(src)}/snapshots/${encodeURIComponent(id)}/download`,
   deleteSnapshot: (src: string, id: string) => deleteJSON<{ok: boolean}>(`${base(src)}/snapshots/${encodeURIComponent(id)}`),

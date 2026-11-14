@@ -863,6 +863,13 @@ class ChatService:
     def _mission_ctx(turn: ChatTurn | None):
         return turn.mission if turn is not None else None
 
+    @staticmethod
+    def _sim_only(turn: ChatTurn | None) -> bool:
+        """The mission planner's chat (``mission_ctx.sim_only``): it plans for the
+        mission's own agents, so the live fleet (roster, what the robots hold) is
+        left out of the prompt and the goal cards."""
+        return bool(turn is not None and (turn.mission or {}).get("sim_only"))
+
     def _tool_rounds(self, turn: ChatTurn | None = None) -> int:
         if self._mission_ctx(turn) is not None:
             return MISSION_TOOL_ROUNDS
@@ -1099,7 +1106,7 @@ class ChatService:
                 f"Selected graph source: {src or 'none'}. {self._selected_text(robot)}"
                 + "\n\n"
                 + self._goal_text(cypher=False, turn=turn)
-                + self._roster_text(robot)
+                + ("" if self._sim_only(turn) else self._roster_text(robot))
                 + (
                     "\n\n" + self._mission_prompt(src, turn)
                     if self._mission_ctx(turn) is not None
@@ -1121,7 +1128,7 @@ class ChatService:
                 self._goal_text(cypher=True, turn=turn),
                 self._schema.text(csrc),
                 f"Database: {csrc.id}. {self._selected_text(robot)}"
-                + self._roster_text(robot),
+                + ("" if self._sim_only(turn) else self._roster_text(robot)),
             ]  # fmt: skip
             + [self._edit_note()]
             + ([SGET_TURN_NOTE] if turn is not None and turn.edit_only else [])
@@ -1422,7 +1429,11 @@ class ChatService:
         if warned:
             card["warning"] = (f"{', '.join(warned)} {'is' if len(warned) == 1 else 'are'} offline "
                                "(not connected): its tasks wait until it connects")  # fmt: skip
-        put_down = self._put_down_warning(goal, team, scoped=not unnamed)
+        put_down = (
+            ""
+            if self._sim_only(turn)
+            else self._put_down_warning(goal, team, scoped=not unnamed)
+        )
         if put_down:
             card["warning"] = "; ".join(x for x in (card.get("warning"), put_down) if x)
         if replaces:

@@ -10,6 +10,8 @@ import re
 import threading
 import time
 
+from pydantic import ValidationError
+
 from .model import NOT_LIVE, Mission
 from .paths import PlaceGraph
 from .planning import World, preview
@@ -594,3 +596,63 @@ class MissionService:
 
     def export(self, mid: str) -> str:
         return json.dumps(self.get(mid).model_dump(), indent=1)
+
+    BUNDLE_FORMAT = "adt4-missions"
+
+    def export_all(self, saved_only: bool = True) -> str:
+        """Every saved mission (``saved_only=False``: drafts too) in one JSON file:
+        ``{format, missions: [...]}``, oldest first; ``import_all`` reads it back."""
+        with self._lock:
+            ms = sorted(self.missions.values(), key=lambda m: m.created_at)
+            out = [m.model_dump() for m in ms if m.saved or not saved_only]
+        return json.dumps({"format": self.BUNDLE_FORMAT, "missions": out}, indent=1)
+
+    def import_all(self, data: object) -> dict:
+        """Several missions at once: a bundle from ``export_all``, or a JSON list of
+        exported missions. Each becomes a new saved mission (``import_mission``);
+        one that does not validate is skipped and reported, the rest still import.
+        Returns ``{imported: [{id, name}], errors: [{index, name, error}]}``."""
+        items = data.get("missions") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            raise ValueError("not a mission bundle: expected {missions: [...]} or a list")
+        imported, errors = [], []
+        for i, it in enumerate(items):
+            name = it.get("name") if isinstance(it, dict) else None
+            try:
+                r = self.import_mission(it)
+                imported.append({"id": r["mission"]["id"], "name": r["mission"]["name"]})
+            except ValueError as e:
+                errors.append({"index": i, "name": name, "error": str(e)})
+        return {"imported": imported, "errors": errors}
+
+    # fields an import does not take from the file: it is a new mission here
+    _IMPORT_DROP = ("id", "revision", "parent", "created_at")
+
+    def import_mission(self, data: object) -> dict:
+        """A mission from an exported JSON file (``export``, or the ``{mission:
+        ...}`` of ``GET /api/missions/{id}``), stored as a new saved mission: a
+        fresh id, so an import never replaces a mission here; its name (made
+        unique), agents, tasks, areas, chat and saved run come along. A graph
+        source this console does not have falls back to its default map.
+        Raises ``ValueError`` for anything that is not a mission."""
+        if isinstance(data, dict) and isinstance(data.get("mission"), dict):
+            data = data["mission"]
+        if not isinstance(data, dict):
+            raise ValueError("not a mission: expected a JSON object")
+        body = {k: v for k, v in data.items() if k not in self._IMPORT_DROP}
+        try:
+            m = Mission.model_validate(body)
+        except ValidationError as e:
+            first = e.errors(include_url=False)[0]
+            where = ".".join(str(x) for x in first.get("loc", ()))
+            raise ValueError(
+                f"not a valid mission: {where}: {first.get('msg')}"
+            ) from None
+        known = (
+            {s["id"] for s in self.graph.list()} if self.graph is not None else set()
+        )
+        if m.src and m.src not in known:
+            m.src = None  # put() picks the default map
+        m.saved = True
+        m.name = (m.name or "").strip() or "Imported mission"
+        return self.put(m)

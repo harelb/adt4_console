@@ -330,6 +330,7 @@ class EditService:
         meta = ge.export_snapshot(db, d, include_mesh=include_mesh)
         size = sum(p.stat().st_size for p in d.iterdir() if p.is_file())
         info = {"id": sid, "name": name, "src": src_id, "created_at": time.time(), "bytes": size,
+                "dir": str(d), "dsg": str(d / "dsg.json"),
                 "author": (author or {}).get("operator"), "mission": mission, **meta}  # fmt: skip
         (d / "info.json").write_text(json.dumps(info))
         if self.hub is not None:

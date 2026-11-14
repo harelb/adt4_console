@@ -3809,9 +3809,14 @@ input[type="checkbox"] {
 /* ---------- Cypher-first chat ---------- */
 .chat-bar {
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 .chat-bar .input {
   max-width: 220px;
+}
+.chat-bar select.input {
+  min-width: 7.5em;
 }
 .msg-note {
   align-self: flex-end;
@@ -4890,6 +4895,11 @@ input[type="checkbox"] {
 .chat-engine {
   padding: 2px 8px 4px;
   border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 8px;
 }
 .engine-pick label {
   display: inline-flex;
@@ -5266,6 +5276,27 @@ input[type="checkbox"] {
 }
 .reloc-pop-grid dd {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.map-reset {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.plain-list {
+  list-style: none;
+  margin: 2px 0 4px;
+  padding: 0;
+}
+.save-map-file {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
