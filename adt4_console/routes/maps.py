@@ -1354,6 +1354,113 @@ class ResetBody(BaseModel):
     target: str
 
 
+# --- clear what a planning session added, without reloading the map -------------------
+
+ADDED_WHERE = "o.source IS NOT NULL OR o.sam3_created IS NOT NULL"
+# observations the SAM3 image search wrote (on objects it created or merged into)
+SAM3_OBS_WHERE = "ob.mechanism = 'sam3_query' OR ob.detector = 'sam3'"
+OPEN_EDITS = (
+    "MATCH (g:GraphMutation {kind: 'map_edit'}) "
+    "WHERE g.undone_by IS NULL AND g.undo_of IS NULL RETURN count(g) AS c"
+)
+MAX_UNDO = 1000
+
+
+def clear_status(target) -> dict:
+    """What clearing ``target`` would remove: added objects (chat, SAM3 image search,
+    operator), SAM3 observations, and map edits not undone yet."""
+    q = lambda c: int(target.query(c)[0]["c"])  # noqa: E731
+    return {
+        "target": target.name,
+        "added_objects": q(f"MATCH (o:Object) WHERE {ADDED_WHERE} RETURN count(o) AS c"),
+        "sam3_observations": q(f"MATCH (ob:Observation) WHERE {SAM3_OBS_WHERE} RETURN count(ob) AS c"),
+        "map_edits": q(OPEN_EDITS),
+    }  # fmt: skip
+
+
+def undo_all_edits(edits, src_id: str, author: dict) -> tuple[int, str | None]:
+    """Undo map edits newest first with the edit service (each undo is its own audited
+    unit of work) until none is left; (undone, error that stopped it or None)."""
+    n = 0
+    for _ in range(MAX_UNDO):
+        try:
+            edits.undo(src_id, None, author=author, force=True)
+        except Exception as e:  # noqa: BLE001 — heracles EditError, "nothing to undo" ends it
+            msg = str(e)
+            return n, None if "nothing to undo" in msg else msg
+        n += 1
+    return n, f"stopped after {MAX_UNDO} undos"
+
+
+def remove_added_objects(target) -> dict:
+    """Delete the added objects and every SAM3 observation (also those merged into
+    map objects), plus the added objects' observations no map object shares."""
+    other_added = ADDED_WHERE.replace("o.", "other.")
+    rows = target.query(
+        f"MATCH (o:Object) WHERE {ADDED_WHERE} "
+        "OPTIONAL MATCH (o)-[:HAS_OBSERVATION]->(ob:Observation) "
+        "WHERE NOT EXISTS { MATCH (other:Object)-[:HAS_OBSERVATION]->(ob) "
+        f"WHERE other <> o AND NOT ({other_added}) }} "
+        "RETURN o.nodeSymbol AS s, o.class AS c, collect(DISTINCT elementId(ob)) AS obs"
+    )  # fmt: skip
+    obs = sorted({e for r in rows for e in r["obs"] if e})
+    if obs:
+        target.query(
+            "MATCH (ob:Observation) WHERE elementId(ob) IN $ids DETACH DELETE ob",
+            ids=obs,
+        )
+    sam3_obs = int(
+        target.query(
+            f"MATCH (ob:Observation) WHERE {SAM3_OBS_WHERE} RETURN count(ob) AS c"
+        )[0]["c"]
+    )
+    if sam3_obs:
+        target.query(f"MATCH (ob:Observation) WHERE {SAM3_OBS_WHERE} DETACH DELETE ob")
+    if rows:
+        target.query(f"MATCH (o:Object) WHERE {ADDED_WHERE} DETACH DELETE o")
+    return {"removed": [{"sym": r["s"], "class": r["c"]} for r in rows],
+            "observations": len(obs) + sam3_obs}  # fmt: skip
+
+
+@router.get("/clear_added")
+def clear_added_info(target: str, request: Request):
+    """What POST /clear_added would remove from ``neo4j:<target>``."""
+    try:
+        t = services(request).graph.neo4j(target)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from None
+    return clear_status(t)
+
+
+@router.post("/clear_added")
+def clear_added(body: ResetBody, request: Request):
+    """Put ``neo4j:<target>`` back to the loaded map without reloading it: undo every
+    map edit (newest first), then delete the objects the chat, the SAM3 image search
+    or an operator added, and the SAM3 observations. Seconds; keyframes, images and
+    their embeddings stay."""
+    svc = services(request)
+    try:
+        target = svc.graph.neo4j(body.target)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from None
+    before = clear_status(target)
+    author = {"operator": request.headers.get("x-operator") or "operator", "via": "clear_added",
+              "client": request.client.host if request.client else None}  # fmt: skip
+    undone, undo_error = (0, None)
+    if before["map_edits"] and svc.edits is not None:
+        undone, undo_error = undo_all_edits(svc.edits, target.id, author)
+    out = remove_added_objects(target)
+    affected = [r["sym"] for r in out["removed"]]
+    if undone or affected or out["observations"]:
+        out["version"] = bump_map_counters(target.db(), affected_ids=affected or None)
+        target.invalidate()
+        # the SAM3 server reads objects from Neo4j per query and its keyframe pool is
+        # unchanged, so it needs no reload
+        svc.graph.notify_version(target.id, "clear_added")
+    return {**out, "edits_undone": undone, "undo_error": undo_error, "before": before,
+            **clear_status(target)}  # fmt: skip
+
+
 @router.post("/reset")
 def reset(body: ResetBody, request: Request):
     """Wipe ``neo4j:<target>`` and load the map it was loaded from again: every object

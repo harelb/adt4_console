@@ -16,6 +16,7 @@ import {clearPreview, previewPddl, PreviewError, previewRobots, usePlanPreview, 
 import {FastDownwardDetails} from "./FastDownward";
 import {PlannerSchedule} from "./PlannerSchedule";
 import {EnginePicker} from "./EnginePicker";
+import {MapResetButton, neo4jTarget} from "./MapResetButton";
 import {GoalImages} from "./GoalImages";
 import {GoalStatus} from "./GoalStatus";
 import {NOTABLE, trackNote, useGoalTracks} from "../lib/goalTrack";
@@ -527,6 +528,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
     if (missionMode) closeMission();
   };
   const current = useMission(s => s.current);
+  const worldSrc = useMission(s => s.world?.src);
   const [saveName, setSaveName] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const doSave = async () => {
@@ -736,10 +738,27 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           </span>
         )}
         <span className="grow" />
-        {missionMode && current && saveName === null && (
-          <button className="btn btn-xs" onClick={() => setSaveName(current.name || "")} title="Keep this mission with its chat and the approvals of its simulated run, to replay or continue later">
-            {savedNote ? "✓ Saved" : current.saved ? "Save again" : "Save mission"}
-          </button>
+        {missionMode && saveName === null && (
+          <span className="row gap-xs">
+            <button
+              className="btn btn-xs btn-primary"
+              data-testid="chat-save"
+              disabled={!current}
+              onClick={() => void doSave()}
+              title={
+                current
+                  ? `Save "${current.name}" with its chat and the approvals of its simulated run, to replay, continue or export later`
+                  : "Plan a mission in the chat first, then save it"
+              }
+            >
+              {savedNote ? "✓ Saved" : current?.saved ? "Save again" : "Save mission"}
+            </button>
+            {current && (
+              <button className="btn btn-xs" data-testid="chat-rename" onClick={() => setSaveName(current.name || "")} title="Rename the mission and save it">
+                ✎
+              </button>
+            )}
+          </span>
         )}
         {missionMode && saveName !== null && (
           <span className="row gap">
@@ -773,6 +792,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
       {missionMode && (
         <div className="chat-engine">
           <EnginePicker label="planner" />
+          <MapResetButton target={neo4jTarget(worldSrc ?? src)} />
         </div>
       )}
       <div className="chat-log" ref={scroller}>
