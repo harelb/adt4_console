@@ -6,6 +6,7 @@
 // Satellite display lives here too (§14).
 import {create} from "zustand";
 import {ApiError, deleteJSON, errorText, getJSON, postJSON, putJSON} from "../lib/api";
+import {withToken} from "../lib/auth";
 import {fastDownwardOf, type FastDownwardInfo} from "../lib/fastDownward";
 import type {GeoInfo, TileLayer} from "../lib/geo";
 import {roundXY, startLockReason, type StartDrag} from "../lib/agentStart";
@@ -461,6 +462,36 @@ export async function saveCurrent(name: string, chat: {items: unknown[]; transcr
   } catch (e) {
     st().set({error: errorText(e)});
     return false;
+  }
+}
+
+/** The mission file the Export button downloads (`?token=` added where needed). */
+export function exportUrl(id: string): string {
+  return withToken(`api/missions/${enc(id)}/export`);
+}
+
+/** Import an exported mission file as a new saved mission and open it.
+ *  Returns false (with the reason in `error`) for a file that is not one. */
+export async function importMission(file: File): Promise<boolean> {
+  st().set({busy: "save", error: null});
+  try {
+    let data: unknown;
+    try {
+      data = JSON.parse(await file.text());
+    } catch {
+      throw new Error(`${file.name} is not a JSON file`);
+    }
+    const r = await postJSON<{mission: Mission; preview: Preview}>("api/missions/import", data);
+    st().set({current: r.mission, preview: r.preview, run: null});
+    follow(r.mission.id);
+    fitMission();
+    void refreshList();
+    return true;
+  } catch (e) {
+    st().set({error: `import: ${errorText(e)}`});
+    return false;
+  } finally {
+    st().set({busy: null});
   }
 }
 

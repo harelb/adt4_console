@@ -1183,3 +1183,41 @@ def test_preview_route_matches_omniplanner():
         )
         assert (mine[0], mine[-1]) == (omni[0], omni[-1])
         assert len(mine) == len(omni)
+
+
+def test_export_then_import_is_a_new_saved_mission(mission_settings, tmp_path):
+    """An exported mission file imports as a new saved mission with a fresh id
+    and a unique name; its tasks, chat and saved run come along, it survives a
+    restart, and a file from another console's map lands on this one's map."""
+    client, _ = make_client(mission_settings)
+    with client:
+        mid = client.post("/api/missions", json=_mission().model_dump()).json()[
+            "mission"
+        ]["id"]
+        chat = {"items": [{"type": "user", "text": "go"}], "transcript": []}
+        client.post(
+            f"/api/missions/{mid}/save", json={"name": "crate run", "chat": chat}
+        )
+        r = client.get(f"/api/missions/{mid}/export")
+        assert r.status_code == 200
+        assert 'filename="mission_crate_run.json"' in r.headers["content-disposition"]
+        exported = r.json()
+        assert exported["id"] == mid and exported["name"] == "crate run"
+
+        foreign = {**exported, "src": "neo4j:some-other-console", "revision": 7}
+        out = client.post("/api/missions/import", json=foreign)
+        assert out.status_code == 200, out.text
+        m = out.json()["mission"]
+        assert m["id"] != mid and m["saved"] and m["revision"] == 1
+        assert m["name"] == "crate run (2)"
+        assert m["tasks"] == exported["tasks"] and m["chat"] == chat
+        assert m["src"] == exported["src"]  # the default map here, not the foreign one
+        # the {mission: ...} shape of GET /api/missions/{id} imports too
+        wrapped = client.get(f"/api/missions/{mid}").json()
+        assert client.post("/api/missions/import", json=wrapped).status_code == 200
+        bad = client.post("/api/missions/import", json={"agents": "nope"})
+        assert bad.status_code == 400 and "not a valid mission" in bad.json()["detail"]
+        new_id = m["id"]
+    client2, _ = make_client(mission_settings)  # a console restart
+    with client2:
+        assert client2.get(f"/api/missions/{new_id}").json()["mission"]["saved"]

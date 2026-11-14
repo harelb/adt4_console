@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
@@ -49,6 +51,12 @@ def world(request: Request, src: str | None = None):
 def create(body: dict, request: Request):
     """A new mission (or a revision, when ``id`` names an existing one)."""
     return _svc(request).put(_mission(body))
+
+
+@router.post("/import")
+def import_mission(body: dict, request: Request):
+    """A mission from an exported JSON file, as a new saved mission (API.md §15)."""
+    return _get(_svc(request).import_mission, body)
 
 
 @router.get("/{mid}")
@@ -154,9 +162,11 @@ def abort(mid: str, request: Request):
 
 @router.get("/{mid}/export")
 def export(mid: str, request: Request):
-    data = _get(_svc(request).export, mid)
+    svc = _svc(request)
+    data = _get(svc.export, mid)
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", svc.get(mid).name).strip("_") or mid
     return Response(data, media_type="application/json",
-                    headers={"Content-Disposition": f'attachment; filename="mission_{mid}.json"'})  # fmt: skip
+                    headers={"Content-Disposition": f'attachment; filename="mission_{stem}.json"'})  # fmt: skip
 
 
 class OmniBody(BaseModel):

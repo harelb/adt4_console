@@ -37,7 +37,7 @@ import {RobotFocusPicker} from "./RobotFocusPicker";
 import {useFocusedRobot, useRobotRoster} from "./useRobotFocus";
 import {cycleFocus} from "./robotFocus";
 import {DetectionToast, ImageViewer, MissionPanel} from "./MissionPanel";
-import {fitMission, loadGeo, onMapClick, useMission} from "../stores/mission";
+import {fitMission, loadGeo, onMapClick, openMission, useMission} from "../stores/mission";
 import {enterMissionView, leaveMissionView} from "../stores/missionView";
 import {useMapShortcuts} from "./shortcuts";
 import {exitMapFull, toggleMapFull, useMapFull} from "./mapFull";
@@ -168,6 +168,14 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   const plans = useRobots(s => s.plan);
   const wsUp = useWsStatus(s => s.connected);
   const initDone = useRef(false);
+
+  // ?mission=<id>: a mission handed over by the mission planner (Deploy in Robot
+  // view) opens in the Mission tab, where its agents are bound and it executes
+  const handoff = params.get("mission");
+  useEffect(() => {
+    if (!handoff || missionMode) return;
+    void openMission(handoff, {fit: true}).then(() => showTab("mission"));
+  }, [handoff, missionMode, showTab]);
 
   // catalog + initial source selection (?src=... or the first prior/neo4j source)
   useEffect(() => {
@@ -544,7 +552,7 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
       case "inspect":
         return <Inspector onVisit={onVisit} onGoto={gotoNode} />;
       case "mission":
-        return <MissionPanel />;
+        return <MissionPanel plannerOnly={missionMode} />;
       case "map":
         return <MapEditPanel />;
       case "plan":

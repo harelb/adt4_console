@@ -4,7 +4,8 @@
 // has), and quad detections to approve. Missions are written in the chat
 // (propose_mission); omniplanner can plan ground-only ones. Map editing is the
 // Map tab (MapEditPanel.tsx).
-import {useEffect, useMemo, useRef, useState} from "react";
+import {createContext, useContext, useEffect, useMemo, useRef, useState} from "react";
+import {useNavigate} from "react-router";
 import {Badge, Empty, Segmented, Spinner, Toggle} from "../components/ui";
 import {withToken} from "../lib/auth";
 import {fmtLonLat, liveAnchorText, mapToLonLat, mapToUtm, utmZone} from "../lib/geo";
@@ -19,7 +20,9 @@ import {
   deleteMission,
   dropTask,
   execute,
+  exportUrl,
   fitMission,
+  importMission,
   MAX_AGENTS,
   missionRoutes,
   openMission,
@@ -73,7 +76,12 @@ function fmtS(s: number | null | undefined): string {
   return m ? `${m}:${String(Math.round(s % 60)).padStart(2, "0")}` : `${s.toFixed(0)} s`;
 }
 
+/** True in the mission planner (route /mission): it only simulates. Binding
+ *  agents to robots, Execute and direct routes are the Robot view's (/viewer). */
+const PlannerOnly = createContext(false);
+
 function Roster() {
+  const plannerOnly = useContext(PlannerOnly);
   const {roster, current, geo, snapStarts, startUndo, run} = useMission();
   const live = Object.keys(useRobots(s => s.state));
   const robotColor = useRobotColor3D();
@@ -133,11 +141,11 @@ function Roster() {
                 <option value="husky">husky</option>
                 <option value="quad">quad</option>
               </select>
-              <select className="input input-xs" value={a.binding ?? ""} aria-label="Real robot" title="Bind to a real robot for execution (simulated otherwise)" onChange={e => updateAgent(a.id, {binding: e.target.value || null})}>
+              {!plannerOnly && <select className="input input-xs" value={a.binding ?? ""} aria-label="Real robot" title="Bind to a real robot for execution (simulated otherwise)" onChange={e => updateAgent(a.id, {binding: e.target.value || null})}>
                 <option value="">sim only</option>
                 {a.kind === "quad" ? <option value="penn_quad">Penn quad</option> : live.map(r => <option key={r} value={r}>{r}</option>)}
                 {a.binding && a.binding !== "penn_quad" && !live.includes(a.binding) && <option value={a.binding}>{a.binding}</option>}
-              </select>
+              </select>}
               </span>
             </div>
             <StartEditor agent={a} mode={coord} />
@@ -154,7 +162,7 @@ function Roster() {
           <button className="btn btn-xs" onClick={() => addAgent(kind)}>
             Add agent
           </button>
-          {live
+          {!plannerOnly && live
             .filter(r => !roster.some(a => a.binding === r))
             .slice(0, MAX_AGENTS - roster.length)
             .map(r => (
@@ -241,13 +249,15 @@ function Timeline({run}: {run: RunState | null}) {
 }
 
 function Transport({run}: {run: RunState | null}) {
+  const plannerOnly = useContext(PlannerOnly);
+  const navigate = useNavigate();
   const [auto, setAuto] = useState(false);
   const {current, preview} = useMission();
   const live = run?.kind === "live";
   const errors = preview?.issues.filter(i => i.level === "error").length ?? 0;
   const bound = current?.agents.filter(a => a.binding) ?? [];
   const [confirming, setConfirming] = useState(false);
-  const why = disabledWhy(errors, bound.length, !!run && !live);
+  const why = disabledWhy(errors, bound.length, !!run && !live, plannerOnly);
   return (
     <>
     <div className="mission-transport">
@@ -301,7 +311,17 @@ function Transport({run}: {run: RunState | null}) {
           {run.finished ? " ✓" : ""}
         </span>
       )}
-      {live ? (
+      {plannerOnly ? (
+        <button
+          className="btn btn-sm"
+          disabled={!current || errors > 0}
+          onClick={() => current && navigate(`/viewer?mission=${encodeURIComponent(current.id)}`)}
+          title={errors ? "Fix the errors first" : "Open this mission in the Robot view, where you bind its agents to robots and execute it"}
+          data-testid="deploy-in-viewer"
+        >
+          Deploy in Robot view →
+        </button>
+      ) : live ? (
         <button className="btn btn-sm btn-danger" onClick={() => void abort()}>
           Abort
         </button>
@@ -332,7 +352,7 @@ function Transport({run}: {run: RunState | null}) {
         {why}
       </div>
     )}
-    {!live && errors === 0 && <DirectRouteButtons routes={missionRoutes(current, preview)} />}
+    {!plannerOnly && !live && errors === 0 && <DirectRouteButtons routes={missionRoutes(current, preview)} />}
     </>
   );
 }
@@ -370,8 +390,10 @@ export function fmtWhen(sec: number, now: Date = new Date()): string {
   return d.toDateString() === now.toDateString() ? time : `${d.toLocaleDateString([], {month: "short", day: "numeric"})} ${time}`;
 }
 
-/** Why Simulate / Execute are disabled, shown under the transport row (null: both usable). */
-export function disabledWhy(errors: number, bound: number, simulating: boolean): string | null {
+/** Why Simulate / Execute are disabled, shown under the transport row (null: both usable).
+ *  ``plannerOnly``: the mission planner, which simulates and hands deployment to the Robot view. */
+export function disabledWhy(errors: number, bound: number, simulating: boolean, plannerOnly = false): string | null {
+  if (plannerOnly) return errors > 0 ? `Simulate and Deploy are off until the ${errors === 1 ? "error" : `${errors} errors`} below ${errors === 1 ? "is" : "are"} fixed.` : null;
   if (errors > 0) return `Simulate and Execute are off until the ${errors === 1 ? "error" : `${errors} errors`} below ${errors === 1 ? "is" : "are"} fixed.`;
   if (!bound && !simulating) return "Execute is off: bind agents to real robots in Agents first (simulation works without).";
   return null;
@@ -610,7 +632,50 @@ export function AgentIdInput({id, taken}: {id: string; taken: string[]}) {
   );
 }
 
-export function MissionPanel() {
+export function MissionPanel({plannerOnly = false}: {plannerOnly?: boolean} = {}) {
+  return (
+    <PlannerOnly.Provider value={plannerOnly}>
+      <MissionPanelBody />
+    </PlannerOnly.Provider>
+  );
+}
+
+/** Export the open mission as a JSON file, or import one as a new saved mission. */
+function MissionFileButtons({current}: {current: Mission | null}) {
+  const input = useRef<HTMLInputElement>(null);
+  const busy = useMission(s => s.busy === "save");
+  return (
+    <span className="row gap-xs">
+      {current ? (
+        <a className="btn btn-xs" href={exportUrl(current.id)} download title="Download this mission as a JSON file (agents, tasks, areas, its chat and saved run)" data-testid="mission-export">
+          Export
+        </a>
+      ) : (
+        <button className="btn btn-xs" disabled title="Pick a mission to export it">
+          Export
+        </button>
+      )}
+      <button className="btn btn-xs" disabled={busy} onClick={() => input.current?.click()} title="Load an exported mission file as a new saved mission" data-testid="mission-import">
+        Import…
+      </button>
+      <input
+        ref={input}
+        type="file"
+        accept=".json,application/json"
+        hidden
+        data-testid="mission-import-file"
+        onChange={e => {
+          const f = e.target.files?.[0];
+          e.target.value = "";
+          if (f) void importMission(f);
+        }}
+      />
+    </span>
+  );
+}
+
+function MissionPanelBody() {
+  const plannerOnly = useContext(PlannerOnly);
   const s = useMission();
   const {current, preview, run, list, error, geo, layers, satellite, satOpacity} = s;
   const grid = useViewStyle(v => v.grid);
@@ -667,7 +732,13 @@ export function MissionPanel() {
               🗑
             </button>
           )}
+          <MissionFileButtons current={current} />
         </header>
+        {plannerOnly && (
+          <div className="small muted" data-testid="planner-sim-only">
+            Simulation only: nothing here reaches a robot. Use Deploy in Robot view to bind agents to robots and execute.
+          </div>
+        )}
         <Segmented
           ariaLabel="Planner"
           value={planner}

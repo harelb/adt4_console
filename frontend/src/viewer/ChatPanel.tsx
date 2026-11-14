@@ -437,7 +437,8 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
       // the mission planner's context: agents, drawn areas, the open mission (propose_mission)
       const ms = useMission.getState();
       // auto-send: plan for the robots that are online now, whatever the Mission panel holds
-      const auto = useAutoSend.getState().on;
+      // never in the mission planner: it only simulates
+      const auto = !missionMode && useAutoSend.getState().on;
       const engineNow = useEngines.getState().engine;
       const autoFleet = auto ? autoSendRobots(engineNow) : null;
       const withMission = auto || missionMode || (ms.chatOn && (ms.roster.length > 0 || !!ms.current));
@@ -725,11 +726,11 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           </select>
         )}
         <ChatEnginePicker onOpen={() => void loadUsage()} />
-        <label className="row gap-xs small chat-autosend" title="Plans the chat makes are sent at once to the robots that are online (fleetlink up, executor status, not E-stopped); sending takes a Spot's lease">
+        {!missionMode && <label className="row gap-xs small chat-autosend" title="Plans the chat makes are sent at once to the robots that are online (fleetlink up, executor status, not E-stopped); sending takes a Spot's lease">
           <input type="checkbox" checked={autoOn} onChange={e => setAutoSend(e.target.checked)} data-testid="auto-send-toggle" />
           Auto-send to online robots
-        </label>
-        {autoOn && (
+        </label>}
+        {!missionMode && autoOn && (
           <span data-testid="auto-send-on">
             <Badge tone="warn">AUTO-SEND ON</Badge>
           </span>
@@ -802,7 +803,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           if (it.type === "tool") return <ToolCard key={i} it={it} />;
           if (it.type === "mission") return <MissionCard key={i} it={it} />;
           if (it.type === "autosend") return <AutoSendCard key={i} it={it} />;
-          return <GoalCard key={i} it={it} robot={it.robot ?? planRobot} src={src ?? null} onSend={() => void sendProposal(i)} />;
+          return <GoalCard key={i} it={it} robot={it.robot ?? planRobot} src={src ?? null} onSend={missionMode ? undefined : () => void sendProposal(i)} />;
         })}
         {busy && <Spinner label="thinking" />}
       </div>
@@ -1112,7 +1113,8 @@ function ImagesCard({it}: {it: ImagesItem}) {
 }
 
 
-export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"}>; robot: string | null; src: string | null; onSend: () => void}) {
+/** ``onSend`` absent (the mission planner, which only simulates): no Send button. */
+export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"}>; robot: string | null; src: string | null; onSend?: () => void}) {
   const b = it.body as {goal?: string; points?: string[]; command?: string; engine?: string; constraints?: {predicate: string; symbols: string[]}[]};
   const sent = it.sent;
   const {engines, engine: chosen, loaded} = useEngines();
@@ -1178,7 +1180,7 @@ export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type:
             {pv?.busy ? "planning…" : shown ? "Hide preview" : "Preview"}
           </button>
         )}
-        <button
+        {onSend ? <button
           className="btn btn-sm btn-primary goal-send-btn"
           disabled={Boolean(it.superseded) || Boolean(sent && sent.tone !== "err")}
           onClick={onSend}
@@ -1186,7 +1188,7 @@ export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type:
           data-testid="goal-send"
         >
           Send to {sendLabel(robot, it.team)}
-        </button>
+        </button> : <span className="small muted" data-testid="goal-send-viewer-only">Sending goals to robots is in the Robot view</span>}
       </div>
       {pv?.err && (
         <div className="small tone-err">
