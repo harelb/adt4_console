@@ -3809,9 +3809,14 @@ input[type="checkbox"] {
 /* ---------- Cypher-first chat ---------- */
 .chat-bar {
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 .chat-bar .input {
   max-width: 220px;
+}
+.chat-bar select.input {
+  min-width: 7.5em;
 }
 .msg-note {
   align-self: flex-end;
