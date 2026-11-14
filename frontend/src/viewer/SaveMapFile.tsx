@@ -1,8 +1,9 @@
 // "Save map file" under the Areas list: writes the Neo4j map as it is now (with the
 // regions drawn and saved to the map, and every other edit) to a scene graph file
-// outside Neo4j: a map snapshot (Map › Snapshots) with the map's mesh, i.e.
-// <snapshots dir>/<map>/<id>/dsg.json (spark_dsg; regions are Room nodes over their
-// places) and extras.json (region outlines, names, edit metadata).
+// outside Neo4j: a map snapshot (Map › Snapshots), i.e. <snapshots dir>/<map>/<id>/
+// dsg.json (spark_dsg; regions are Room nodes over their places) and extras.json
+// (region outlines, names, edit metadata). Map edits never change the mesh, so it is
+// left out unless asked for (Penn: 14 MB in seconds without, ~3 GB in ~2 min with).
 import {useState} from "react";
 import {errorText} from "../lib/api";
 import {withToken} from "../lib/auth";
@@ -15,6 +16,7 @@ export const defaultFileName = (now = new Date()) =>
 export function SaveMapFile({src}: {src: string | null}) {
   const [name, setName] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [withMesh, setWithMesh] = useState(false);
   const [saved, setSaved] = useState<SnapshotInfo | null>(null);
   const [err, setErr] = useState<string | null>(null);
   if (!src) return null;
@@ -23,7 +25,7 @@ export function SaveMapFile({src}: {src: string | null}) {
     setErr(null);
     setSaved(null);
     try {
-      const info = await editApi.snapshot(src, (name ?? "").trim() || defaultFileName(), {include_mesh: true});
+      const info = await editApi.snapshot(src, (name ?? "").trim() || defaultFileName(), {include_mesh: withMesh});
       setSaved(info);
       setName(null);
       void refreshEdit();
@@ -58,14 +60,18 @@ export function SaveMapFile({src}: {src: string | null}) {
             <button className="btn btn-xs" disabled={busy} onClick={() => setName(null)}>
               Cancel
             </button>
+            <label className="row gap-xs" title="Copy the map's mesh into the file too (map edits never change it): a few GB and a couple of minutes for Penn">
+              <input type="checkbox" checked={withMesh} onChange={e => setWithMesh(e.target.checked)} data-testid="save-map-file-mesh" />
+              with mesh (large, slow)
+            </label>
           </>
         )}
       </div>
-      {busy && <div className="muted">Writing the scene graph and its mesh; this takes a minute.</div>}
+      {busy && <div className="muted">{withMesh ? "Writing the scene graph and its mesh; this takes a couple of minutes." : "Writing the scene graph…"}</div>}
       {saved && (
         <div className="ok-msg" data-testid="save-map-file-done">
           Saved “{saved.name}” ({saved.counts?.Room ?? 0} regions, {saved.counts?.Object ?? 0} objects
-          {saved.mesh ? ", with mesh" : ""}) to <span className="mono">{saved.dsg ?? saved.id}</span>{" "}
+          {saved.mesh ? ", with mesh" : ", without mesh"}) to <span className="mono">{saved.dsg ?? saved.id}</span>{" "}
           <a href={withToken(editApi.downloadUrl(src, saved.id))} download>
             download .zip
           </a>

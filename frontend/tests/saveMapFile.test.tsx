@@ -34,7 +34,7 @@ describe("Save map file", () => {
     expect(q(h, "save-map-file")).toBeNull();
   });
 
-  it("saves a snapshot with the mesh and shows the dsg path", async () => {
+  it("saves a snapshot (mesh only when ticked) and shows the dsg path", async () => {
     const calls: {url: string; body: string}[] = [];
     vi.stubGlobal(
       "fetch",
@@ -51,8 +51,12 @@ describe("Save map file", () => {
     const input = h.querySelector('input[aria-label="Map file name"]') as HTMLInputElement;
     expect(input.value).toMatch(/^map with regions /);
     await act(async () => q(h, "save-map-file-go")!.click());
-    expect(calls[0].url).toContain("api/edit/neo4j%3Apennfused/snapshots");
-    expect(JSON.parse(calls[0].body)).toMatchObject({include_mesh: true});
+    expect(JSON.parse(calls[0].body)).toMatchObject({include_mesh: false});
+    await act(async () => q(h, "save-map-file-open")!.click());
+    await act(async () => q(h, "save-map-file-mesh")!.click());
+    await act(async () => q(h, "save-map-file-go")!.click());
+    expect(calls[1].url).toContain("api/edit/neo4j%3Apennfused/snapshots");
+    expect(JSON.parse(calls[1].body)).toMatchObject({include_mesh: true});
     const done = q(h, "save-map-file-done")!.textContent!;
     expect(done).toContain("20 regions, 467 objects, with mesh");
     expect(done).toContain("/data/snaps/pennfused/20261114-1400-penn/dsg.json");
