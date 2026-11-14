@@ -32,6 +32,7 @@ import {ENGINE_LABEL, refreshEngines, useEngines, type EngineId} from "../stores
 import {chatEngineNow, useChatEngine, type ChatEngineInfo} from "../stores/chatEngine";
 import {ChatEnginePicker} from "./ChatEnginePicker";
 import {PlannerStatePanel} from "./PlannerState";
+import {PlanningAgents} from "./PlanningAgents";
 import type {FastDownwardInfo} from "../lib/fastDownward";
 import {decideMapEdit, MapEditCard, mapEditNote, statusOf, toMapEditItem, type MapEditItem} from "./MapEditCard";
 import {decideSceneEdit, SceneEditCard, sceneEditNote, sceneEditStatus, toSceneEditItem, undoSceneEdit, type SceneEditItem} from "./SceneEditCard";
@@ -449,7 +450,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
         src: withMission ? (ms.world?.src ?? src) : src,
         history: trimTranscript(transcript.current),
         model: chosenModel,
-        mission_ctx: withMission ? (autoFleet ? {...missionContext(), roster: autoRoster(autoFleet.online), auto_send: true} : missionContext()) : undefined,
+        mission_ctx: withMission ? (autoFleet ? {...missionContext(), roster: autoRoster(autoFleet.online), auto_send: true} : {...missionContext(), ...(missionMode ? {sim_only: true} : {})}) : undefined,
         reasoning: isReasoningModel(chosenModel ?? defaultModel) ? reasoning : undefined,
         // the planner toggle: the engine of the goals the chat proposes (undefined: older backend)
         engine: chatEngineNow(),
@@ -788,7 +789,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           {missionMode ? "Clear" : "New chat"}
         </button>
       </div>
-      <PlannerStatePanel compact />
+      {missionMode ? <PlanningAgents /> : <PlannerStatePanel compact />}
       {missionMode && (
         <div className="chat-engine">
           <EnginePicker label="planner" />

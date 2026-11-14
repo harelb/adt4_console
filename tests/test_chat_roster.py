@@ -114,3 +114,18 @@ def test_map_first_then_images_and_platform_is_not_a_robot_name():
         "is a \\\nplatform, not a robot name" not in cypher_tools.SYSTEM
     )  # one line in the prompt
     assert "platform, not a robot name" in cypher_tools.SYSTEM
+
+
+def test_mission_planner_chat_leaves_the_live_fleet_out():
+    """The mission planner (sim_only) plans for the mission's agents: no fleet
+    roster (live robots, what they hold) in its context."""
+    c = chat()
+    ctx = {"roster": [{"id": "spot1", "kind": "spot", "start": [0.0, 0.0], "binding": None}],
+           "areas": [], "no_go": [], "planted": [], "mission": None}  # fmt: skip
+    c.turn = ChatTurn(mission={**ctx, "sim_only": True})
+    assert c._sim_only(c.turn)
+    assert "Fleet roster" not in c._system(None, None, c.turn)
+    # the Robot view's mission chat still sees the fleet
+    c.turn = ChatTurn(mission=ctx)
+    assert not c._sim_only(c.turn)
+    assert "Fleet roster" in c._system(None, None, c.turn)
