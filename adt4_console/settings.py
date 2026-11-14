@@ -34,8 +34,12 @@ class Settings:
     ros: bool = True
     fleetlink: bool = True
     zenoh_connect: str | None = None
-    # live image-store mirror (fleetlink C6): None -> <output_root>/live, "" = off
+    # live image-store mirror (fleetlink C6): None -> the current run's
+    # $ADT4_OUTPUT_DIR/live (else <output_root>/console_<start>/live), "" = off
     live_store_root: str | None = None
+    # live state for the SAM3 query server: None -> <output_root>/console_live.json,
+    # "" = off (live_service.py)
+    live_state_path: str | None = None
     robots: list[str] | None = None
     # the active launch (experiment, robots, prior map) survives console restarts
     # here; None = memory only (tests).  cli.py sets ~/.adt4_console/active_launch.json

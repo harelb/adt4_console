@@ -23,6 +23,8 @@ import {
   runQuery,
   runRank,
   seenIn,
+  candidateOrigin,
+  liveLeftOut,
   sourceLabel,
   sourceOptions,
   timingRows,
@@ -480,6 +482,11 @@ function EntryView({
         )}
       </div>
       <Timings t={r.timings} total={r.elapsed_s} cache={r.cache} />
+      {liveLeftOut(r.live).map(line => (
+        <div key={line} className="small tone-warn simg-live-out" title="Live images are used only from the current run, posed into the prior map, while the robot is relocalized">
+          {line}
+        </div>
+      ))}
       {r.candidates.length === 0 && <div className="muted small simg-empty">{r.note ?? "SAM3 found nothing in these keyframes. Try SigLIP2 only to see what ranks highest, lower SAM3 conf, or the batched mode."}</div>}
       <div className="simg-grid">
         {cands.map(c => (
@@ -498,6 +505,7 @@ function CandidateCard({c, pendingId, st, onAdd, onDismiss, onFly, onShow}: {c: 
   const img = v?.image_uri ?? (v && pendingId ? viewImageUrl(pendingId, c.index, v.view ?? vi) : c.image_uri);
   const done = st && (st.state === "added" || st.state === "discarded");
   const size = c.bbox_min && c.bbox_max ? c.bbox_max.map((x, k) => Math.abs(x - c.bbox_min[k])) : null;
+  const origin = candidateOrigin(c.sources);
   return (
     <article className={`simg-card ${st?.state === "discarded" ? "is-discarded" : ""} ${st?.state === "added" ? "is-added" : ""}`}>
       <div className="simg-card-img">
@@ -543,6 +551,11 @@ function CandidateCard({c, pendingId, st, onAdd, onDismiss, onFly, onShow}: {c: 
           {c.num_views > (c.num_frames ?? c.num_views) && ` (${c.num_views} detections)`} · {c.num_points.toLocaleString()} pts
           {v?.score != null && ` · view ${v.score.toFixed(2)}`}
         </div>
+        {origin && (
+          <div className="small muted simg-origin" title={origin.live ? "Detected in this run's live images, placed in the prior map with the robot's relocalization" : "Detected in the prior map's own images"}>
+            from {origin.text}
+          </div>
+        )}
         {c.would_merge_into ? (
           <Badge tone="info" title="Adding merges this detection into the existing object">
             would merge into {c.would_merge_into.symbol} ({c.would_merge_into.distance_m.toFixed(2)} m)

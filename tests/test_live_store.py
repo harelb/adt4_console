@@ -84,12 +84,81 @@ def test_live_reports_store_mirror(settings, tmp_path):
         assert r.status_code == 200
 
 
-def test_store_root_default_and_disabled(settings):
+def test_store_root_default_and_disabled(settings, monkeypatch):
+    """The mirror goes under the CURRENT run's output dir, never a shared
+    <output_root>/live that holds earlier runs (other odometry frames)."""
     from adt4_console.live_service import LiveService
 
-    assert LiveService(settings).store_root.endswith("/out/live")
+    monkeypatch.setenv("ADT4_OUTPUT_DIR", "/runs/nov13_v8")
+    assert LiveService(settings).store_root == "/runs/nov13_v8/live"
+    monkeypatch.delenv("ADT4_OUTPUT_DIR")
+    root = LiveService(settings).store_root
+    assert "/out/console_" in root and root.endswith("/live")
+    assert root != settings.output_root + "/live"
     off = dataclasses.replace(settings, live_store_root="")
     assert LiveService(off).store_root is None
+
+
+def test_live_state_lists_current_stores_and_relocalization(
+    settings, monkeypatch, tmp_path
+):
+    """console_live.json: the SAM3 server's only source of live images."""
+    import json
+
+    from adt4_console.live_service import LiveService
+
+    monkeypatch.setenv("ADT4_OUTPUT_DIR", str(tmp_path / "run"))
+    fa = {
+        "ok": True,
+        "parent": "map",
+        "child": "hamilton/map",
+        "T": [1, 2, 0, 1, 0, 0, 0],
+    }
+    health = {
+        "nodes": [
+            {"nickname": "hydra_multi", "notes": "7 / 9 valid interrobot loop closures"}
+        ]
+    }
+
+    class Rx:
+        def robots(self):
+            return ["hamilton", "euclid"]
+
+        def store_stats(self, robot=None):
+            return {
+                "hamilton": {
+                    "store_id": "abc123",
+                    "path": str(tmp_path / "run/live/hamilton/abc123/image_store"),
+                }
+            }
+
+        def state(self, robot):
+            if robot == "hamilton":
+                return {"frame_align": fa, "health": health, "reloc": {"prior_lcs": 3}}
+            return {
+                "frame_align": {"ok": False, "parent": "map", "child": "euclid/map"}
+            }
+
+        def link(self, robot):
+            return {}
+
+        store = object()
+        paths = grid = lambda self, r: None
+
+    live = LiveService(settings, receiver=Rx())
+    path = live.write_live_state()
+    assert path == str(tmp_path / "out" / "console_live.json")
+    st = json.loads(open(path).read())
+    assert st["live_store_root"] == str(tmp_path / "run" / "live")
+    h, e = st["robots"]["hamilton"], st["robots"]["euclid"]
+    assert h["store_id"] == "abc123" and h["path"].endswith("abc123/image_store")
+    assert h["relocalized"] is True and h["frame_align"]["T"] == [1, 2, 0, 1, 0, 0, 0]
+    assert e["store_id"] is None and e["relocalized"] is False
+    # a clean stop removes our own state file
+    live._remove_live_state()
+    assert not (tmp_path / "out" / "console_live.json").exists()
+    off = LiveService(dataclasses.replace(settings, live_state_path=""), receiver=Rx())
+    assert off.write_live_state() is None
 
 
 def test_store_send_route_switches_the_mirror(settings, tmp_path):
