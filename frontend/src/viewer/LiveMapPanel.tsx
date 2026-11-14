@@ -5,7 +5,7 @@
 import {useEffect, useState} from "react";
 import {Badge} from "../components/ui";
 import {MapEditControls} from "./MapEditControls";
-import {activateMap, bindLiveMap, mapLoaded, mapProgress, refreshMapChoices, useLiveMap, type LiveMap, type MapStage} from "../stores/liveMap";
+import {activateMap, bindLiveMap, mapLoading, mapProgress, refreshMapChoices, useLiveMap, type LiveMap, type MapStage} from "../stores/liveMap";
 
 const STATE_TEXT: Record<MapStage["state"], string> = {
   pending: "waiting",
@@ -39,7 +39,7 @@ export function LiveMapPanel() {
     bindLiveMap();
     void refreshMapChoices();
   }, []);
-  const loading = !!map && !mapLoaded(map);
+  const loading = mapLoading(map);
   const current = choices.find(c => map?.run && (c.path === map.run || c.name === map.name));
   return (
     <section className="vsec" data-testid="live-map">
@@ -73,7 +73,12 @@ export function LiveMapPanel() {
           ↻
         </button>
       </div>
-      {map && (
+      {map && !map.run && !loading && (
+        <div className="small muted" title="Neo4j holds no map loaded from a run: what is there was written live (robots, map edits)">
+          neo4j:{map.target} · {map.nodes ? `${map.nodes} nodes, written live (no run loaded)` : "empty (no map loaded)"}
+        </div>
+      )}
+      {map?.run && (
         <div className="small muted" title={map.run ?? undefined}>
           neo4j:{map.target} · {map.nodes ?? "?"} nodes · {map.has_images ? "with images" : "no images"}
           {loading && ` · ${mapProgress(map)}%`}
@@ -90,16 +95,16 @@ export function LiveMapPanel() {
 export function MapLoadPill() {
   const map = useLiveMap(s => s.map);
   useEffect(() => bindLiveMap(), []);
-  if (!map || mapLoaded(map)) return null;
+  if (!mapLoading(map)) return null;
   return (
     <div className="map-load-pill" data-testid="map-load-pill">
       <div className="row gap small">
-        <b>{map.name}</b>
-        <span className="muted">{map.ready ? "ready for planning · loading the rest" : "loading the scene graph"}</span>
+        <b>{map!.name}</b>
+        <span className="muted">{map!.ready ? "ready for planning · loading the rest" : "loading the scene graph"}</span>
         <span className="grow" />
         <span className="mono">{mapProgress(map)}%</span>
       </div>
-      <MapLoadBars map={map} compact />
+      <MapLoadBars map={map!} compact />
     </div>
   );
 }

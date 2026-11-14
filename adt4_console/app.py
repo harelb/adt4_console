@@ -89,6 +89,9 @@ class Services:
     planner_state: object = (
         None  # planner_state.PlannerState: what the planner believes
     )
+    nav_viz: object = (
+        None  # nav_viz.NavViz: MPPI / mid-range markers, GPS fix (on demand)
+    )
 
     def start(self) -> None:
         if self.settings.fleet_poll:
@@ -105,6 +108,7 @@ class Services:
 
     def stop(self) -> None:
         for svc in (
+            self.nav_viz,
             self.missions,
             self.quad,
             self.teleop,
@@ -160,6 +164,19 @@ def build_services(
         QuadFrame(svc.geo.default_anchor() if settings.quad_cmd_uri or settings.quad_image_uri else None,
                   settings.quad_utm_origin, settings.quad_map_offset),
     )  # fmt: skip
+    from .live_anchor import LiveAnchor
+    from .nav_viz import FixToMap, NavViz
+
+    svc.geo.live = LiveAnchor(hub)
+    svc.nav_viz = NavViz(
+        lambda topic, typ, cb: svc.ros.nav_subscribe(topic, typ, cb),
+        lambda sub: svc.ros.nav_unsubscribe(sub),
+        platform_of=lambda robot: svc.ros.platform(robot),
+        hub=hub,
+        to_map=FixToMap(svc.geo, live=svc.geo.live),
+        pose_of=lambda robot: relocalized_xy(svc, robot),
+        live_anchor=svc.geo.live,
+    )
     svc.missions = MissionService(settings, hub, graph, svc.geo, live, ros, svc.quad)
     chat.missions = svc.missions
     # answers go out through the bridge; the bridge hands requests to the service
@@ -218,6 +235,29 @@ def _object_row(svc, sym: str) -> dict | None:
     except Exception:  # noqa: BLE001
         return None
     return dict(rows[0]) if rows else None
+
+
+def relocalized_xy(svc, robot: str):
+    """The robot's fleetlink live pose in the global map frame, only when it is
+    relocalized (``frame_align.ok``) or already reports the global frame; else
+    None (a GPS fix must not be paired with an odom-frame pose)."""
+    from .scene_repair import pose_in_global
+
+    st = svc.live.state(robot) if svc.live is not None else None
+    if not st or not st.get("pose"):
+        return None
+    fa = st.get("frame_align")
+    if fa is None:
+        rx = getattr(svc.live, "receiver", None)
+        try:
+            fa = (rx.link(robot) or {}).get("frame_align") if rx is not None else None
+        except Exception:  # noqa: BLE001
+            fa = None
+    frame = st["pose"].get("frame") or ""
+    parent = (fa or {}).get("parent") or "map"
+    if not (fa or {}).get("ok") and frame != parent:
+        return None
+    return pose_in_global(st["pose"], fa)
 
 
 def wire_scene_repair(svc) -> None:

@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {healthNode, hydraMatches, isBigJump, movedFromInitial, priorName, relocStatus} from "../src/lib/frameAlign";
+import {healthNode, hydraMatches, hydraOptimization, isBigJump, movedFromInitial, priorName, RELOC_MIN_HYDRA_LCS, relocStatus} from "../src/lib/frameAlign";
 import type {FrameAlign, Reloc} from "../src/types";
 
 const FA: FrameAlign = {parent: "map", child: "hamilton/odom", T: [10, 5, 0, 1, 0, 0, 0], stamp: 100, ok: true, reason: "", age_s: 0.5};
@@ -21,10 +21,11 @@ const reloc = (over: Partial<Reloc> = {}): Reloc => ({
 });
 
 describe("relocalization status", () => {
-  it("is green with prior matches inside the prior map (one big jump = the relocalization)", () => {
-    const s = relocStatus(FA, reloc(), 1.2, 2);
+  const H6 = {hydraMulti: hydra("6 / 8")};
+  it("is green with 5+ hydra_multi loop closures inside the prior map (one big jump = the relocalization)", () => {
+    const s = relocStatus(FA, reloc(), 1.2, 2, H6);
     expect(s.tone).toBe("ok");
-    expect(s.text).toBe("relocalized · 4 matches · last 20 s ago");
+    expect(s.text).toBe("relocalized · hydra 6 LCs");
     expect(s.title).toMatch(/fleetlink saw 4 ROMAN loop closures against the prior map \(best 12 objects/);
     expect(s.title).toMatch(/nearest prior place 1\.2 m away/);
   });
@@ -56,8 +57,8 @@ describe("relocalization status", () => {
   });
   it("names the matched prior map and ROMAN prior ids when relocalized", () => {
     const lcs = [{prior: 1, live_submap: 3, prior_submap: 40, assoc: 9, age_s: 18}];
-    const s = relocStatus(FA, reloc({lcs}), 1.2, 2, {prior: "Nov11_Building45_v2 (recorded by euclid)"});
-    expect(s.text).toBe("relocalized · 4 matches · last 20 s ago");
+    const s = relocStatus(FA, reloc({lcs}), 1.2, 2, {...H6, prior: "Nov11_Building45_v2 (recorded by euclid)"});
+    expect(s.text).toBe("relocalized · hydra 6 LCs");
     expect(s.title).toMatch(/4 ROMAN loop closures against prior map Nov11_Building45_v2 \(recorded by euclid\) \(best 12 objects, last 20 s ago, ROMAN prior id 1\)/);
   });
   it("reads monitor rows and prior source labels", () => {
@@ -69,18 +70,18 @@ describe("relocalization status", () => {
     expect(priorName(null)).toBeNull();
   });
   it("is red when placed outside the prior map", () => {
-    const s = relocStatus(FA, reloc(), 13.4);
+    const s = relocStatus(FA, reloc(), 13.4, 0, H6);
     expect(s.tone).toBe("err");
     expect(s.text).toBe("suspect — 13 m outside the prior map");
   });
   it("is red when the placement jumped a second time", () => {
     const jumps = [{dxy: 0.2, dyaw: 0.5, age_s: 5}, {dxy: 9, dyaw: 4, age_s: 30}, {dxy: 35, dyaw: 178, age_s: 60}];
-    const s = relocStatus(FA, reloc({jumps: 3, recent_jumps: jumps}), 2);
+    const s = relocStatus(FA, reloc({jumps: 3, recent_jumps: jumps}), 2, 0, H6);
     expect(s.tone).toBe("err");
     expect(s.text).toBe("suspect — placement jumped 2×");
   });
   it("does not judge the inside/outside check without a shown prior", () => {
-    const s = relocStatus(FA, reloc(), null);
+    const s = relocStatus(FA, reloc(), null, 0, H6);
     expect(s.tone).toBe("ok");
     expect(s.title).toMatch(/prior map not shown/);
   });
@@ -94,29 +95,51 @@ describe("relocalization status", () => {
   it("takes hydra_multi's accepted inter-robot loop closures first", () => {
     const s = relocStatus(FA0, none(), 1.2, 0, {hydraMulti: hydra("44 / 51")});
     expect(s.tone).toBe("ok");
-    expect(s.text).toBe("relocalized · 44 accepted matches");
+    expect(s.text).toBe("relocalized · hydra 44 LCs");
     expect(s.title).toMatch(/^hydra_multi accepted 44 \/ 51 inter-robot loop closures/);
     expect(s.title).toMatch(/fleetlink saw 0 ROMAN loop closures/);
     // no fleetlink reloc at all (older agent): the count still decides
-    expect(relocStatus(FA0, undefined, null, 0, {hydraMulti: hydra("14 / 19")}).text).toBe("relocalized · 14 accepted matches");
+    expect(relocStatus(FA0, undefined, null, 0, {hydraMulti: hydra("14 / 19")}).text).toBe("relocalized · hydra 14 LCs");
     // matched while this console has no transform: say both
-    const t = relocStatus(NOT, none(), null, 0, {hydraMulti: hydra("2 / 2")});
+    const t = relocStatus(NOT, none(), null, 0, {hydraMulti: hydra("5 / 5")});
     expect(t.tone).toBe("ok");
-    expect(t.text).toBe("relocalized · 2 accepted matches · drawn in hamilton/odom");
+    expect(t.text).toBe("relocalized · hydra 5 LCs · drawn in hamilton/odom");
+    expect(relocStatus(NOT, none(), null, 0, {hydraMulti: hydra("2 / 2")}).tone).not.toBe("ok");
     // still suspect outside the prior map / after a second big jump
     expect(relocStatus(FA0, none(), 13.4, 0, {hydraMulti: hydra("44 / 51")}).tone).toBe("err");
     const jumps = [{dxy: 9, dyaw: 4, age_s: 30}, {dxy: 35, dyaw: 178, age_s: 60}];
     expect(relocStatus(FA0, reloc({prior_lcs: 0, recent_jumps: jumps}), 2, 0, {hydraMulti: hydra("44 / 51")}).text).toBe("suspect — placement jumped 2×");
   });
-  it("says aligned (no match count) when map -> odom moved from the initial estimate", () => {
+  it("needs 5 accepted hydra_multi loop closures: fewer is 'relocalizing'", () => {
+    expect(RELOC_MIN_HYDRA_LCS).toBe(5);
+    const s = relocStatus(FA, reloc(), 1.2, 0, {hydraMulti: hydra("4 / 9")});
+    expect(s.tone).toBe("warn");
+    expect(s.text).toBe("relocalizing · hydra 4/5 LCs");
+    expect(s.title).toMatch(/needs 5/);
+    expect(relocStatus(FA, reloc(), 1.2, 0, {hydraMulti: hydra("5 / 9")}).tone).toBe("ok");
+  });
+  it("ROMAN matches alone are not relocalized", () => {
+    const s = relocStatus(FA, reloc(), 1.2, 2, {hydraMulti: null});
+    expect(s.tone).toBe("warn");
+    expect(s.text).toBe("not confirmed · no hydra count · ROMAN 4 matches");
+    expect(s.title).toMatch(/fleetlink saw 4 ROMAN loop closures/);
+  });
+  it("reads hydra_multi's last optimization from its note", () => {
+    const n = {notes: "44 / 51 valid interrobot loop closures; last optimization took 0.412 s, 12.3 s ago"};
+    expect(hydraMatches(n)).toEqual({accepted: 44, total: 51});
+    expect(hydraOptimization(n)).toEqual({tookS: 0.412, agoS: 12.3});
+    expect(hydraOptimization({notes: "0 / 0 valid interrobot loop closures; no optimization yet"})).toBeNull();
+    expect(hydraOptimization(hydra("3 / 4"))).toBeNull();
+  });
+  it("says aligned (no hydra count) when map -> odom moved from the initial estimate", () => {
     // from identity: the agent started after the relocalization
     const s = relocStatus({...FA, T: [-25, 7.5, 0, 1, 0, 0, 0]}, none(), 1, 0, {hydraMulti: null});
-    expect(s.tone).toBe("ok");
-    expect(s.text).toBe("aligned · no match count");
+    expect(s.tone).toBe("warn");
+    expect(s.text).toBe("aligned · no hydra count");
     expect(s.title).toMatch(/moved 26\.1 m \/ 0° from the initial estimate/);
     // since the agent's first sample
-    expect(relocStatus(FA0, none(), 1, 0, {}).text).not.toBe("aligned · no match count");
-    expect(relocStatus(FA0, reloc({prior_lcs: 0, total: {dxy: 0.1, dyaw: 12}, recent_jumps: []}), 1).text).toBe("aligned · no match count");
+    expect(relocStatus(FA0, none(), 1, 0, {}).text).not.toBe("aligned · no hydra count");
+    expect(relocStatus(FA0, reloc({prior_lcs: 0, total: {dxy: 0.1, dyaw: 12}, recent_jumps: []}), 1).text).toBe("aligned · no hydra count");
     expect(movedFromInitial({...FA, T: [0.2, 0.1, 0, 1, 0, 0, 0]}, none())).toBeNull();
   });
   it("says unknown, not 'not relocalized', when no source has a signal", () => {

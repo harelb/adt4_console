@@ -289,6 +289,16 @@ describe("manipulation approval dialog", () => {
 });
 
 describe("simulated manipulation request", () => {
+  it("hides the test button unless the console URL has ?manipulation-demo", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({available: true, error: null, requests: []}), {status: 200})));
+    window.history.replaceState(null, "", "/");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root!.render(<ManipulationApprovalHost />));
+    expect(container.textContent).not.toContain("Test manipulation dialog");
+  });
+
   it("opens the test dialog without a robot connection or any automatic response", async () => {
     const request = {...fixture(), simulated: true};
     let demo = false;
@@ -302,8 +312,10 @@ describe("simulated manipulation request", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
+    window.history.replaceState(null, "", "/?manipulation-demo");
     await act(async () => root!.render(<ManipulationApprovalHost />));
     await act(async () => button("Test manipulation dialog").click());
+    window.history.replaceState(null, "", "/");
     expect(container.textContent).toContain("SIMULATION — no robot response");
     expect(container.textContent).not.toContain("ROS unavailable");
     imageLoaded();

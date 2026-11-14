@@ -18,9 +18,35 @@ export interface GeoAffine {
   max_err_m: number;
 }
 
+/** Fit stats of an anchor estimated live from the robots' GPS fixes and
+ *  relocalized poses (server: live_anchor.py); only used when the map has no
+ *  saved anchor. */
+export interface LiveAnchorInfo {
+  mode: "rigid" | "translation";
+  heading_known: boolean;
+  rms: number;
+  n: number;
+  n_pairs?: number;
+  baseline_m: number;
+  robots: string[];
+  fitted_at?: number;
+}
+
 export interface GeoInfo {
   anchor: GeoAnchor;
   affine: GeoAffine;
+  /** set when this is the live estimate, not the map's saved anchor */
+  live?: LiveAnchorInfo | null;
+}
+
+/** "live anchor from gauss · 25 fixes · RMS 0.30 m · heading unknown (map axes taken as east / north)" */
+export function liveAnchorText(l: LiveAnchorInfo): string {
+  return [
+    `live anchor from ${l.robots.join(", ") || "robots"}`,
+    `${l.n} fixes`,
+    `RMS ${l.rms.toFixed(2)} m`,
+    l.heading_known ? `over ${l.baseline_m.toFixed(0)} m` : "heading unknown (map axes taken as east / north; drive the robot further for a heading)",
+  ].join(" · ");
 }
 
 export interface TileLayer {

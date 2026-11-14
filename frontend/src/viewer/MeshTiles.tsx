@@ -180,7 +180,11 @@ class TileLoader {
     const sized = this.manifest.enc === 2;
     if (!this.hasManifest) return;
     // a robot's live mesh streams in all the time: only its first load shows
-    if (this.loadedOnce && this.src.startsWith("live:")) return;
+    // (but a task someone else started, e.g. a snapshot reload's "preparing", ends)
+    if (this.loadedOnce && this.src.startsWith("live:")) {
+      if (!busy) endTask(this.taskId);
+      return;
+    }
     if (busy) {
       const partial = [...this.partial.values()].reduce((n, v) => n + v, 0);
       if (!this.batchOn) {
@@ -391,7 +395,9 @@ class TileLoader {
     this.abort.abort();
     for (const [k, t] of this.have) this.drop(k, t.mesh);
     this.material.dispose();
-    if (this.batchOn) dropTask(this.taskId);
+    // the loader is gone (mesh hidden, source closed): its task, ours or the
+    // viewer store's "preparing", must not stay on the load bar
+    dropTask(this.taskId);
   }
 }
 

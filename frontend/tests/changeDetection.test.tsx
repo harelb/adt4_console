@@ -71,13 +71,13 @@ describe("change detection control", () => {
     await act(async () => await new Promise(r => setTimeout(r, 0)));
     const start = el.querySelector("[data-testid=cd-start-euclid]") as HTMLButtonElement;
     expect(start.disabled).toBe(false);
-    expect(start.title).toContain("relocalized · 14 accepted matches");
+    expect(start.title).toContain("relocalized · hydra 14 LCs");
     expect(el.querySelector("[data-testid=cd-gate-euclid]")).toBeNull();
   });
 
   it("Start is enabled once relocalized and sends no override", async () => {
     stub();
-    setRobot({prior_lcs: 4, self_lcs: 0, best_assoc: 6, last_lc_age_s: 3, lcs: [], jumps: 1, last_jump: {dxy: 2, dyaw: 3, age_s: 5}});
+    setRobot({prior_lcs: 4, self_lcs: 0, best_assoc: 6, last_lc_age_s: 3, lcs: [], jumps: 1, last_jump: {dxy: 2, dyaw: 3, age_s: 5}}, {nodes: [{nickname: "euclid/hydra_multi", status: "nominal", notes: "6 / 7 valid interrobot loop closures"}]});
     const el = mount();
     await act(async () => await new Promise(r => setTimeout(r, 0)));
     const start = el.querySelector("[data-testid=cd-start-euclid]") as HTMLButtonElement;

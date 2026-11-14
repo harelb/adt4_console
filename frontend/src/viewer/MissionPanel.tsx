@@ -7,7 +7,9 @@
 import {useEffect, useMemo, useRef, useState} from "react";
 import {Badge, Empty, Segmented, Spinner, Toggle} from "../components/ui";
 import {withToken} from "../lib/auth";
-import {fmtLonLat, mapToLonLat, mapToUtm, utmZone} from "../lib/geo";
+import {fmtLonLat, liveAnchorText, mapToLonLat, mapToUtm, utmZone} from "../lib/geo";
+import {toggleNavViz, useNavViz} from "../stores/navViz";
+import {useLiveRobots} from "../stores/robots";
 import {
   abort,
   addAgent,
@@ -28,6 +30,7 @@ import {
   removeAgent,
   replanText,
   rosterDiff,
+  saveLiveAnchor,
   saveMission,
   simCmd,
   undoStart,
@@ -820,17 +823,47 @@ export function MissionPanel() {
               <Toggle checked={grid} onChange={v => patchStyle({grid: v})} label="grid" title="The ground grid over the imagery" />
               <input type="range" min={0.2} max={1} step={0.05} value={satOpacity} onChange={e => s.set({satOpacity: Number(e.target.value)})} aria-label="Satellite opacity" />
             </div>
+            {geo.live ? (
+              <div className="small live-anchor-note" data-testid="live-anchor">
+                <Badge tone="warn">live</Badge> {liveAnchorText(geo.live)}. Not the map&apos;s saved anchor; it updates as fixes come in.{" "}
+                <button type="button" className="btn btn-xs" onClick={() => void saveLiveAnchor()} title="Write it as this map's geo_anchor.json (only when the map has none)">
+                  Save anchor
+                </button>
+              </div>
+            ) : null}
             <div className="small muted">
-              GPS anchor {utmZone(geo.anchor.epsg)}
-              {geo.anchor.rms != null ? `, fit RMS ${geo.anchor.rms.toFixed(2)} m` : ""} · {layers.map(l => `${l.id}${l.cached ? ` (${l.cached} tiles)` : ""}${l.live ? " live" : ""}`).join(", ") || "no tiles cached"}
+              {geo.live ? "Estimated" : "Saved"} GPS anchor {utmZone(geo.anchor.epsg)}
+              {!geo.live && geo.anchor.rms != null ? `, fit RMS ${geo.anchor.rms.toFixed(2)} m` : ""} · {layers.map(l => `${l.id}${l.cached ? ` (${l.cached} tiles)` : ""}${l.live ? " live" : ""}`).join(", ") || "no tiles cached"}
               {layers[0]?.attribution ? ` · imagery © ${layers[0].attribution}` : ""}
             </div>
             <CursorReadout />
           </>
         ) : (
-          <div className="small muted">This map has no GPS anchor (scripts/geo/anchor_from_gps.py), so there is no satellite view.</div>
+          <NoAnchor />
         )}
       </section>
+    </div>
+  );
+}
+
+/** No saved anchor and no live estimate yet: say how to get one. The live
+ *  anchor needs GPS fixes of relocalized robots, which arrive only while a
+ *  robot's GPS overlay is on. */
+function NoAnchor() {
+  const robots = useLiveRobots();
+  const gpsOn = useNavViz(s => s.gpsOn);
+  const off = robots.filter(r => !gpsOn[r]);
+  return (
+    <div className="small muted">
+      This map has no GPS anchor (scripts/geo/anchor_from_gps.py), so there is no satellite view yet. With relocalized robots driving around, the console can estimate one live from their GPS fixes.
+      {off.length > 0 && (
+        <>
+          {" "}
+          <button type="button" className="btn btn-xs" onClick={() => off.forEach(r => toggleNavViz(r, "gps", true))} data-testid="collect-gps">
+            Collect GPS from {off.join(", ")}
+          </button>
+        </>
+      )}
     </div>
   );
 }

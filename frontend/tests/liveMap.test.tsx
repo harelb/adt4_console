@@ -65,6 +65,9 @@ describe("live map progress", () => {
   });
 });
 
+const EMPTY = {target: "live", run: null, name: null, has_images: false, has_features: false, ready: false, job_id: null,
+  stages: [stage("graph", "pending"), stage("images", "pending"), stage("sam3", "pending")]}; // prettier-ignore
+
 describe("LiveMapPanel", () => {
   it("lists this machine's runs, loads one and shows its stages", async () => {
     const {LiveMapPanel, MapLoadPill} = await import("../src/viewer/LiveMapPanel");
@@ -107,5 +110,34 @@ describe("LiveMapPanel", () => {
     expect(pill.textContent).toContain("loading the scene graph");
     expect(pill.querySelector('[data-testid="map-stage-features"]')).toBeNull(); // skipped: not shown in the pill
     expect(el.querySelector('[data-testid="map-stage-graph"] [role="progressbar"]')!.getAttribute("aria-valuenow")).toBe("10");
+  });
+
+  it("an empty Neo4j (all stages pending, no job) shows no load bars or pill", async () => {
+    const {LiveMapPanel, MapLoadPill} = await import("../src/viewer/LiveMapPanel");
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.endsWith("api/maps/active"))
+        return json(EMPTY);
+      if (u.endsWith("api/maps?local=true")) return json({base: "here", machines: {here: []}});
+      return json({});
+    });
+    // (the panel binds the store once per module: set the status the server sends directly)
+    useLiveMap.setState({map: EMPTY as LiveMap});
+    const el = render(
+      <>
+        <LiveMapPanel />
+        <MapLoadPill />
+      </>,
+    );
+    await act(async () => {
+      await new Promise(r => setTimeout(r, 0));
+    });
+    expect(el.querySelector('[data-testid="map-load-pill"]')).toBeNull();
+    expect(el.querySelector('[data-testid="map-load"]')).toBeNull();
+    expect(el.textContent).toContain("neo4j:live · empty (no map loaded)");
+    act(() => useLiveMap.setState({map: {...EMPTY, nodes: 18036} as LiveMap}));
+    expect(el.textContent).toContain("18036 nodes, written live (no run loaded)");
+    expect(el.querySelector('[data-testid="map-load-pill"]')).toBeNull();
+    expect(el.querySelector('[data-testid="map-load"]')).toBeNull();
   });
 });

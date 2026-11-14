@@ -14,6 +14,7 @@ import {MeshTiles, type TileStats} from "./MeshTiles";
 import {DETAIL_LEVEL} from "../lib/meshPlan";
 import {currentActionIndex, distinctPoints} from "./planUtil";
 import {LiveOverlays} from "./LiveOverlays";
+import {NavVizOverlay} from "./NavVizOverlay";
 import {AwcdOverlay} from "./AwcdOverlay";
 import {placeLabelsKey, useViewStyle} from "../stores/viewStyle";
 import {contrastFor, defaultBackground, STYLE_BACKGROUND, type ColorOpts} from "./style";
@@ -720,6 +721,7 @@ export function Scene({sources, bounds, cb}: {sources: SourceView[]; bounds: {mi
         <SourceContent key={s.id} src={s} cb={cb} />
       ))}
       <LiveOverlays />
+      <NavVizOverlay />
       <RobotGlyphs />
       <PlanOverlay />
       <AwcdOverlay />

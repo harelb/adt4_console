@@ -255,6 +255,9 @@ class GeoService:
         )
         self._explicit = dict(getattr(settings, "geo_anchors", {}) or {})
         self._cache: dict[str, GeoAnchor | None] = {}
+        # live_anchor.LiveAnchor (the app binds it): the fallback for maps
+        # without a saved anchor; never written to disk on its own
+        self.live = None
 
     def forget(self, src_id: str) -> None:
         """The source now holds another map: look its anchor up again."""
@@ -296,3 +299,62 @@ class GeoService:
             if a is not None:
                 return a
         return None
+
+    def live_anchor(self) -> GeoAnchor | None:
+        """The anchor estimated live from the robots' GPS (None: none yet)."""
+        la = self.live.anchor() if self.live is not None else None
+        if not la:
+            return None
+        return GeoAnchor(la["epsg"], la["yaw"], la["t"], la.get("z0", 0.0))
+
+    def effective_anchor(
+        self, src_id: str | None
+    ) -> tuple[GeoAnchor | None, dict | None]:
+        """``(anchor, live_info)``: the source's saved anchor (``live_info``
+        None) and, only when it has none, the live estimate with its fit
+        stats as ``live_info``."""
+        a = self.anchor(src_id)
+        if a is not None:
+            return a, None
+        la = self.live.anchor() if self.live is not None else None
+        if not la:
+            return None, None
+        return self.live_anchor(), la
+
+    def save_live_anchor(self, src_id: str) -> pathlib.Path:
+        """Write the live anchor as ``geo_anchor.json`` in the source's run dir.
+        Refuses (FileExistsError) when the source already has a saved anchor;
+        ValueError when there is no live anchor or no run dir."""
+        if self.anchor(src_id) is not None:
+            raise FileExistsError(f"{src_id} already has a saved GPS anchor")
+        la = self.live.anchor() if self.live is not None else None
+        if not la:
+            raise ValueError("no live anchor yet")
+        run = None
+        if self.graph is not None:
+            src = self.graph.get(src_id)
+            run = getattr(src, "run_dir", None)
+            run = run() if callable(run) else run
+        if not run:
+            raise ValueError(f"{src_id} has no run directory to save the anchor in")
+        path = pathlib.Path(os.path.expanduser(str(run))) / ANCHOR_FILE
+        if path.exists():
+            raise FileExistsError(f"{path} exists")
+        doc = {
+            "epsg": la["epsg"],
+            "yaw": la["yaw"],
+            "t": la["t"],
+            "z0": la.get("z0", 0.0),
+            "rms": la.get("rms"),
+            "n": la.get("n"),
+            "source": {
+                "kind": "adt4_console live anchor",
+                "mode": la.get("mode"),
+                "heading_known": la.get("heading_known"),
+                "robots": la.get("robots"),
+                "baseline_m": la.get("baseline_m"),
+            },
+        }
+        path.write_text(json.dumps(doc, indent=2))
+        self.forget(src_id)
+        return path

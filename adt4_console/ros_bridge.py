@@ -885,6 +885,21 @@ class RosBridge:
                 {r: list(d.values()) for r, d in self._status_nodes.items()}
             )
 
+    # ------------------------------------------------- on-demand overlays (nav_viz)
+    def nav_subscribe(self, topic: str, msg_type: str, cb):
+        """Best-effort depth-1 subscription made on the executor thread; the
+        handle goes back to :meth:`nav_unsubscribe` (nav_viz.NavViz)."""
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+        cls = import_type(msg_type)
+        qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
+                         durability=DurabilityPolicy.VOLATILE)  # fmt: skip
+        return self.run(lambda: self.node.create_subscription(cls, topic, cb, qos))
+
+    def nav_unsubscribe(self, sub) -> None:
+        if self.available:
+            self.run(lambda: self.node.destroy_subscription(sub))
+
     def _subscribe_link_status(self) -> None:
         cls = import_type("std_msgs/msg/String")
         self.node.create_subscription(cls, LINK_STATUS_TOPIC, self._on_link_status, 10)
