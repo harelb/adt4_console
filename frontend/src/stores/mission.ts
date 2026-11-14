@@ -194,6 +194,8 @@ export type MapTool = {kind: "none"} | {kind: "start"; agent: string} | {kind: "
 export interface Area {
   name: string;
   polygon: number[][];
+  /** saved to the map but the edit is staged (robots live): listed as the map's once published */
+  staged?: boolean;
 }
 
 export type AreaPurpose = "search" | "no_go";
@@ -472,6 +474,61 @@ export function exportUrl(id: string): string {
 
 /** Import an exported mission file as a new saved mission and open it.
  *  Returns false (with the reason in `error`) for a file that is not one. */
+/** Every saved mission as one JSON file (``drafts``: unsaved ones too). */
+export function exportAllUrl(drafts = false): string {
+  return withToken(`api/missions/export_all${drafts ? "?drafts=true" : ""}`);
+}
+
+/** A file holding several missions: an "Export all" bundle or a JSON list. */
+export const isBundle = (data: unknown) => Array.isArray(data) || (!!data && typeof data === "object" && Array.isArray((data as {missions?: unknown}).missions));
+
+export interface ImportReport {
+  imported: {id: string; name: string}[];
+  errors: {file: string; name?: string | null; error: string}[];
+}
+
+/** Import one or more files, each a single mission or a bundle; every mission
+ *  becomes a new saved one. One mission alone opens; otherwise the list refreshes. */
+export async function importMissionFiles(files: File[]): Promise<ImportReport> {
+  const rep: ImportReport = {imported: [], errors: []};
+  st().set({busy: "save", error: null});
+  let single: {mission: Mission; preview: Preview} | null = null;
+  try {
+    for (const f of files) {
+      let data: unknown;
+      try {
+        data = JSON.parse(await f.text());
+      } catch {
+        rep.errors.push({file: f.name, error: "not a JSON file"});
+        continue;
+      }
+      try {
+        if (isBundle(data)) {
+          const r = await postJSON<{imported: {id: string; name: string}[]; errors: {index: number; name?: string | null; error: string}[]}>("api/missions/import_all", data);
+          rep.imported.push(...r.imported);
+          rep.errors.push(...r.errors.map(e => ({file: f.name, name: e.name, error: e.error})));
+        } else {
+          const r = await postJSON<{mission: Mission; preview: Preview}>("api/missions/import", data);
+          rep.imported.push({id: r.mission.id, name: r.mission.name});
+          single = r;
+        }
+      } catch (e) {
+        rep.errors.push({file: f.name, error: errorText(e)});
+      }
+    }
+    if (rep.imported.length === 1 && single) {
+      st().set({current: single.mission, preview: single.preview, run: null});
+      follow(single.mission.id);
+      fitMission();
+    }
+    if (rep.errors.length) st().set({error: `import: ${rep.errors.map(e => `${e.name ?? e.file}: ${e.error}`).join("; ")}`});
+    void refreshList();
+    return rep;
+  } finally {
+    st().set({busy: null});
+  }
+}
+
 export async function importMission(file: File): Promise<boolean> {
   st().set({busy: "save", error: null});
   try {
@@ -796,7 +853,8 @@ export function finishDraft(): boolean {
   return pts.length >= 3;
 }
 
-/** Area names in use (case-insensitive), mission and map scope. */
+/** Area names in use (case-insensitive), mission and map scope: only for picking a
+ *  fresh default name. Names need not be unique (a map can have two "loading dock"s). */
 export function takenAreaNames(mapNames: readonly (string | null | undefined)[] = []): Set<string> {
   const s = st();
   return new Set([...s.areas.map(a => a.name), ...s.fences.map(f => f.id), ...mapNames].filter((n): n is string => !!n).map(n => n.trim().toLowerCase()));
@@ -815,10 +873,11 @@ export function addMissionArea(name: string, polygon: number[][], purpose: AreaP
   else s.set({areas: [...s.areas, {name, polygon}], pendingArea: null});
 }
 
-export function removeMissionArea(name: string, purpose: AreaPurpose) {
+/** Remove a mission-only area by its place in the list (names may repeat). */
+export function removeMissionArea(index: number, purpose: AreaPurpose) {
   const s = st();
-  if (purpose === "no_go") s.set({fences: s.fences.filter(f => f.id !== name)});
-  else s.set({areas: s.areas.filter(a => a.name !== name)});
+  if (purpose === "no_go") s.set({fences: s.fences.filter((_, i) => i !== index)});
+  else s.set({areas: s.areas.filter((_, i) => i !== index)});
 }
 
 // ------------------------------------------------------ fixing a mission

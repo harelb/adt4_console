@@ -5,7 +5,7 @@
 // finish, Backspace drops the last corner, Esc cancels) and saving a finished
 // drawing as an area (the area popover: name, purpose, scope), and Ctrl/Cmd+Z:
 // undo the newest of the last start move and this browser's last map edit.
-import {useMission, finishDraft, addMissionArea, takenAreaNames, undoStart, type AreaPurpose, type AreaScope, type MapTool, type StartMove} from "./mission";
+import {useMission, finishDraft, addMissionArea, undoStart, type AreaPurpose, type AreaScope, type MapTool, type StartMove} from "./mission";
 import {finishLasso, idlePickMode, loadAreas, makeRegion, undoEdit, useMapEdit, type EditTool, type EditUndo} from "./mapEdit";
 import {useViewer} from "./viewer";
 
@@ -96,12 +96,10 @@ export function mapAreaNames(): string[] {
   return useMapEdit.getState().regions.map(r => r.name ?? "").filter(Boolean);
 }
 
-/** Why a name cannot be used, or null. */
+/** Why a name cannot be used, or null. Names may repeat: areas are told apart by
+ *  their Room symbol (map) or place in the mission's list, like the planner does. */
 export function areaNameProblem(name: string): string | null {
-  const n = name.trim();
-  if (!n) return "Give the area a name";
-  if (takenAreaNames(mapAreaNames()).has(n.toLowerCase())) return `There is already an area called “${n}”`;
-  return null;
+  return name.trim() ? null : "Give the area a name";
 }
 
 /** Save the drawing waiting in the popover. Mission scope stays in the browser
@@ -134,12 +132,13 @@ export async function saveToMap(name: string, polygon: number[][]) {
 
 /** "Save to map" on a mission-only search area: once it is in the map (not just
  *  staged), the mission copy goes (one area, one label). */
-export async function promoteArea(name: string): Promise<boolean> {
-  const a = useMission.getState().areas.find(x => x.name === name);
+export async function promoteArea(index: number): Promise<boolean> {
+  const a = useMission.getState().areas[index];
   if (!a) return false;
   const r = await saveToMap(a.name, a.polygon);
   if (!r) return false;
-  if (!r.staged) useMission.getState().set({areas: useMission.getState().areas.filter(x => x.name !== name)});
+  const areas = useMission.getState().areas;
+  useMission.getState().set({areas: r.staged ? areas.map(x => (x === a ? {...x, staged: true} : x)) : areas.filter(x => x !== a)});
   return true;
 }
 

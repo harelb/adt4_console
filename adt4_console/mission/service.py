@@ -597,6 +597,34 @@ class MissionService:
     def export(self, mid: str) -> str:
         return json.dumps(self.get(mid).model_dump(), indent=1)
 
+    BUNDLE_FORMAT = "adt4-missions"
+
+    def export_all(self, saved_only: bool = True) -> str:
+        """Every saved mission (``saved_only=False``: drafts too) in one JSON file:
+        ``{format, missions: [...]}``, oldest first; ``import_all`` reads it back."""
+        with self._lock:
+            ms = sorted(self.missions.values(), key=lambda m: m.created_at)
+            out = [m.model_dump() for m in ms if m.saved or not saved_only]
+        return json.dumps({"format": self.BUNDLE_FORMAT, "missions": out}, indent=1)
+
+    def import_all(self, data: object) -> dict:
+        """Several missions at once: a bundle from ``export_all``, or a JSON list of
+        exported missions. Each becomes a new saved mission (``import_mission``);
+        one that does not validate is skipped and reported, the rest still import.
+        Returns ``{imported: [{id, name}], errors: [{index, name, error}]}``."""
+        items = data.get("missions") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            raise ValueError("not a mission bundle: expected {missions: [...]} or a list")
+        imported, errors = [], []
+        for i, it in enumerate(items):
+            name = it.get("name") if isinstance(it, dict) else None
+            try:
+                r = self.import_mission(it)
+                imported.append({"id": r["mission"]["id"], "name": r["mission"]["name"]})
+            except ValueError as e:
+                errors.append({"index": i, "name": name, "error": str(e)})
+        return {"imported": imported, "errors": errors}
+
     # fields an import does not take from the file: it is a new mission here
     _IMPORT_DROP = ("id", "revision", "parent", "created_at")
 

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from typing import Any
+
+from fastapi import APIRouter, Body, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
@@ -51,6 +53,21 @@ def world(request: Request, src: str | None = None):
 def create(body: dict, request: Request):
     """A new mission (or a revision, when ``id`` names an existing one)."""
     return _svc(request).put(_mission(body))
+
+
+@router.get("/export_all")
+def export_all(request: Request, drafts: bool = False):
+    """Every saved mission (``drafts=true``: unsaved ones too) as one JSON file."""
+    data = _svc(request).export_all(saved_only=not drafts)
+    return Response(data, media_type="application/json",
+                    headers={"Content-Disposition": 'attachment; filename="missions_all.json"'})  # fmt: skip
+
+
+@router.post("/import_all")
+def import_all(request: Request, body: Any = Body(...)):
+    """Several missions at once (a bundle from ``export_all``, or a list); each a new
+    saved mission. Bad entries are reported and skipped."""
+    return _get(_svc(request).import_all, body)
 
 
 @router.post("/import")

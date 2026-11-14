@@ -21,8 +21,9 @@ import {
   dropTask,
   execute,
   exportUrl,
+  exportAllUrl,
+  importMissionFiles,
   fitMission,
-  importMission,
   MAX_AGENTS,
   missionRoutes,
   openMission,
@@ -640,10 +641,13 @@ export function MissionPanel({plannerOnly = false}: {plannerOnly?: boolean} = {}
   );
 }
 
-/** Export the open mission as a JSON file, or import one as a new saved mission. */
+/** Export the open mission (or every saved one) as a JSON file; import one or
+ *  more files (single missions or an "Export all" bundle) as new saved missions. */
 function MissionFileButtons({current}: {current: Mission | null}) {
   const input = useRef<HTMLInputElement>(null);
   const busy = useMission(s => s.busy === "save");
+  const anySaved = useMission(s => s.list.some(m => m.saved));
+  const [note, setNote] = useState<string | null>(null);
   return (
     <div className="row gap-xs wrap">
       <span className="small muted">Mission file:</span>
@@ -656,21 +660,40 @@ function MissionFileButtons({current}: {current: Mission | null}) {
           Export
         </button>
       )}
-      <button className="btn btn-xs" disabled={busy} onClick={() => input.current?.click()} title="Load an exported mission file as a new saved mission" data-testid="mission-import">
+      {anySaved ? (
+        <a className="btn btn-xs" href={exportAllUrl()} download title="Download every saved mission as one JSON file" data-testid="mission-export-all">
+          Export all
+        </a>
+      ) : (
+        <button className="btn btn-xs" disabled title="No saved missions yet">
+          Export all
+        </button>
+      )}
+      <button className="btn btn-xs" disabled={busy} onClick={() => input.current?.click()} title="Load exported mission files (one or several, or an Export all file) as new saved missions" data-testid="mission-import">
         Import…
       </button>
       <input
         ref={input}
         type="file"
         accept=".json,application/json"
+        multiple
         hidden
         data-testid="mission-import-file"
         onChange={e => {
-          const f = e.target.files?.[0];
+          const files = [...(e.target.files ?? [])];
           e.target.value = "";
-          if (f) void importMission(f);
+          if (!files.length) return;
+          setNote(null);
+          void importMissionFiles(files).then(r => {
+            if (r.imported.length > 1 || (r.imported.length && r.errors.length)) setNote(`Imported ${r.imported.length} mission${r.imported.length === 1 ? "" : "s"}${r.errors.length ? `, skipped ${r.errors.length}` : ""}`);
+          });
         }}
       />
+      {note && (
+        <span className="small ok-msg" data-testid="mission-import-note">
+          {note}
+        </span>
+      )}
     </div>
   );
 }

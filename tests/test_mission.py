@@ -912,7 +912,7 @@ def test_mission_list_counts_missing_targets(mission_settings):
 
 def test_chat_context_merges_both_area_scopes():
     """One list of named areas: the map's (with symbols) and the operator's
-    mission-only ones; a mission area named like a map area is listed once.
+    mission-only ones; names may repeat, each area listed with its own symbol.
     No-go zones are listed and applied."""
     from adt4_console.mission import llm_planner
 
@@ -931,7 +931,12 @@ def test_chat_context_merges_both_area_scopes():
     assert [(a["name"], a["scope"], a.get("symbol")) for a in areas] == [
         ("Courtyard", "map", "R0"),
         ("A1", "mission", "area1"),
+        ("courtyard", "mission", "area2"),
     ]
+    lookup = llm_planner._area_lookup(regions, ctx)
+    assert lookup["courtyard"] == {"ambiguous": ["R0", "area2"]}
+    assert lookup["area2"]["polygon"] == [[0, 0], [1, 0], [1, 1]] and lookup["R0"]["symbol"] == "R0"
+    assert lookup["a1"]["name"] == "A1"
     text = llm_planner.context_text(ctx, None, regions)
     assert (
         "Named areas" in text
@@ -944,7 +949,7 @@ def test_chat_context_merges_both_area_scopes():
     # an object the map lacks: SAM3 over the robot images before asking the operator
     assert "call search_robot_images with their words first" in text
     lk = llm_planner._area_lookup(regions, ctx)
-    assert lk["R0"] is lk["courtyard"] and lk["a1"]["polygon"] == [
+    assert lk["courtyard"] == {"ambiguous": ["R0", "area2"]} and lk["a1"]["polygon"] == [
         [10, 0],
         [14, 0],
         [14, 4],
@@ -1221,3 +1226,36 @@ def test_export_then_import_is_a_new_saved_mission(mission_settings, tmp_path):
     client2, _ = make_client(mission_settings)  # a console restart
     with client2:
         assert client2.get(f"/api/missions/{new_id}").json()["mission"]["saved"]
+
+
+def test_export_all_then_import_all(mission_settings):
+    """Bulk: every saved mission in one file (drafts only on request); importing it
+    (or a plain list) makes each a new saved mission, skipping and reporting bad ones."""
+    client, _ = make_client(mission_settings)
+    with client:
+        ids = []
+        for name in ("north sweep", "dock run"):
+            mid = client.post("/api/missions", json=_mission().model_dump()).json()["mission"]["id"]
+            client.post(f"/api/missions/{mid}/save", json={"name": name})
+            ids.append(mid)
+        client.post("/api/missions", json=_mission().model_dump())  # an unsaved draft
+        r = client.get("/api/missions/export_all")
+        assert r.status_code == 200 and 'filename="missions_all.json"' in r.headers["content-disposition"]
+        bundle = r.json()
+        assert bundle["format"] == "adt4-missions"
+        assert [m["name"] for m in bundle["missions"]] == ["north sweep", "dock run"]
+        assert len(client.get("/api/missions/export_all?drafts=true").json()["missions"]) == 3
+
+        out = client.post("/api/missions/import_all", json=bundle)
+        assert out.status_code == 200, out.text
+        got = out.json()
+        assert [m["name"] for m in got["imported"]] == ["north sweep (2)", "dock run (2)"]
+        assert got["errors"] == [] and not {m["id"] for m in got["imported"]} & set(ids)
+
+        mixed = [bundle["missions"][0], {"agents": "nope", "name": "broken"}]
+        got = client.post("/api/missions/import_all", json=mixed).json()
+        assert len(got["imported"]) == 1
+        assert got["errors"][0]["index"] == 1 and got["errors"][0]["name"] == "broken"
+        assert client.post("/api/missions/import_all", json={"x": 1}).status_code == 400
+        saved = [m for m in client.get("/api/missions").json()["missions"] if m["saved"]]
+        assert len(saved) == 5
