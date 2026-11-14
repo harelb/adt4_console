@@ -14,6 +14,7 @@ import {useViewer} from "../stores/viewer";
 import {useMedia} from "../lib/media";
 import {ws} from "../ws";
 import {regionColor} from "./EditOverlay";
+import {SaveMapFile} from "./SaveMapFile";
 import {errorText} from "../lib/api";
 import {clearPreview, previewPddl, previewRobots, usePlanPreview} from "../stores/planPreview";
 import {refreshEngines, useEngines} from "../stores/engines";
@@ -194,6 +195,7 @@ export function AreasSection() {
           ))}
         </ul>
       )}
+      <SaveMapFile src={neo4j} />
     </section>
   );
 }

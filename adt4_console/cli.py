@@ -86,6 +86,11 @@ def parse_args(argv=None):
     p.add_argument(
         "--llm-provider", choices=["auto", "openai", "anthropic"], default="auto"
     )
+    p.add_argument(
+        "--snapshots-dir",
+        default="~/.adt4_console/snapshots",
+        help="where map snapshots / saved DSG files go (Save map file, Map > Snapshots)",
+    )
     p.add_argument("--llm-model", help="chat model (default: gpt-4.1-mini for OpenAI)")
     p.add_argument(
         "--llm-budget-usd",
@@ -204,7 +209,7 @@ def settings_from_args(args):
         tiles_live=args.tiles_live,
         missions_dir="~/.adt4_console/missions",
         quad_images_dir="~/.adt4_console/quad_images",
-        snapshots_dir="~/.adt4_console/snapshots",
+        snapshots_dir=args.snapshots_dir,
         mesh_cache_dir="~/.adt4_console/mesh_cache",
         map_edit_mode=args.map_edits,
         quad_cmd_uri=args.quad_cmd_uri,
