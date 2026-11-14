@@ -960,9 +960,19 @@ Khronos do not write that store any more: they log keyframe zips (`keyframes/`),
 * `fleetlink.receiver.Receiver(..., store_root=DIR)` (or `store_mirror=StoreMirror(...)`) writes
   frames with `fleetlink.image_transfer.write_frame` on a worker thread into
   **`<live_store_root>/<robot>/<store_id>/image_store`**; source frame and sensor ids are kept.
-  Console setting `live_store_root` / `--live-store-root` (default `<output_root>/live`,
-  i.e. `~/adt4_output/live`; `""` disables). The result passes `hydra-image-store check` and
-  loads with `agentic_navigation…keyframe_store.load_keyframes_from_store`.
+  Console setting `live_store_root` / `--live-store-root` (default: the current run's
+  `$ADT4_OUTPUT_DIR/live`, else `<output_root>/console_<start time>/live`; never a folder
+  shared across runs, whose older mirrors are in other runs' odometry frames; `""` disables).
+  The result passes `hydra-image-store check` and loads with
+  `agentic_navigation…keyframe_store.load_keyframes_from_store`.
+* **Live state for the SAM3 query server**: every 2 s the console writes `live_state_path` /
+  `--live-state` (default `<output_root>/console_live.json`, a fixed place because
+  openset_query runs in another session with another `ADT4_OUTPUT_DIR`; `""` disables):
+  `{version, written_ns, console_started_ns, pid, live_store_root, robots: {r: {store_id,
+  path, relocalized, reason, frame_align: {ok, parent, child, T}}}}`. openset_query
+  (`--live-state`) searches only these stores, posed into the prior map with `frame_align.T`
+  while `relocalized` is true, and refuses a commit from a live image otherwise (409). The
+  file is removed on a clean console stop.
 * **`GET /api/live`** gains `store: {root, robots: {r: {store_id, path, watermark, frames, bytes,
   avg_frame_bytes, backlog, robot_last, duplicates, skipped, gaps, write_errors, last_error,
   frames_selection, compression, queued_writes}}}`, and each `robots[r]` link gains the same dict

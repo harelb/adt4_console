@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {DEFAULT_PARAMS, cacheChip, pushHistory, seenIn, viewImageUrl, rleDecode, sourceLabel, sourceOptions, timingRows, visibleCandidates, visibleFrames, type HistoryEntry, type Sam3QueryResult} from "../src/viewer/sam3Search";
+import {DEFAULT_PARAMS, cacheChip, candidateOrigin, liveLeftOut, pushHistory, seenIn, viewImageUrl, rleDecode, sourceLabel, sourceOptions, timingRows, visibleCandidates, visibleFrames, type HistoryEntry, type Sam3QueryResult} from "../src/viewer/sam3Search";
 
 const entry = (id: number): HistoryEntry => ({id, at: id, params: {...DEFAULT_PARAMS, prompt: `q${id}`}, status: {}});
 
@@ -39,7 +39,18 @@ describe("sam3Search helpers", () => {
     expect(two.map(o => o.value)).toEqual(["all", "prior", "live", "live/a/1", "live/b/2"]);
     expect(two[2].n).toBe(3);
     expect(sourceLabel("prior")).toBe("Prior map (Neo4j)");
-    expect(sourceLabel("live/hamilton/x")).toBe("Live: hamilton (x)");
+    expect(sourceLabel("live/hamilton/x")).toBe("Live: hamilton (this run)");
+    expect(sourceLabel("live/hamilton/15eb161a2880")).toBe("Live: hamilton (this run)");
+  });
+
+  it("says where a candidate's images came from and which live robots were left out", () => {
+    expect(candidateOrigin(["prior"])).toEqual({text: "Prior map (Neo4j)", live: false});
+    expect(candidateOrigin(["live/hamilton/abc"])).toEqual({text: "Live: hamilton (this run)", live: true});
+    expect(candidateOrigin(["prior", "live/hamilton/abc"])?.text).toBe("Prior map (Neo4j) + Live: hamilton (this run)");
+    expect(candidateOrigin(undefined)).toBeNull();
+    const live = {state: "ok", robots: {hamilton: {aligned: true, reason: null}, euclid: {aligned: false, reason: "euclid is not relocalized against the prior map (relocalizing: 2 / 5)"}}};
+    expect(liveLeftOut(live)).toEqual(["euclid's live images left out: euclid is not relocalized against the prior map (relocalizing: 2 / 5)"]);
+    expect(liveLeftOut(undefined)).toEqual([]);
   });
 
   it("orders timings by pipeline stage", () => {

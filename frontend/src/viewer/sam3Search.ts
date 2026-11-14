@@ -62,6 +62,14 @@ export interface Sam3Candidate {
   would_merge_into: {symbol: string; distance_m: number} | null;
   image_uri: string | null;
   views: Sam3View[];
+  /** keyframe pools the detection came from: "prior" and/or "live/<robot>/<store>" */
+  sources?: string[];
+}
+
+/** Live images of the current run, per robot: used (relocalized) or left out, and why. */
+export interface Sam3LiveStatus {
+  state: string;
+  robots: Record<string, {aligned: boolean; reason: string | null}>;
 }
 
 export interface Sam3QueryResult {
@@ -81,6 +89,8 @@ export interface Sam3QueryResult {
   association?: string;
   /** SAM3 image-feature cache use of this query */
   cache?: Sam3CacheStats;
+  /** the current run's live images: which robots were searched, which left out */
+  live?: Sam3LiveStatus;
 }
 
 export interface Sam3CacheStats {
@@ -187,10 +197,26 @@ export function sourceLabel(id: string): string {
   const m = /^live\/([^/]+)\/(.+)$/.exec(id);
   if (m) {
     const t = Number(m[2]);
-    const when = Number.isFinite(t) && t > 1e9 ? new Date(t * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}) : m[2];
+    // the server only searches the current run's mirror: its id is a store hash
+    const when = Number.isFinite(t) && t > 1e9 ? new Date(t * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}) : "this run";
     return `Live: ${m[1]} (${when})`;
   }
   return id;
+}
+
+/** Where a candidate's images came from: "Prior map (Neo4j)", "Live: hamilton (this run)", or both. */
+export function candidateOrigin(sources: string[] | undefined): {text: string; live: boolean} | null {
+  if (!sources?.length) return null;
+  const live = sources.filter(s => s.startsWith("live/"));
+  const parts = [...(sources.includes("prior") ? [sourceLabel("prior")] : []), ...live.map(sourceLabel)];
+  return {text: parts.join(" + "), live: live.length > 0};
+}
+
+/** "hamilton's live images left out: …" lines for robots the search could not use. */
+export function liveLeftOut(live: Sam3LiveStatus | undefined): string[] {
+  return Object.entries(live?.robots ?? {})
+    .filter(([, r]) => !r.aligned)
+    .map(([robot, r]) => `${robot}'s live images left out: ${r.reason ?? "not relocalized"}`);
 }
 
 /** Source picker options from /health (always offers "all"; "live" when there is more than one mirror). */

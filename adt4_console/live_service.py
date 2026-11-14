@@ -9,9 +9,20 @@ created at once and :attr:`LiveService.status` reports ``waiting`` until the
 session is open, then ``connected``.
 
 Live image-store mirror (fleetlink class C6, API.md §13): the receiver writes
-the robots' store frames into ``<live_store_root>/<robot>/<store_id>/image_store``
-(default ``<output_root>/live``; an empty ``live_store_root`` disables it), a
-valid hydra image store that SAM3 search can load while the run goes on.
+the robots' store frames into ``<live_store_root>/<robot>/<store_id>/image_store``,
+a valid hydra image store that SAM3 search can load while the run goes on. The
+default root is the CURRENT run's output directory: ``$ADT4_OUTPUT_DIR/live``
+(run-adt4 / start-adt4-console set it), else ``<output_root>/console_<start
+time>/live``; never a folder shared across runs, whose older mirrors are in other
+runs' odometry frames. An empty ``live_store_root`` disables mirroring.
+
+Live state for the SAM3 query server (:meth:`LiveService.write_live_state`): every
+``LIVE_STATE_PERIOD_S`` the console writes ``live_state_path`` (default
+``<output_root>/console_live.json``, a fixed place because openset_query runs in
+another session with another ADT4_OUTPUT_DIR) with the mirror root, each robot's
+current store and whether it is relocalized, with its ``map <- robot frame``
+alignment. openset_query searches only those stores, posed into the prior map, and
+only while the robot is relocalized.
 
 Lidar (fleetlink C3 ``lidar/points``, off by default): :meth:`LiveService.set_lidar`
 asks a robot to stream it, :meth:`LiveService.lidar` is the latest frame.  Each
@@ -23,14 +34,18 @@ stops on its own when the base's refreshes stop (``lidar_ttl_s``, 60 s).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
+import time
 
 from .video_service import VideoRelay
 
 log = logging.getLogger(__name__)
 LIDAR_IDLE_S = 15.0  # no lidar GET for this long after an enable: turn it off
+LIVE_STATE_PERIOD_S = 2.0  # console_live.json refresh (openset_query: stale after 30 s)
+LIVE_STATE_VERSION = 1
 
 
 class LiveService:
@@ -43,12 +58,20 @@ class LiveService:
         self.camera_timeout_s = 5.0
         self._stop = threading.Event()
         self.video = VideoRelay(self, hub)  # live camera video (API.md §12)
+        self.started_ns = time.time_ns()
+        self._started_tag = time.strftime("%Y%m%d_%H%M%S")
+        self._state_thread = None
 
     def start(self) -> None:
         if self.receiver is not None:
             self.receiver.start()
         elif self.settings.fleetlink:
             self._connect()
+        if self.live_state_path and self.store_root:
+            self._state_thread = threading.Thread(
+                target=self._state_loop, name="live-state", daemon=True
+            )
+            self._state_thread.start()
 
     def _connect(self) -> bool:
         try:
@@ -97,12 +120,93 @@ class LiveService:
 
     @property
     def store_root(self) -> str | None:
-        """Where live store mirrors go (None = mirroring disabled)."""
+        """Where live store mirrors go (None = mirroring disabled): the current run's
+        output directory, never a folder shared with earlier runs."""
         root = getattr(self.settings, "live_store_root", None)
         if root is None:
-            out = getattr(self.settings, "output_root", None) or "~/adt4_output"
-            root = os.path.join(out, "live")
+            run_dir = os.environ.get("ADT4_OUTPUT_DIR")
+            if not run_dir:
+                out = getattr(self.settings, "output_root", None) or "~/adt4_output"
+                run_dir = os.path.join(out, f"console_{self._started_tag}")
+            root = os.path.join(run_dir, "live")
         return os.path.expanduser(root) if root else None
+
+    @property
+    def live_state_path(self) -> str | None:
+        """Where the live state for the SAM3 query server goes (None = off)."""
+        path = getattr(self.settings, "live_state_path", None)
+        if path is None:
+            out = getattr(self.settings, "output_root", None) or "~/adt4_output"
+            path = os.path.join(out, "console_live.json")
+        return os.path.expanduser(path) if path else None
+
+    def live_state(self) -> dict:
+        """The current run's mirrors and each robot's relocalization (see module doc)."""
+        from .routes.change_detection import relocalized
+
+        stores = (self.store_stats() or {}).get("robots") or {}
+        robots = {}
+        for robot in sorted(set(stores) | set(self.robots())):
+            st = self.state(robot)
+            fa = (st or {}).get("frame_align")
+            if fa is None and self.receiver is not None:
+                try:
+                    fa = (self.receiver.link(robot) or {}).get("frame_align")
+                except Exception:  # noqa: BLE001
+                    fa = None
+            rel = relocalized(st, robot)
+            mirror = stores.get(robot) or {}
+            robots[robot] = {
+                "store_id": mirror.get("store_id"),
+                "path": mirror.get("path"),
+                "relocalized": bool(rel.get("ok")),
+                "reason": rel.get("reason"),
+                "frame_align": (
+                    {k: fa.get(k) for k in ("ok", "parent", "child", "T")}
+                    if isinstance(fa, dict)
+                    else None
+                ),
+            }
+        return {
+            "version": LIVE_STATE_VERSION,
+            "written_ns": time.time_ns(),
+            "console_started_ns": self.started_ns,
+            "pid": os.getpid(),
+            "live_store_root": self.store_root,
+            "robots": robots,
+        }
+
+    def write_live_state(self) -> str | None:
+        """Write :meth:`live_state` atomically to :attr:`live_state_path`."""
+        path = self.live_state_path
+        if not path:
+            return None
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w") as f:
+            json.dump(self.live_state(), f)
+        os.replace(tmp, path)
+        return path
+
+    def _state_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.write_live_state()
+            except Exception:  # noqa: BLE001
+                log.exception("writing the live state")
+            self._stop.wait(LIVE_STATE_PERIOD_S)
+        self._remove_live_state()
+
+    def _remove_live_state(self) -> None:
+        """On a clean stop, drop our state file (not another console's)."""
+        path = self.live_state_path
+        try:
+            with open(path) as f:
+                if json.load(f).get("pid") != os.getpid():
+                    return
+            os.remove(path)
+        except (OSError, ValueError, TypeError):
+            pass
 
     def store_stats(self) -> dict:
         """``{root, robots: {robot: mirror stats}}`` (robots empty when off)."""

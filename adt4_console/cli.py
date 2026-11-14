@@ -56,8 +56,16 @@ def parse_args(argv=None):
         "--live-store-root",
         default=None,
         help="where live image-store mirrors (fleetlink C6) are written: "
-        "<root>/<robot>/<store_id>/image_store (default <output-root>/live; "
+        "<root>/<robot>/<store_id>/image_store (default: the current run's "
+        "$ADT4_OUTPUT_DIR/live, else <output-root>/console_<start>/live; "
         "'' disables mirroring)",
+    )
+    p.add_argument(
+        "--live-state",
+        default=None,
+        help="live state file for the SAM3 query server: the current run's mirrors "
+        "and each robot's relocalization (default <output-root>/console_live.json; "
+        "'' disables it)",
     )
     p.add_argument(
         "--zenoh-connect",
@@ -170,6 +178,7 @@ def settings_from_args(args):
         network=args.network,
         output_root=args.output_root,
         live_store_root=args.live_store_root,
+        live_state_path=args.live_state,
         neo4j=neo4j,
         prior_neo4j=args.prior_neo4j,
         live_neo4j=args.live_neo4j,
