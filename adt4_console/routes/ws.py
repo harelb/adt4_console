@@ -8,6 +8,8 @@ import contextlib
 import msgpack
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from .. import eventlog
+
 router = APIRouter()
 
 
@@ -16,7 +18,9 @@ async def ws(websocket: WebSocket):
     hub = websocket.app.state.services.hub
     await websocket.accept()
     peer = websocket.client
-    client = hub.add_client(asyncio.get_running_loop(), who=peer.host if peer else None)
+    who = peer.host if peer else None
+    client = hub.add_client(asyncio.get_running_loop(), who=who)
+    eventlog.emit("console", "viewer.join", {"client": who, "connection": client.id, **hub.viewers()})
     hub.subscribe(client, None)
 
     async def reader():
@@ -49,5 +53,6 @@ async def ws(websocket: WebSocket):
         for t in tasks:
             t.cancel()
         hub.remove_client(client)
+        eventlog.emit("console", "viewer.leave", {"client": who, "connection": client.id, **hub.viewers()})
         with contextlib.suppress(Exception):
             await websocket.close()

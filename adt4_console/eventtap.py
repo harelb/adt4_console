@@ -148,13 +148,40 @@ RULES = [
     ("POST", r"/api/jobs/([^/]+)/(confirm|cancel)", "op.job", ("job_id", "action")),
     ("DELETE", r"/api/launch/active", "op.launch_clear", ()),
     ("POST", r"/api/missions/([^/]+)/(execute|abort)", "op.mission_plan", ("plan_mission", "action")),
+    # the mission planner: every change to a mission, with the mission as it is after it
+    # (mission_plan.*: replaying them rebuilds each revision), and the map edits it plans on
+    ("POST", r"/api/missions", "mission_plan.create", ()),
+    ("POST", r"/api/missions/import", "mission_plan.import", ()),
+    ("POST", r"/api/missions/import_all", "mission_plan.import_all", ()),
+    ("POST", r"/api/missions/plan/omniplanner", "mission_plan.plan", ()),
+    ("POST", r"/api/missions/plan/preview_pddl", "mission_plan.preview_pddl", ()),
+    ("PUT", r"/api/missions/([^/]+)", "mission_plan.update", ("plan_mission",)),
+    ("DELETE", r"/api/missions/([^/]+)", "mission_plan.delete", ("plan_mission",)),
+    ("POST", r"/api/missions/([^/]+)/(save|replan|rebase|annotate|map_snapshot)", "mission_plan.{1}",
+     ("plan_mission", "action")),
+    ("POST", r"/api/missions/([^/]+)/sim", "mission_plan.sim", ("plan_mission",)),
+    ("POST", r"/api/missions/([^/]+)/candidates/([^/]+)", "mission_plan.candidate", ("plan_mission", "candidate")),
+    ("POST", r"/api/edit/([^/]+)/nodes", "map.create_node", ("src",)),
+    ("PATCH", r"/api/edit/([^/]+)/nodes/([^/]+)", "map.update_node", ("src", "symbol")),
+    ("DELETE", r"/api/edit/([^/]+)/nodes/([^/]+)", "map.retire_node", ("src", "symbol")),
+    ("POST", r"/api/edit/([^/]+)/nodes/([^/]+)/restore", "map.restore_node", ("src", "symbol")),
+    ("POST", r"/api/edit/([^/]+)/edges", "map.connect", ("src",)),
+    ("DELETE", r"/api/edit/([^/]+)/edges", "map.disconnect", ("src",)),
+    ("POST", r"/api/edit/([^/]+)/(group|batch|undo)", "map.{1}", ("src", "action")),
+    ("POST", r"/api/edit/([^/]+)/staged/publish", "map.publish_staged", ("src",)),
+    ("DELETE", r"/api/edit/([^/]+)/staged(?:/([^/]+))?", "map.discard_staged", ("src", "index")),
+    ("POST", r"/api/edit/([^/]+)/snapshots", "map.snapshot", ("src",)),
+    ("DELETE", r"/api/edit/([^/]+)/snapshots/([^/]+)", "map.snapshot_delete", ("src", "snapshot")),
+    ("POST", r"/api/edit/([^/]+)/snapshots/([^/]+)/restore", "map.snapshot_restore", ("src", "snapshot")),
+    ("POST", r"/api/maps/reset", "map.reset", ()),
+    ("POST", r"/api/maps/clear_added", "map.clear_added", ()),
     ("POST", r"/api/robots/([^/]+)/goal/(language|goto|tsp|pddl)", "goal", ("robot", "kind")),
     ("POST", r"/api/robots/([^/]+)/path/direct", "goal", ("robot",)),
 ]
 _COMPILED = [(m, re.compile(p + r"/?$"), t, names) for m, p, t, names in RULES]
 MAX_BODY = 256 * 1024
 RESPONSE_KEYS = ("ok", "error", "detail", "message", "track", "via", "subscribers", "delivered", "warning", "symbol",
-                 "job_id", "decision", "state")  # fmt: skip
+                 "job_id", "decision", "state", "revision", "map_version", "staged", "summary", "affected")  # fmt: skip
 GOAL_ORIGIN_HEADER = b"x-adt4-goal-origin"
 OPERATOR_HEADER = b"x-adt4-operator"
 
@@ -178,6 +205,15 @@ def _json(raw: bytes):
         return json.loads(raw)
     except ValueError:
         return {"$text": raw[:2000].decode("utf-8", "replace")}
+
+
+def mission_of(out):
+    """The mission a mission-planner response carries (the mission itself, or
+    ``{"mission": ..., "preview": ...}``; the preview is left out)."""
+    if not isinstance(out, dict):
+        return None
+    m = out.get("mission") if isinstance(out.get("mission"), dict) else out
+    return m if isinstance(m.get("id"), str) and "agents" in m else None
 
 
 class RestTap:
@@ -246,6 +282,10 @@ class RestTap:
                               robot=robot, goal_id=gid)  # fmt: skip
             return
         payload = {**common, "body": req, "response": summary}
+        if etype.startswith(("mission_plan.", "op.mission_plan")) and etype != "mission_plan.sim":
+            m = mission_of(out)
+            if m is not None:
+                payload["mission"] = m
         if etype == "op.manip" and isinstance(req, dict):
             payload["decision"] = "approve" if req.get("approve") else ("walk_to" if req.get("walk_to") else "reject")
         if etype.startswith("chat.") and isinstance(req, dict):

@@ -14,6 +14,22 @@ from adt4_console.graph_service import FileSource
 from .test_maps_listing import make_store
 
 
+def _run_ids() -> bool:
+    """dcist_launch_system's run_identity writes run ids (ADT4 mission logging A1)."""
+    import inspect
+
+    try:
+        from dcist_launch_system.fleet import run_identity as ri
+    except ImportError:
+        return False
+    return "run_id" in inspect.signature(ri.write_run_info).parameters
+
+
+needs_run_ids = pytest.mark.skipif(
+    not _run_ids(), reason="dcist_launch_system without run ids (ADT4 mission logging A1)"
+)
+
+
 def make_exp_run(exp: pathlib.Path, run_id: str, dsg=True, latest=True) -> pathlib.Path:
     """``<exp>/runs/<run_id>`` with a map (and ``latest`` pointing at it)."""
     run = exp / "runs" / run_id
@@ -111,6 +127,7 @@ def _exp_on(root: pathlib.Path, name="map_x") -> pathlib.Path:
     return exp
 
 
+@needs_run_ids
 def test_transfer_to_a_robot_keeps_layout_without_store_bags_or_logs(settings, fleet):
     _exp_on(fleet.root())
     c, svc = make_client(settings, helpers=fleet.helpers())
@@ -130,6 +147,7 @@ def test_transfer_to_a_robot_keeps_layout_without_store_bags_or_logs(settings, f
     assert any("is a robot" in line["text"] for line in job["log"])
 
 
+@needs_run_ids
 def test_transfer_to_the_base_keeps_the_store_but_not_bags_or_logs(settings, fleet):
     _exp_on(fleet.root(HAMILTON_IP))
     c, svc = make_client(settings, helpers=fleet.helpers())
@@ -147,6 +165,7 @@ def test_transfer_to_the_base_keeps_the_store_but_not_bags_or_logs(settings, fle
     assert not (run / "mission_bag").exists() and not (run / "ros_log").exists()
 
 
+@needs_run_ids
 def test_packed_transfer_pipes_the_latest_runs_store(settings, fleet, monkeypatch):
     exp = _exp_on(fleet.root(HAMILTON_IP))
     piped = []
@@ -186,6 +205,7 @@ def test_packed_transfer_pipes_the_latest_runs_store(settings, fleet, monkeypatc
     ).exists()
 
 
+@needs_run_ids
 def test_index_images_builds_the_latest_runs_store(settings, fleet, monkeypatch):
     exp = fleet.root(HAMILTON_IP) / "map_x"
     run = make_exp_run(exp, "hamilton_20261111-100000_cccc")

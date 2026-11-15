@@ -1730,6 +1730,14 @@ tokens, cost_usd, ok, error; prompt bodies only with `ADT4_LOG_LLM_PROMPTS=1`),
 `op.*` operator REST actions, `session.*`, `mission.*`, `reloc.*`, `link.stats` 5 s,
 `clock.offset` 30 s + mission start/end, `robot.pose` 1 Hz, `reloc.state`, `awcd.changes`,
 `console.restart`), `sam3` (`sam3.query/candidates/commit/discard`).
+The mission planner and map editor log every change in `console` too:
+`mission_plan.create/import/import_all/plan/preview_pddl/update/delete/save/replan/rebase/annotate/map_snapshot/sim/candidate`
+carry the request and the mission as it is after it (`payload.mission`, with its
+`map_revision` / `map_version`; not for `sim` or `preview_pddl`), so the log holds every
+revision of every mission; `map.create_node/update_node/retire_node/restore_node/connect/disconnect/group/batch/undo/publish_staged/discard_staged/snapshot*/reset/clear_added`
+carry the ops and the `revision` / `map_version` they made. `viewer.join` / `viewer.leave`
+(address, connection, viewers, tabs) say who had the console open. Every REST event has the
+requesting `client` address.
 Goal sends carry `X-ADT4-Goal-Origin: auto | operator | plan_panel` (who approved).
 
 A console Launch starts a **session** (`s<YYYYmmdd-HHMMSS>_<4hex>`; every `run-adt4`

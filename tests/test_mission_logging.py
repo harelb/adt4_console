@@ -15,6 +15,7 @@ from adt4_console.goal_tracker import GoalTracker
 from adt4_console.logbook import Conflict, GateClosed, Logbook, goal_symbols
 
 from .conftest import make_client, needs_fleet_core
+from .test_mission import mission_settings, grid_run  # noqa: F401  (fixtures)
 
 
 @pytest.fixture
@@ -476,3 +477,44 @@ def test_launch_passes_session_id(settings, tmp_path, evroot):
     s = json.loads((pathlib.Path(settings.output_root) / "exp9" / "sessions" / sid / "session.json").read_text())
     assert s["reloc"] == {"euclid": "not_required"} and "env" not in s
     time.sleep(0)
+
+
+def test_rest_rules_mission_planner_and_map():
+    assert match("POST", "/api/missions") == ("mission_plan.create", {})
+    assert match("POST", "/api/missions/import_all")[0] == "mission_plan.import_all"
+    assert match("POST", "/api/missions/plan/omniplanner")[0] == "mission_plan.plan"
+    assert match("PUT", "/api/missions/m1") == ("mission_plan.update", {"plan_mission": "m1"})
+    assert match("POST", "/api/missions/m1/replan") == ("mission_plan.replan", {"plan_mission": "m1", "action": "replan"})
+    assert match("POST", "/api/missions/m1/execute")[0] == "op.mission_plan"
+    assert match("PATCH", "/api/edit/neo/nodes/O12") == ("map.update_node", {"src": "neo", "symbol": "O12"})
+    assert match("POST", "/api/edit/neo/nodes/O12/restore")[0] == "map.restore_node"
+    assert match("DELETE", "/api/edit/neo/staged/2")[1] == {"src": "neo", "index": "2"}
+    assert match("POST", "/api/maps/reset") == ("map.reset", {})
+    assert match("POST", "/api/edit/neo/preview") is None  # changes nothing
+    assert match("GET", "/api/missions/m1") is None
+
+
+def test_mission_planner_changes_carry_the_mission(mission_settings, evroot):
+    from .test_mission import _mission
+
+    client, _ = make_client(mission_settings)
+    with client:
+        m = client.post("/api/missions", json=_mission().model_dump()).json()["mission"]
+        client.post(f"/api/missions/{m['id']}/save", json={"name": "crate run"})
+        client.delete(f"/api/missions/{m['id']}")
+    ev = [e for e in events(evroot, "console") if e["type"].startswith("mission_plan.")]
+    assert [e["type"] for e in ev] == ["mission_plan.create", "mission_plan.save", "mission_plan.delete"]
+    created, saved = ev[0]["payload"], ev[1]["payload"]
+    assert created["mission"]["id"] == m["id"] and [a["id"] for a in created["mission"]["agents"]] == ["quad1", "spot1", "spot2"]
+    assert created["body"]["tasks"][0]["type"] == "explore_area"  # the request too
+    assert saved["plan_mission"] == m["id"] and saved["status"] == 200
+    assert "preview" not in saved.get("mission", {})
+
+
+def test_viewers_join_and_leave(settings, evroot):
+    client, _ = make_client(settings)
+    with client, client.websocket_connect("/api/ws"):
+        pass
+    ev = [e for e in events(evroot, "console") if e["type"].startswith("viewer.")]
+    assert [e["type"] for e in ev] == ["viewer.join", "viewer.leave"]
+    assert ev[0]["payload"]["viewers"] == 1 and ev[1]["payload"]["tabs"] == 0
