@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -105,12 +106,65 @@ def _post(base_url: str, path: str, payload: dict | None, timeout_s: float) -> d
     return out
 
 
+def _logged_query(payload: dict, base_url: str, timeout_s: float, via: str) -> dict:
+    """``POST /query`` with ``sam3.query`` + ``sam3.candidates`` events (crops of
+    the rendered candidates go to files: the open mission's ``images/sam3/``)."""
+    from . import eventlog
+
+    t0 = time.monotonic()
+    ev = {"q": payload.get("prompt"), "via": via, "dry_run": payload.get("dry_run"),
+          "knobs": {k: v for k, v in payload.items() if k not in ("prompt", "dry_run")}}  # fmt: skip
+    try:
+        out = _post(base_url, "/query", payload, timeout_s)
+    except Exception as e:
+        eventlog.emit("sam3", "sam3.query", {**ev, "ok": False, "error": str(e)[:500],
+                                             "latency_ms": round(1000 * (time.monotonic() - t0))})  # fmt: skip
+        raise
+    try:
+        cands = candidates(out) if isinstance(out, dict) else []
+        pid = out.get("pending_id") if isinstance(out, dict) else None
+        eventlog.emit("sam3", "sam3.query", {**ev, "ok": True, "n_candidates": len(cands), "pending_id": pid,
+                                             "latency_ms": round(1000 * (time.monotonic() - t0))})  # fmt: skip
+        if cands:
+            eventlog.emit("sam3", "sam3.candidates", {"pending_id": pid, "q": payload.get("prompt"),
+                                                      "list": _candidate_records(cands, pid)})  # fmt: skip
+    except Exception:  # noqa: BLE001
+        import logging
+
+        logging.getLogger(__name__).exception("sam3 event log")
+    return out
+
+
+def _candidate_records(cands: list[dict], pid) -> list[dict]:
+    from . import eventlog, logbook
+
+    lb = logbook._ACTIVE  # noqa: SLF001
+    mdir = lb.mission_dir() if lb is not None and lb.mission is not None else None
+    out = []
+    for c in cands:
+        rec = {"index": c.get("index"), "label": c.get("label"), "score": c.get("score"),
+               "robot": c.get("robot"), "frame_id": c.get("frame_id") or c.get("key"),
+               "centroid": _round(c.get("centroid")), "bbox_min": _round(c.get("bbox_min")),
+               "bbox_max": _round(c.get("bbox_max")), "num_views": c.get("num_views"),
+               "would_merge_into": _merge_target(c)}  # fmt: skip
+        uri = best_image(c)
+        if uri:
+            try:
+                data, media = data_uri_bytes(uri)
+                ext = ".png" if "png" in media else ".jpg"
+                name = f"{pid or 'q'}_{c.get('index')}{ext}"
+                dest = mdir / "images" / "sam3" / name if mdir is not None else None
+                rec["crop"] = eventlog.get("sam3").put_file(name, data, subdir="sam3", dest=dest)
+            except Exception:  # noqa: BLE001
+                rec["crop"] = None
+        out.append(rec)
+    return out
+
+
 def query(prompt: str, base_url: str, timeout_s: float = 180.0, dry_run=True) -> dict:
     """Chat's search: the best view of each candidate comes back rendered (the chat
     card shows one image), the other views as metadata."""
-    return _post(
-        base_url,
-        "/query",
+    return _logged_query(
         {
             "prompt": prompt,
             "mode": QUERY_MODE,
@@ -121,7 +175,9 @@ def query(prompt: str, base_url: str, timeout_s: float = 180.0, dry_run=True) ->
             "render": "best",
             "dry_run": bool(dry_run),
         },
+        base_url,
         timeout_s,
+        "chat",
     )
 
 
@@ -154,7 +210,7 @@ def query_with(prompt: str, base_url: str, timeout_s: float = 180.0, **knobs) ->
         {k: v for k, v in knobs.items() if k in QUERY_KNOBS and v is not None}
     )
     payload["dry_run"] = True
-    return _post(base_url, "/query", payload, timeout_s)
+    return _logged_query(payload, base_url, timeout_s, "search_panel")
 
 
 def rank(
@@ -208,9 +264,21 @@ def data_uri_bytes(uri: str) -> tuple[bytes, str]:
 
 
 def commit(pending_id: str, index: int, base_url: str, timeout_s: float = 60.0) -> dict:
-    return _post(
-        base_url, "/commit", {"pending_id": pending_id, "index": int(index)}, timeout_s
-    )
+    from . import eventlog
+
+    try:
+        out = _post(
+            base_url, "/commit", {"pending_id": pending_id, "index": int(index)}, timeout_s
+        )
+    except Exception as e:
+        eventlog.emit("sam3", "sam3.commit", {"pending_id": pending_id, "index": int(index), "ok": False,
+                                              "error": str(e)[:500]})  # fmt: skip
+        raise
+    o = out if isinstance(out, dict) else {}
+    eventlog.emit("sam3", "sam3.commit", {"pending_id": pending_id, "index": int(index), "ok": True,
+                                          "object_id": o.get("symbol"), "created": o.get("created"),
+                                          "merged": o.get("merged")})  # fmt: skip
+    return out
 
 
 def reload(base_url: str, timeout_s: float = 900.0) -> dict:
@@ -220,7 +288,15 @@ def reload(base_url: str, timeout_s: float = 900.0) -> dict:
 
 
 def discard(pending_id: str, base_url: str, timeout_s: float = 15.0) -> dict:
-    return _post(base_url, "/discard", {"pending_id": pending_id}, timeout_s)
+    from . import eventlog
+
+    try:
+        out = _post(base_url, "/discard", {"pending_id": pending_id}, timeout_s)
+    except Exception as e:
+        eventlog.emit("sam3", "sam3.discard", {"pending_id": pending_id, "ok": False, "error": str(e)[:500]})
+        raise
+    eventlog.emit("sam3", "sam3.discard", {"pending_id": pending_id, "ok": True})
+    return out
 
 
 def _round(v, nd=2):

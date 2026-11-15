@@ -89,10 +89,10 @@ export async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T>
   return (await (await request(path, {signal})).json()) as T;
 }
 
-export async function sendJSON<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function sendJSON<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
   const res = await request(path, {
     method,
-    headers: body === undefined ? undefined : {"Content-Type": "application/json"},
+    headers: body === undefined ? extraHeaders : {"Content-Type": "application/json", ...extraHeaders},
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();

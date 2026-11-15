@@ -4,6 +4,7 @@ import {AlignStatus} from "./RobotLegend";
 import {RelocDetails} from "./RelocDetails";
 import {ChangeDetectionControl} from "./ChangeDetection";
 import {AwcdChangesPanel} from "./AwcdChanges";
+import {SessionPanel} from "./SessionPanel";
 import {useViewer} from "../stores/viewer";
 import {errorText, getJSON, postJSON} from "../lib/api";
 import {fmtRate} from "../lib/fuzzy";
@@ -145,12 +146,14 @@ export function LivePanel() {
   if (loaded && !all.length)
     return (
       <div className="live-panel">
+        <SessionPanel />
         <AwcdChangesPanel />
         <Empty title="No live robots">fleetlink has not heard from any robot. Is the console running with fleetlink enabled?</Empty>
       </div>
     );
   return (
     <div className="live-panel">
+      <SessionPanel />
       <AwcdChangesPanel />
       {focused && (
         <div className="row gap-sm">
