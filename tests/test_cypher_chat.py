@@ -24,16 +24,37 @@ def _neo4j_up() -> bool:
 
         with neo4j.GraphDatabase.driver(NEO4J_URI, auth=("neo4j", "neo4j_pw")) as d:
             d.verify_connectivity()
-            return (
-                d.execute_query("MATCH (o:Object) RETURN count(o) AS c")[0][0]["c"] > 0
-            )
+            return True
     except Exception:  # noqa: BLE001
         return False
 
 
-live_neo4j = pytest.mark.skipif(
-    not _neo4j_up(), reason=f"no populated Neo4j at {NEO4J_URI}"
-)
+live_neo4j = pytest.mark.skipif(not _neo4j_up(), reason=f"no Neo4j at {NEO4J_URI}")
+
+PROBE_SYM = "O987654"  # an object symbol no test map uses
+
+
+@pytest.fixture
+def probe_object():
+    """An object (and, if the DB has none, a labelspace) of the test's own, so the
+    test does not depend on what other tests left in the shared test DB."""
+    import neo4j
+
+    with neo4j.GraphDatabase.driver(NEO4J_URI, auth=("neo4j", "neo4j_pw")) as d:
+        d.execute_query(
+            "MERGE (o:Object {nodeSymbol: $s}) SET o.class = 'tree', "
+            "o.center = point({x: 1.0, y: 2.0, z: 3.0})",
+            s=PROBE_SYM,
+        )
+        d.execute_query(
+            "OPTIONAL MATCH (l:_Labelspace) WITH count(l) AS n WHERE n = 0 "
+            "CREATE (:_Labelspace {layer: 'object', names: ['tree'], chat_probe: true})"
+        )
+        try:
+            yield PROBE_SYM
+        finally:
+            d.execute_query("MATCH (o:Object {nodeSymbol: $s}) DETACH DELETE o", s=PROBE_SYM)
+            d.execute_query("MATCH (l:_Labelspace {chat_probe: true}) DELETE l")
 
 
 @pytest.fixture
@@ -144,18 +165,18 @@ def test_without_neo4j_the_label_search_stands_in(neo4j_chat_or_file):
 
 # ------------------------------------------------------------- against Neo4j
 @live_neo4j
-def test_cypher_tools_and_schema_in_prompt(neo4j_chat):
+def test_cypher_tools_and_schema_in_prompt(neo4j_chat, probe_object):
     client, svc = neo4j_chat
     fake = _client(
         [
             NS(content=None, tool_calls=[_call("1", "run_cypher", {
-                "query": "MATCH (o:Object {nodeSymbol: 'O7'}) RETURN o.class AS class, o.center AS center"})]),
+                "query": f"MATCH (o:Object {{nodeSymbol: '{probe_object}'}}) RETURN o.class AS class, o.center AS center"})]),
             NS(content=None, tool_calls=[_call("2", "run_cypher", {"query": "CREATE (n:_ChatProbe) RETURN n"})]),
             NS(content="O(7) is a tree.", tool_calls=None),
         ]
     )  # fmt: skip
     svc.chat._client, svc.chat._client_provider = fake, "openai"
-    out = _chat(client, "what is O7?", src="neo4j:live")
+    out = _chat(client, f"what is {probe_object}?", src="neo4j:live")
     first = fake.chat.completions.calls[0]
     names = [t["function"]["name"] for t in first["tools"]]
     assert names == [

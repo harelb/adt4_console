@@ -128,6 +128,17 @@ def topology_copy(tmp_path):
     return dst
 
 
+@pytest.fixture(autouse=True)
+def fleet_addresses(tmp_path, monkeypatch):
+    """An empty private fleet-address overlay of the test's own: tests never read
+    (or write) the machine's real one, and a topology save has somewhere to put
+    the addresses (ADT4 never writes them into topology.yaml)."""
+    p = tmp_path / "fleet_addresses.yaml"
+    p.write_text("---\n{}\n")
+    monkeypatch.setenv("ADT4_FLEET_ADDRESSES", str(p))
+    return p
+
+
 @pytest.fixture
 def settings(tmp_path, topology_copy):
     return Settings(

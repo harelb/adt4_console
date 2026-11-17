@@ -148,7 +148,9 @@ def test_launch_validation_and_dry_run(client):
     lines = client.post(
         "/api/launch/dry_run", json={**PLAN, "link_mode": "fleetlink"}
     ).json()["lines"]
-    assert "fleetlink mode" in lines[0] and "ADT4_FLEET_LINK=fleetlink" in lines[1]
+    assert "fleetlink mode" in lines[0]
+    # ADT4_FLEETLINK_MODE (ADT4_FLEET_LINK before the rename)
+    assert "ADT4_FLEETLINK_MODE=fleetlink" in lines[1] or "ADT4_FLEET_LINK=fleetlink" in lines[1]
     r = client.post("/api/launch/dry_run", json={**PLAN, "link_mode": "smoke-signals"})
     assert r.status_code == 400 and "link mode" in r.json()["detail"]
     assert d["link_modes"] == ["router", "fleetlink"]
@@ -159,7 +161,7 @@ def test_launch_validation_and_dry_run(client):
 
 
 @needs_fleet_core
-def test_topology_edit_delete_save_preserves_file(client, topology_copy):
+def test_topology_edit_delete_save_preserves_file(client, topology_copy, fleet_addresses):
     topology_copy.write_text(
         topology_copy.read_text().replace(
             "machines:\n", "machines:  # fleet machines\n", 1
@@ -192,7 +194,14 @@ def test_topology_edit_delete_save_preserves_file(client, topology_copy):
 
     saved = YAML().load(topology_copy.read_text())
     assert saved["machines"]["euclid"]["desc"] == "Edited desc"
-    assert saved["machines"]["euclid"]["addresses"]["mit_wifi"] == "198.51.100.2"
+    # addresses go to the private fleet-address overlay, never into topology.yaml
+    # (ADT4 before the overlay wrote them into topology.yaml)
+    overlay = YAML().load(fleet_addresses.read_text()) or {}
+    if overlay.get("machines"):
+        assert overlay["machines"]["euclid"]["addresses"]["mit_wifi"] == "198.51.100.2"
+        assert "198.51.100.2" not in topology_copy.read_text()
+    else:
+        assert saved["machines"]["euclid"]["addresses"]["mit_wifi"] == "198.51.100.2"
     assert "newbot" in saved["machines"] and "gauss" not in saved["machines"]
     assert list(saved)[:2] == ["networks", "machines"]  # key order preserved
     assert "machines:  # fleet machines" in topology_copy.read_text()  # comment kept
