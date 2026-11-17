@@ -55,12 +55,73 @@ def _driver(src):
     return src.db().driver
 
 
+# A nodeSymbol compared with a string or a list of strings (property map, =, <>, IN).
+_SYMBOL_CMP = re.compile(
+    r"(nodeSymbol\s*(?::|=|<>|\bIN\b)\s*)(\[[^\]]*\]|'[^']*'|\"[^\"]*\")", re.I
+)
+_SYMBOL_LIT = re.compile(r"(['\"])([A-Za-z]\d+)\1")
+
+
+def _other_case(sym: str) -> str:
+    return sym[0].swapcase() + sym[1:]
+
+
+def _stored_symbols(src, candidates) -> set:
+    """Which of these node symbols the database holds, spelled exactly so."""
+    import neo4j
+
+    with _driver(src).session(default_access_mode=neo4j.READ_ACCESS) as s:
+        res = s.run(
+            "MATCH (n) WHERE n.nodeSymbol IN $c RETURN DISTINCT n.nodeSymbol AS s",
+            c=sorted(candidates),
+        )
+        return {r["s"] for r in res}
+
+
+def match_symbol_case(src, query: str) -> str:
+    """The query with node symbols spelled the way this map stores them.
+
+    The letter's case is part of the symbol and differs by layer and by map:
+    objects are "O710", agents "a12", mesh places "T3349" on current Hydra maps
+    and "t3349" on older ones. Operators type places as the planner prints
+    them ("t3349"), and an exact match on the other spelling finds nothing.
+
+    A symbol compared to ``nodeSymbol`` is respelled only when the map has no
+    node with it as written and has one with the letter's case swapped; a
+    symbol that exists as written (or in neither spelling) is left alone, so a
+    map holding both ``p850`` and ``P850`` is queried as asked."""
+    wanted = {
+        lit[2] for cmp in _SYMBOL_CMP.finditer(query) for lit in _SYMBOL_LIT.finditer(cmp[2])
+    }  # fmt: skip
+    if not wanted:
+        return query
+    try:
+        stored = _stored_symbols(src, wanted | {_other_case(w) for w in wanted})
+    except Exception:  # noqa: BLE001 — the query then runs as written
+        return query
+    respell = {
+        w: _other_case(w)
+        for w in wanted
+        if w not in stored and _other_case(w) in stored
+    }
+    if not respell:
+        return query
+
+    def fix(m):
+        lits = _SYMBOL_LIT.sub(lambda s: s[1] + respell.get(s[2], s[2]) + s[1], m[2])
+        return m[1] + lits
+
+    return _SYMBOL_CMP.sub(fix, query)
+
+
 def run_read(
     src, query: str, max_rows: int = MAX_ROWS, timeout_s: float = READ_TIMEOUT_S
 ) -> dict:
     """``{columns, rows, row_count, truncated}`` or ``{error}`` (sent back to the
     model so it can correct the query, like heracles_agents)."""
     import neo4j
+
+    query = match_symbol_case(src, query)
 
     @neo4j.unit_of_work(timeout=timeout_s)
     def work(tx):
@@ -131,8 +192,11 @@ mapping natural-language questions to Cypher queries for it.
 returns nothing useful, correct the Cypher and retry (up to about 6 queries). \
 Briefly say what you are looking up before each query.
 - Node symbols in the database have NO parentheses or quotes: object O(12) is \
-nodeSymbol "O12", mesh place P(850) is "P850". Write them that way in Cypher; show \
-them to the operator as O(12) / P(850).
+nodeSymbol "O12", mesh place P(850) is "P850". The letter's case is part of the symbol \
+and depends on the layer and the map (the schema below shows one symbol per label): \
+operators type mesh places as the planner prints them ("t3349") even when the map \
+stores "T3349". Write symbols the way the schema shows them; show them to the \
+operator as O(12) / P(850) / T(3349).
 - Never write with run_cypher (it is read-only). To change the map, prefer \
 propose_map_edit (reclassify / rename / move / remove / add objects, connect or \
 disconnect nodes, mark places blocked, make a named region from a polygon or a set of \
@@ -172,8 +236,8 @@ still on screen and the operator may approve more of them.
 MAP_NOTES = """\
 About the maps in this console (these notes win over the descriptions above):
 - Node symbols in the database have NO parentheses or quotes ("O12", not "O(12)"). Mesh \
-places can be P<n> (with a semantic class such as road or sidewalk) or t<n> (traversability \
-places, no class), depending on the map; the schema below says which this map has. Place \
+places can be P<n> (with a semantic class such as road or sidewalk) or T<n> / t<n> \
+(traversability places, no class; upper or lower case), depending on the map; the schema below says which this map has. Place \
 nodes (3D free space) are not planner targets: goals use MeshPlace and Object ids.
 - Rooms are also the operator's named regions (class 'region', a name such as 'courtyard', \
 a boundary polygon): a region CONTAINS the places inside it and those places CONTAIN the \
@@ -234,7 +298,7 @@ def describe(src) -> str:
             max_rows=80,
         )
         props = ", ".join(sorted(x["k"] for x in keys.get("rows", [])))
-        lines.append(f"- {r['l']}: {r['c']}  ({props})")
+        lines.append(f"- {r['l']}: {r['c']}  ({props}){_symbol_example(src, r['l'])}")
     rels = run_read(
         src,
         "MATCH ()-[r]->() RETURN type(r) AS t, count(*) AS c ORDER BY c DESC",
@@ -286,6 +350,18 @@ def describe(src) -> str:
             )
         )
     return "\n".join(lines)
+
+
+def _symbol_example(src, label: str) -> str:
+    """One node symbol of this label as stored, so the model writes its case."""
+    one = run_read(
+        src,
+        f"MATCH (n:`{label}`) WHERE n.nodeSymbol IS NOT NULL "
+        "RETURN n.nodeSymbol AS s LIMIT 1",
+        max_rows=1,
+    )
+    rows = one.get("rows") or []
+    return f'  symbols like "{rows[0]["s"]}"' if rows else ""
 
 
 def _ui_sym(s) -> str:
