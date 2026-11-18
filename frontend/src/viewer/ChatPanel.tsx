@@ -38,6 +38,7 @@ import type {FastDownwardInfo} from "../lib/fastDownward";
 import {decideMapEdit, MapEditCard, mapEditNote, statusOf, toMapEditItem, type MapEditItem} from "./MapEditCard";
 import {decideSceneEdit, SceneEditCard, sceneEditNote, sceneEditStatus, toSceneEditItem, undoSceneEdit, type SceneEditItem} from "./SceneEditCard";
 import {refreshEdit} from "../stores/mapEdit";
+import {sendQuadGoal, takeFollowUp, useQuad, type QuadFollowUp} from "../lib/quad";
 import {candidateMeta, candidateNote, candidateOrdinals, cellText, cypherErrorShort, fmtExpiry, fmtExtent, lookupSummary, mergeTargetsAfterCommit, scrollAnchor, toolGroups, trimTranscript, writeNote, type TranscriptItem, type WriteOutcome} from "../lib/chatTranscript";
 
 export type ChatItem =
@@ -53,7 +54,20 @@ export type ChatItem =
   | ImagesItem
   | ObjectCandidate
   | AutoSendItem
+  | QuadGoalItem
   | {type: "goal_event"; event: GoalEvent};
+
+/** propose_quad_goal: fly Penn's quad over a point (the operator sends it). */
+export interface QuadGoalItem {
+  type: "quad_goal";
+  x: number;
+  y: number;
+  label: string;
+  capture: boolean;
+  query: string;
+  reason: string;
+  sent?: {tone: SendTone; text: string};
+}
 
 /** A plan the chat sent by itself ("Auto-send to online robots"): local only. */
 export interface AutoSendItem {
@@ -206,6 +220,9 @@ export function toChatItem(o: Record<string, unknown>): ChatItem | null {
       return toSceneEditItem(o);
     case "images":
       return {type: "images", src: String(o.src ?? ""), items: Array.isArray(o.items) ? (o.items as ImagesItem["items"]) : []};
+    case "quad_goal":
+      if (typeof o.x !== "number" || typeof o.y !== "number") return {type: "error", text: "quad goal without a point"};
+      return {type: "quad_goal", x: o.x, y: o.y, label: String(o.label ?? ""), capture: o.capture !== false, query: String(o.query ?? ""), reason: String(o.reason ?? "")};
     case "object_candidate": {
       if (typeof o.pending_id !== "string") return {type: "error", text: "object candidate without pending_id"};
       const m = o.would_merge_into as {symbol?: unknown; distance_m?: unknown} | null | undefined;
@@ -434,7 +451,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
 
   /** One turn: ``message`` from the operator, or an operator note (``note``)
    *  the assistant should react to (an approval). */
-  const ask = async (message: string, note = false) => {
+  const ask = async (message: string, note = false, attach?: QuadFollowUp["attach"]) => {
     if (busyRef.current) {
       // the assistant is mid-turn: keep the note for the next request
       transcript.current = [...transcript.current, {role: "user", text: message}];
@@ -447,6 +464,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
     abort.current = ctl;
     let gotTranscript = false;
     const toSend: AutoQueued[] = [];
+    const quadToSend: QuadGoalItem[] = [];
     let lastGoal: ChatItem | null = null;
     try {
       const headers: Record<string, string> = {"Content-Type": "application/json"};
@@ -473,6 +491,8 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
         reasoning: isReasoningModel(chosenModel ?? defaultModel) ? reasoning : undefined,
         // the planner toggle: the engine of the goals the chat proposes (undefined: older backend)
         engine: chatEngineNow(),
+        // a quad capture the model sees with this message (the arrival follow-up)
+        attach,
       };
       const res = await fetch("api/chat", {method: "POST", headers, body: JSON.stringify(body), signal: ctl.signal});
       if (!res.ok || !res.body) {
@@ -507,6 +527,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           if (it.type === "goal" && it.kind === "pddl" && typeof it.body.goal === "string")
             toSend.push({goal: it.body.goal, engine: (it.body.engine as string | undefined) ?? engineNow, constraints: it.body.constraints, card: it});
           else if (it.type === "mission" && it.planned?.pddl_goal) toSend.push({goal: it.planned.pddl_goal, engine: it.planned.engine ?? engineNow});
+          else if (it.type === "quad_goal") quadToSend.push(it);
         }
         // a proposed mission opens in the Mission tab at once (on a phone the
         // chat sheet stays up: the tab is only selected for when the panel opens)
@@ -525,6 +546,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
       }
       if (buf.trim()) for (const o of parseNdjson(buf + "\n")[0] as Record<string, unknown>[]) handle(o);
       for (const q of toSend) await autoSendGoal(q);
+      for (const card of quadToSend) await sendQuadCard(card);
     } catch (e) {
       if (!ctl.signal.aborted) push({type: "error", text: errorText(e)});
     } finally {
@@ -699,6 +721,28 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
     transcript.current = [...transcript.current, {role: "user", text: `[operator] auto-sent ${q.goal} through ${plan.via}: ${result!.text}`}];
   };
 
+  /** Send a quad goal card (the operator's click, or auto-send) and say how it went. */
+  const sendQuadCard = async (card: QuadGoalItem) => {
+    const mark = (sent: QuadGoalItem["sent"]) => setItems(cur => cur.map(c => (c === card || (c.type === "quad_goal" && c.x === card.x && c.y === card.y && !c.sent) ? {...card, sent} : c)));
+    mark({tone: "warn", text: "sending…"});
+    try {
+      const g = await sendQuadGoal(card);
+      mark({tone: "ok", text: `Sent the quad over ${g.label || card.label}${card.capture ? "; it takes a picture there" : ""}`});
+      transcript.current = [...transcript.current, {role: "user", text: `[operator] sent the quad over ${card.label} (goal ${g.id}).`}];
+    } catch (e) {
+      mark({tone: "err", text: `failed: ${errorText(e)}`});
+    }
+  };
+
+  // the quad arrived and took the picture this tab asked for: the assistant looks at it
+  const followUps = useQuad(s => s.followUps.length);
+  useEffect(() => {
+    if (missionMode || busy || !followUps) return;
+    const f = takeFollowUp();
+    if (f) void ask(f.message, true, f.attach);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followUps, busy, missionMode]);
+
   const sendProposal = async (idx: number) => {
     const it = items[idx];
     if (it.type !== "goal") return;
@@ -848,6 +892,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           if (it.type === "mission") return <MissionCard key={i} it={it} />;
           if (it.type === "autosend") return <AutoSendCard key={i} it={it} />;
           if (it.type === "goal_event") return <GoalEventLine key={i} event={it.event} />;
+          if (it.type === "quad_goal") return <QuadGoalCard key={i} it={it} onSend={missionMode || it.sent ? undefined : () => void sendQuadCard(it)} />;
           return <GoalCard key={i} it={it} robot={it.robot ?? planRobot} src={src ?? null} onSend={missionMode ? undefined : () => void sendProposal(i)} />;
         })}
         {busy && <Spinner label="thinking" />}
@@ -1163,6 +1208,35 @@ function ImagesCard({it}: {it: ImagesItem}) {
 
 
 /** ``onSend`` absent (the mission planner, which only simulates): no Send button. */
+/** propose_quad_goal: where the quad flies, whether it takes a picture, what SAM3 looks for. */
+export function QuadGoalCard({it, onSend}: {it: QuadGoalItem; onSend?: () => void}) {
+  const sent = it.sent;
+  return (
+    <div className="msg msg-goal" data-testid="quad-goal">
+      <div className="row gap between">
+        <span>
+          <Badge tone="info">quad</Badge> fly over <b>{it.label || `(${it.x.toFixed(1)}, ${it.y.toFixed(1)})`}</b>
+        </span>
+      </div>
+      {it.reason && <div className="small">{it.reason}</div>}
+      <div className="small muted">
+        map ({it.x.toFixed(1)}, {it.y.toFixed(1)}) · {it.capture ? "takes a picture on arrival" : "no picture"}
+        {it.query ? <> · SAM3 looks for “{it.query}”</> : null}
+      </div>
+      <div className="goal-actions">
+        {onSend ? (
+          <button className="btn btn-sm btn-primary" disabled={Boolean(sent && sent.tone !== "err")} onClick={onSend} data-testid="quad-goal-send">
+            Send the quad
+          </button>
+        ) : !sent ? (
+          <span className="small muted">Sending the quad is in the Robot view</span>
+        ) : null}
+      </div>
+      {sent && <div className={`small tone-${sent.tone}`}>{sent.text}</div>}
+    </div>
+  );
+}
+
 export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"}>; robot: string | null; src: string | null; onSend?: () => void}) {
   const b = it.body as {goal?: string; points?: string[]; command?: string; engine?: string; constraints?: {predicate: string; symbols: string[]}[]};
   const sent = it.sent;

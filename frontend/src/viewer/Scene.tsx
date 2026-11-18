@@ -27,7 +27,7 @@ import {usePlatform} from "./usePlatform";
 import {robotModelFor} from "../lib/robotModel";
 import {PoseTrack} from "../lib/gait";
 import {SatelliteGround} from "./SatelliteGround";
-import {agentColors, MapHover, MissionOverlay} from "./MissionOverlay";
+import {agentColors, LiveQuadGlyph, MapHover, MissionOverlay} from "./MissionOverlay";
 import {pickRadius, TapTracker} from "../lib/tap";
 import {useMission} from "../stores/mission";
 import {usePlanPreview} from "../stores/planPreview";
@@ -832,6 +832,7 @@ function MissionLayer({bounds}: {bounds: {min: number[]; max: number[]} | null})
   return (
     <>
       <MissionOverlay groundZ={z} />
+      <LiveQuadGlyph groundZ={z} />
       <MapHover z={z} />
     </>
   );
