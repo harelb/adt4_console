@@ -83,6 +83,7 @@ class Services:
     geo: GeoService | None = None
     missions: object = None  # mission.service.MissionService
     quad: object = None  # quad.link.QuadLink
+    quad_svc: object = None  # quad.service.QuadService: goals, captures, SAM3
     edits: object = None  # edit_service.EditService
     maps: object = None  # map_loader.MapLoader: the live map and switching it
     scene_repair: object = (
@@ -109,7 +110,9 @@ class Services:
         if self.teleop is not None:
             self.teleop.start()
         self.live.start()
-        if self.quad is not None:
+        if self.quad_svc is not None:
+            self.quad_svc.start()
+        elif self.quad is not None:
             self.quad.start()
         self.graph.start()
         self.graph.warm()
@@ -122,6 +125,7 @@ class Services:
         for svc in (
             self.nav_viz,
             self.missions,
+            self.quad_svc,
             self.quad,
             self.teleop,
             self.live,
@@ -169,13 +173,18 @@ def build_services(
     from .mission.service import MissionService
     from .quad.link import QuadLink
     from .quad.protocol import QuadFrame
+    from .quad.service import QuadService
 
+    # the frame follows the map loaded now, not the one at startup
     svc.quad = QuadLink(
         settings.quad_cmd_uri,
         settings.quad_image_uri,
-        QuadFrame(svc.geo.default_anchor() if settings.quad_cmd_uri or settings.quad_image_uri else None,
-                  settings.quad_utm_origin, settings.quad_map_offset),
+        QuadFrame(lambda: svc.geo.default_anchor(), settings.quad_utm_origin, settings.quad_map_offset),
+        reply_host=settings.quad_reply_host,
+        hfov_deg=settings.quad_hfov_deg,
     )  # fmt: skip
+    svc.quad_svc = QuadService(svc.quad, hub, settings)
+    chat.quad = svc.quad_svc
     from .live_anchor import LiveAnchor
     from .nav_viz import FixToMap, NavViz
 

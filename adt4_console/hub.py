@@ -38,6 +38,7 @@ LATEST_VALUE_PREFIXES = (
     "link/",
     "grid/",
     "mission/",
+    "quad/",
     "manipulation/",
     "goal_track/",
     "awcd/",

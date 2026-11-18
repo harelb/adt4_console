@@ -104,12 +104,56 @@ def chat_reasoning_effort(model: str) -> str:
     return "minimal" if re.match(r"^gpt-5(-mini|-nano)?$", model or "") else "none"
 
 
+IMAGE_NOTE = "(images shown to you for this tool result)"
+MAX_MODEL_IMAGES = 2  # per tool result / attached message
+
+
+def _data_uri_parts(uri: str) -> tuple[str, str]:
+    """``data:image/jpeg;base64,...`` -> (media type, base64 payload)."""
+    head, _, b64 = uri.partition(",")
+    media = head[5:].split(";")[0] if head.startswith("data:") else "image/jpeg"
+    return media or "image/jpeg", b64
+
+
+def tool_item(call: dict, out) -> dict:
+    """A tool result for the transcript; ``out["_images"]`` (data URIs) are shown
+    to the model with it, not serialised into its text."""
+    images = out.pop("_images", None) if isinstance(out, dict) else None
+    item = {"role": "tool", "id": call["id"], "name": call["name"],
+            "content": _clip(json.dumps(out, default=str))}  # fmt: skip
+    if images:
+        item["images"] = list(images)[:MAX_MODEL_IMAGES]
+    return item
+
+
+def strip_images(items: list[dict]) -> list[dict]:
+    """The transcript the client keeps: images are seen once, in the turn that
+    attached them, and never travel back with the history."""
+    return [{k: v for k, v in it.items() if k != "images"} for it in items]
+
+
 def to_responses(items: list[dict]) -> list[dict]:
-    """Chat items -> /v1/responses input: messages, function_call and function_call_output items."""
+    """Chat items -> /v1/responses input: messages, function_call and function_call_output items.
+    Images (user items, tool results) become ``input_image`` parts of a user message;
+    a tool result's images follow the run of outputs they belong to."""
     out = []
+    pending: list[str] = []
+
+    def flush():
+        if pending:
+            out.append({"role": "user", "content": [{"type": "input_text", "text": IMAGE_NOTE}]
+                        + [{"type": "input_image", "image_url": u} for u in pending]})  # fmt: skip
+            pending.clear()
+
     for it in items:
+        if it["role"] != "tool":
+            flush()
         if it["role"] == "user":
-            out.append({"role": "user", "content": it["text"]})
+            if it.get("images"):
+                out.append({"role": "user", "content": [{"type": "input_text", "text": it["text"]}]
+                            + [{"type": "input_image", "image_url": u} for u in it["images"]]})  # fmt: skip
+            else:
+                out.append({"role": "user", "content": it["text"]})
         elif it["role"] == "assistant":
             if it.get("text"):
                 out.append({"role": "assistant", "content": it["text"]})
@@ -124,6 +168,8 @@ def to_responses(items: list[dict]) -> list[dict]:
                     "output": it["content"],
                 }
             )
+            pending.extend(it.get("images") or [])
+    flush()
     return out
 
 
@@ -442,6 +488,8 @@ class ChatTurn:
     grstaps: bool | None = None
     # a scene change recheck (ChatService.recheck): read tools and propose_goal only
     recheck: bool = False
+    # images shown to the model with this turn's message (data URIs)
+    images: list = field(default_factory=list)
 
 
 class ChatService:
@@ -456,6 +504,7 @@ class ChatService:
         self._writes = WriteProposals()
         self._edits = EditProposals()
         self.missions = None  # mission.service.MissionService (propose_mission)
+        self.quad = None  # quad.service.QuadService (Penn quad tools)
         self.edits = None  # edit_service.EditService (propose_map_edit)
         self.sget = (
             None  # sget.SgetService (plan repair's scene edits, when its writer runs)
@@ -592,6 +641,7 @@ class ChatService:
         reasoning: str | None = None,
         engine: str | None = None,
         recheck: bool = False,
+        attach: dict | None = None,
     ):
         """One chat turn.  ``history``: the transcript items of earlier turns
         (the client keeps them; each turn ends with a ``transcript`` event
@@ -646,6 +696,17 @@ class ChatService:
             edit_only=bool(SGET_PREFIX.match(message or "")),
             recheck=recheck,
         )
+        cid = (attach or {}).get("quad_capture") if isinstance(attach, dict) else None
+        if cid and self.quad is not None:
+            # the quad's image (or its SAM3 overlay) comes with this message
+            try:
+                summary, turn.images = self.quad.for_model(str(cid))
+                message = f"{message}\n\n[quad capture {cid}] {json.dumps(summary, default=str)}"
+            except KeyError:
+                yield {
+                    "type": "error",
+                    "text": f"quad capture {cid} is no longer available",
+                }
         try:
             client = self.llm_client()
             if client is not None and self.ledger.remaining() <= 0:
@@ -976,6 +1037,82 @@ class ChatService:
         },
     }
 
+    # ---- Penn quad (offered when the quad link is configured; never in the sim-only planner)
+    _T_PROPOSE_QUAD_GOAL = {
+        "name": "propose_quad_goal",
+        "description": "Propose sending Penn's quadrotor (UAV, nadir camera, fixed altitude) to a map "
+        "point; the operator approves it (or auto-send sends it). Give either `target` (a node "
+        "symbol from the scene graph, e.g. 'O(12)', 'R(3)', 'P(140)') or map `x`, `y` in metres. "
+        "With capture_on_arrival the quad takes a picture when it gets there: you will see that "
+        "image in a follow-up message. With `query` SAM3 also segments that phrase in the image.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "node symbol to fly over"},
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "capture_on_arrival": {"type": "boolean", "default": True},
+                "query": {
+                    "type": "string",
+                    "description": "short noun phrase for SAM3, e.g. 'red car'",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "one line for the operator",
+                },
+            },
+            "additionalProperties": False,
+        },
+    }
+    _T_QUAD_CAPTURE = {
+        "name": "quad_capture",
+        "description": "Take a picture with Penn's quad right now, where it is. You see the image in the "
+        "result. With `query` SAM3 segments that phrase and you see the overlay instead, plus each "
+        "detection's score, box and approximate map position (approximate: the quad's heading is "
+        "unreliable, so off by up to the image footprint's size).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    }
+    _T_SEGMENT_QUAD_IMAGE = {
+        "name": "segment_quad_image",
+        "description": "Run SAM3 on an earlier quad capture with a short noun phrase. You see the "
+        "overlay and get the detections (score, box, approximate map position).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "capture_id": {
+                    "type": "string",
+                    "description": "e.g. 'q7' (from a capture message)",
+                },
+                "query": {"type": "string"},
+            },
+            "required": ["capture_id", "query"],
+            "additionalProperties": False,
+        },
+    }
+    _T_QUAD_STATUS = {
+        "name": "quad_status",
+        "description": "Penn's quad now: position (map frame), state, its current goal, last capture.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    }
+    QUAD_TOOLS = (
+        _T_PROPOSE_QUAD_GOAL,
+        _T_QUAD_CAPTURE,
+        _T_SEGMENT_QUAD_IMAGE,
+        _T_QUAD_STATUS,
+    )
+
+    def _quad_on(self, turn: ChatTurn | None = None) -> bool:
+        q = self.quad
+        return bool(q is not None and q.configured and not self._sim_only(turn))
+
     @staticmethod
     def _mission_ctx(turn: ChatTurn | None):
         return turn.mission if turn is not None else None
@@ -1027,6 +1164,8 @@ class ChatService:
                 for t in tools
                 if t in (self._T_RUN_CYPHER, self._T_FIND_OBJECTS, self._T_PROPOSE_GOAL)
             ]
+        elif self._quad_on(turn):
+            tools = tools + list(self.QUAD_TOOLS)
         if not self._grstaps_goals(turn):
             tools = [
                 self._T_PROPOSE_GOAL_FD if t is self._T_PROPOSE_GOAL else t
@@ -1237,6 +1376,7 @@ class ChatService:
                     if self._mission_ctx(turn) is not None
                     else ""
                 )
+                + ("\n\n" + self._quad_text() if self._quad_on(turn) else "")
             )
         described = []
         if self.goal_prompts is not None:
@@ -1262,7 +1402,38 @@ class ChatService:
                 if self._mission_ctx(turn) is not None
                 else []
             )
+            + ([self._quad_text()] if self._quad_on(turn) else [])
         )
+
+    QUAD_PROMPT = (
+        "Penn's quadrotor (UAV) is connected: it flies at a fixed altitude with a downward "
+        "(nadir) camera and is not a ground robot (never in PDDL goals or propose_goal). To "
+        "look at a place from above, call propose_quad_goal with a node symbol or map x, y and "
+        "capture_on_arrival (the operator approves it; never claim the quad is flying before "
+        "that). When it arrives you get its picture in a follow-up message marked [quad capture "
+        "<id>]: describe what you see and answer the operator's question from it. To find "
+        "something in a picture, pass `query` (a short noun phrase) to propose_quad_goal or "
+        "quad_capture, or call segment_quad_image on an earlier capture: SAM3 marks it and you "
+        "see the overlay. Do not claim an object is there unless you can see it or SAM3 found "
+        "it; detection map positions are approximate (the quad's heading is unreliable). "
+        "quad_capture takes a picture now, wherever the quad is."
+    )
+
+    def _quad_text(self) -> str:
+        s = self.quad.state()
+        pose, g = s.get("pose"), s.get("goal")
+        now = "position unknown"
+        if pose:
+            now = f"at map ({pose['x']:.1f}, {pose['y']:.1f})"
+        if g and g.get("status") == "flying":
+            now += (
+                f", flying to {g.get('label') or (round(g['x'], 1), round(g['y'], 1))}"
+            )
+        if s.get("error"):
+            now += f"; link problem: {s['error']}"
+        if not s.get("anchored"):
+            now += "; no geo anchor for this map, so its positions are in its own frame"
+        return f"{self.QUAD_PROMPT}\nQuad now: {now}."
 
     def _holding(self) -> dict:
         """{robot: [objects it holds]} as the planner sees it ({} when unknown)."""
@@ -1488,6 +1659,15 @@ class ChatService:
                 "proposed": True,
                 "note": "The operator approves and sends it.",
             }
+        if name in (
+            "propose_quad_goal",
+            "quad_capture",
+            "segment_quad_image",
+            "quad_status",
+        ):
+            if not self._quad_on(turn):
+                return [], {"error": "Penn's quad is not connected to this console"}
+            return self._quad_tool(name, dict(args or {}), src)
         if name == "search_robot_images":
             return self._search_images(str(args.get("query", "")), src)
         if name == "propose_mission" and self.missions is not None:
@@ -1650,6 +1830,85 @@ class ChatService:
             )
         return [card], out
 
+    # ------------------------------------------------------------- Penn quad
+    def _quad_capture_events(self, c: dict) -> list[dict]:
+        """The chat card of a quad capture (the overlay first when SAM3 ran)."""
+        p = self.quad.public_capture(c)
+        seg = p.get("segment") or {}
+        label = f"quad capture {p['id']}"
+        if seg.get("query"):
+            n = len(seg.get("detections") or [])
+            label += (
+                f" · SAM3 '{seg['query']}': {n} found"
+                if "error" not in seg
+                else " · SAM3 failed"
+            )
+        urls = [u for u in (p.get("overlay_url"), p["image_url"]) if u]
+        pos = p.get("pose_map")
+        return [{"type": "images", "src": "quad", "items": [{"sym": p["id"], "label": label,
+                 "pos": [pos["x"], pos["y"]] if pos else None, "images": urls}]}]  # fmt: skip
+
+    def _quad_target(self, args: dict, src) -> tuple[float, float, str] | str:
+        """(x, y, label) of a quad goal, or an error string."""
+        target = str(args.get("target") or "").strip()
+        if target:
+            sid = self._neo4j_src(src) or src
+            try:
+                d = self.graph.get(sid).node_detail(target)
+            except Exception as e:  # noqa: BLE001
+                return f"unknown node {target}: {e}"
+            pos = d.get("pos")
+            if not pos:
+                return f"{target} has no position"
+            name = d.get("label_name") or d.get("name") or ""
+            return (
+                float(pos[0]),
+                float(pos[1]),
+                f"{d.get('sym', target)} {name}".strip(),
+            )
+        if args.get("x") is None or args.get("y") is None:
+            return "give a target symbol or x and y"
+        x, y = float(args["x"]), float(args["y"])
+        return x, y, f"({x:.1f}, {y:.1f})"
+
+    def _quad_tool(self, name: str, args: dict, src):
+        from .quad.link import QuadUnavailable
+        from .sam3_client import Sam3Error, Sam3Unavailable
+
+        q = self.quad
+        if name == "quad_status":
+            s = q.state()
+            return [], {k: s.get(k) for k in ("pose", "last_status", "goal", "last_capture", "error",
+                                              "anchored", "origin_source")}  # fmt: skip
+        if name == "propose_quad_goal":
+            t = self._quad_target(args, src)
+            if isinstance(t, str):
+                return [], {"error": t}
+            x, y, label = t
+            query = str(args.get("query") or "").strip()
+            capture = bool(args.get("capture_on_arrival", True)) or bool(query)
+            card = {"type": "quad_goal", "x": x, "y": y, "label": label, "capture": capture,
+                    "query": query, "reason": str(args.get("reason") or "")}  # fmt: skip
+            return [card], {"proposed": True, "target": label, "x": round(x, 1), "y": round(y, 1),
+                            "note": "The operator approves and sends it. When the quad arrives "
+                            + ("you will get its picture in a follow-up message." if capture
+                               else "nothing more happens (no capture).")}  # fmt: skip
+        try:
+            if name == "quad_capture":
+                c = q.capture(query=str(args.get("query") or "").strip())
+            else:  # segment_quad_image
+                cid = str(args.get("capture_id") or "").strip()
+                if q.get(cid) is None:
+                    return [], {"error": f"no quad capture {cid}"}
+                q.segment(cid, str(args.get("query") or "").strip())
+                c = q.get(cid)
+        except QuadUnavailable as e:
+            return [], {"error": f"quad: {e}"}
+        except (Sam3Unavailable, Sam3Error) as e:
+            return [], {"error": f"SAM3: {e}"}
+        summary, images = q.for_model(c["id"])
+        return self._quad_capture_events(c), {**summary, "_images": images}
+
     def _show_images(self, symbols, src):
         """``images`` event (URLs the chat renders) + per-node counts for the model."""
         sid = self._neo4j_src(src) or src
@@ -1806,9 +2065,12 @@ class ChatService:
         return {"ok": True, "query": w["query"], "map_version": version, **out}
 
     # ----------------------------------------------------------- transcript
-    def _turn(self, message):
+    def _turn(self, message, turn: ChatTurn | None = None):
         """Neutral transcript of this turn (``items``) on top of the history."""
-        return [{"role": "user", "text": message}]
+        item = {"role": "user", "text": message}
+        if turn is not None and turn.images:
+            item["images"] = list(turn.images)[:MAX_MODEL_IMAGES]
+        return [item]
 
     # ---------------------------------------------------------------- Anthropic
     def _llm_anthropic(
@@ -1825,7 +2087,7 @@ class ChatService:
         import anthropic
 
         model = self.model(requested_model)
-        items = self._turn(message)
+        items = self._turn(message, turn)
         origin = self._robot_pos(robot)
         tools = self._tools(src, turn)
         system = self._system(src, robot, turn)
@@ -1901,12 +2163,11 @@ class ChatService:
                         c["name"], c["args"], message, robot, src, origin, turn
                     )
                     yield from events
-                    items.append({"role": "tool", "id": c["id"], "name": c["name"],
-                                 "content": _clip(json.dumps(out, default=str))})  # fmt: skip
+                    items.append(tool_item(c, out))
                 if resp.stop_reason != "tool_use":
                     return
         finally:
-            yield {"type": "transcript", "items": items}
+            yield {"type": "transcript", "items": strip_images(items)}
 
     # ------------------------------------------------------------------ OpenAI
     def _openai_tools(self, src=None, turn: ChatTurn | None = None):
@@ -1935,7 +2196,7 @@ class ChatService:
         import openai
 
         model = self.model(requested_model)
-        items = self._turn(message)
+        items = self._turn(message, turn)
         origin = self._robot_pos(robot)
         tools = self._openai_tools(src, turn)
         system = self._system(src, robot, turn)
@@ -2024,10 +2285,9 @@ class ChatService:
                         c["name"], c["args"], message, robot, src, origin, turn
                     )
                     yield from events
-                    items.append({"role": "tool", "id": c["id"], "name": c["name"],
-                                 "content": _clip(json.dumps(out, default=str))})  # fmt: skip
+                    items.append(tool_item(c, out))
         finally:
-            yield {"type": "transcript", "items": items}
+            yield {"type": "transcript", "items": strip_images(items)}
 
 
 class _ResponsesReply:
@@ -2260,10 +2520,26 @@ def clean_history(items) -> list[dict]:
 
 
 def to_openai(items: list[dict]) -> list[dict]:
+    """Chat completions messages. Tool messages are text only, so a tool result's
+    images follow the run of tool messages in one user message."""
     msgs = []
+    pending: list[str] = []
+
+    def flush():
+        if pending:
+            msgs.append({"role": "user", "content": [{"type": "text", "text": IMAGE_NOTE}]
+                         + [{"type": "image_url", "image_url": {"url": u}} for u in pending]})  # fmt: skip
+            pending.clear()
+
     for it in items:
+        if it["role"] != "tool":
+            flush()
         if it["role"] == "user":
-            msgs.append({"role": "user", "content": it["text"]})
+            if it.get("images"):
+                msgs.append({"role": "user", "content": [{"type": "text", "text": it["text"]}]
+                             + [{"type": "image_url", "image_url": {"url": u}} for u in it["images"]]})  # fmt: skip
+            else:
+                msgs.append({"role": "user", "content": it["text"]})
         elif it["role"] == "assistant":
             m = {"role": "assistant", "content": it.get("text") or ""}
             if it.get("calls"):
@@ -2283,7 +2559,22 @@ def to_openai(items: list[dict]) -> list[dict]:
             msgs.append(
                 {"role": "tool", "tool_call_id": it["id"], "content": it["content"]}
             )
+            pending.extend(it.get("images") or [])
+    flush()
     return msgs
+
+
+def _anthropic_images(uris) -> list[dict]:
+    blocks = []
+    for u in uris or []:
+        media, b64 = _data_uri_parts(u)
+        blocks.append(
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": media, "data": b64},
+            }
+        )
+    return blocks
 
 
 def to_anthropic(items: list[dict]) -> list[dict]:
@@ -2298,7 +2589,11 @@ def to_anthropic(items: list[dict]) -> list[dict]:
 
     for it in items:
         if it["role"] == "user":
-            add("user", [{"type": "text", "text": it["text"]}])
+            add(
+                "user",
+                [{"type": "text", "text": it["text"]}]
+                + _anthropic_images(it.get("images")),
+            )
         elif it["role"] == "assistant":
             blocks = [{"type": "text", "text": it["text"]}] if it.get("text") else []
             blocks += [
@@ -2319,7 +2614,12 @@ def to_anthropic(items: list[dict]) -> list[dict]:
                     {
                         "type": "tool_result",
                         "tool_use_id": it["id"],
-                        "content": it["content"],
+                        "content": (
+                            [{"type": "text", "text": it["content"]}]
+                            + _anthropic_images(it["images"])
+                            if it.get("images")
+                            else it["content"]
+                        ),
                     }
                 ],
             )

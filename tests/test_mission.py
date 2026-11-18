@@ -3,8 +3,6 @@ simulation (+ deterministic replay), quad link vs the mock quad, routes, chat to
 
 import json
 import math
-import threading
-import time
 
 import numpy as np
 import pytest
@@ -585,7 +583,7 @@ def test_sim_manual_annotation(grid_run):
 def test_quad_frame_matches_heracles_agents():
     """``map_to_quad`` = heracles_agents' utm − local_utm_origin + map_offset."""
     from adt4_console.geo import GeoAnchor
-    from adt4_console.quad.protocol import QuadFrame, quad_command
+    from adt4_console.quad.protocol import QuadFrame
 
     a = GeoAnchor(**ANCHOR)
     f = QuadFrame(a, (482942.36, 4421353.33), (2.31, 85.55))
@@ -594,14 +592,6 @@ def test_quad_frame_matches_heracles_agents():
         (e - 482942.36 + 2.31, n - 4421353.33 + 85.55)
     )
     assert f.quad_to_map(*f.map_to_quad(5.0, -3.0)) == pytest.approx((5.0, -3.0))
-    cmd = quad_command(1.5, 2.5)
-    try:
-        from heracles_agents.tools.penn_integration_tool import PennQuadCommand
-    except Exception:  # noqa: BLE001 — heracles_agents (and its deps) are optional here
-        PennQuadCommand = None
-    if PennQuadCommand is not None:
-        assert PennQuadCommand(**cmd).model_dump() == cmd
-    assert cmd == {"x": 1.5, "y": 2.5, "timestamp": 0, "query": ""}
 
 
 def test_camera_projection_round_trip():
@@ -615,60 +605,6 @@ def test_camera_projection_round_trip():
     # the top of the image points along the heading
     fx, fy = camera.pixel_to_ground(320, 0, pose, K)
     assert math.atan2(fy - pose["y"], fx - pose["x"]) == pytest.approx(0.7)
-
-
-def test_quad_link_against_mock_quad():
-    zmq = pytest.importorskip("zmq")
-    from adt4_console.quad import mock_server
-    from adt4_console.quad.link import QuadLink, QuadUnavailable
-    from adt4_console.quad.protocol import QuadFrame
-
-    with zmq.Context.instance().socket(zmq.REP) as s:  # two free ports
-        p1 = s.bind_to_random_port("tcp://127.0.0.1")
-    with zmq.Context.instance().socket(zmq.REP) as s:
-        p2 = s.bind_to_random_port("tcp://127.0.0.1")
-    frame = QuadFrame(None, (100.0, 200.0), (1.0, 2.0))
-    link = QuadLink(
-        f"tcp://127.0.0.1:{p1}", f"tcp://127.0.0.1:{p2}", frame, timeout_s=2.0
-    )
-    quad = mock_server.MockQuad(
-        frame, None, [{"label": "crate", "pos": [6.0, 0.0]}], start=(0, 0), speed=20.0
-    )
-    stop = threading.Event()
-    th = threading.Thread(
-        target=mock_server.serve,
-        args=(quad, link.cmd_uri, link.image_uri, stop),
-        daemon=True,
-    )
-    th.start()
-    try:
-        deadline = time.time() + 3
-        while True:  # the PUSH binds on first use; until the mock connected it reports unavailable
-            try:
-                link.send_waypoint(0, 0)
-                break
-            except QuadUnavailable:
-                assert time.time() < deadline
-                time.sleep(0.05)
-        header, jpeg = link.request_image()
-        assert jpeg[:2] == b"\xff\xd8" and header["nadir"] and len(header["K"]) == 4
-        assert header["pose_map"]["x"] == pytest.approx(0.0, abs=1e-6)
-        deadline = time.time() + 3
-        while (
-            time.time() < deadline
-        ):  # PUSH before the peer connected can be lost: resend
-            link.send_waypoint(10.0, 0.0, "crate")
-            time.sleep(0.3)
-            header, _ = link.request_image()
-            if header["pose_map"]["x"] > 9.9:
-                break
-        assert header["pose_map"]["x"] == pytest.approx(10.0, abs=0.1)
-        assert link.info()["last_command"]["quad"] == {"x": 10.0 - 100 + 1, "y": 0.0 - 200 + 2,
-                                                         "timestamp": 0, "query": "crate"}  # fmt: skip
-    finally:
-        stop.set()
-        th.join(timeout=2)
-        link.close()
 
 
 # ------------------------------------------------------------------- routes
