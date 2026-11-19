@@ -22,10 +22,13 @@ The scene graph changes under a running plan in two ways:
 
   Our own robots' placements (source ``executor/<robot>``) are ignored.
 
-omniplanner's repair node already replans for (a)/(b) on its own (its
-``replan_request`` reasons are logged here as events); (c) is the gap -- a new
-symbol is nothing omniplanner's plan depends on -- so the console recommends it
-and the operator confirms.
+omniplanner's repair node judges (a)/(b) and a cut route on its own and pauses
+the robots. With its ``confirm_replans`` it then holds the replan until the
+operator answers (``replan_pending`` -> :meth:`on_replan_pending`): the robot's
+card says so, "Replan same goal" confirms the planner's replan and Dismiss
+declines it (``decide``). (c) is the gap -- a new symbol is nothing
+omniplanner's plan depends on -- so the console recommends it and the operator
+confirms.
 
 One pending recommendation per robot: a newer one supersedes it (and carries
 its findings forward while the goal is the same).  Pure python: every
@@ -276,7 +279,7 @@ class SceneRepair:
                  class_of=None, position_of=None, robot_xy=None, invalidate=None,
                  map_changed=None, clock=time.time, max_changes: int = 100, max_recs: int = 50,
                  planner_wait_s: float = 10.0, recheck=None, recheck_on=None,
-                 recheck_settle_s: float = 3.0, run_later=None):  # fmt: skip
+                 recheck_settle_s: float = 3.0, run_later=None, decide=None):  # fmt: skip
         self.hub = hub
         # (robot, goal record, report text) -> {"goal", "constraints", "text"} | None:
         # the chat's LLM redoes the operator's request on the changed map (see
@@ -295,6 +298,9 @@ class SceneRepair:
             str, tuple
         ] = {}  # robot -> (goal key, changes key) last asked
         self.send = send  # (robot, pddl, constraints, engine) -> result dict
+        # ("confirm" | "decline") -> None: answers the planner's held replan
+        self.decide = decide
+        self._held = None  # {"reason", "robots"}: the planner's replan waiting
         self.resume = resume  # (robot) -> result dict
         self.active_goals = active_goals or (lambda: {})  # () -> {robot: goal record}
         self.plan_of = plan_of or (
@@ -397,6 +403,44 @@ class SceneRepair:
                     return self.clock() - t0, False
                 self._mv_cv.wait(left)
         return self.clock() - t0, True
+
+    def on_replan_pending(self, text: str) -> None:
+        """omniplanner's held replan (JSON {reason, robots}; "" when none): each
+        of its robots' cards says the planner waits for the operator."""
+        import json
+
+        try:
+            held = json.loads(text) if (text or "").strip() else None
+        except ValueError:
+            log.warning("unreadable replan_pending %r", text)
+            return
+        try:
+            goals = dict(self.active_goals() or {})
+        except Exception:  # noqa: BLE001
+            goals = {}
+        with self._lock:
+            self._held = held
+            robots = set((held or {}).get("robots") or [])
+            for r in self._recs.values():
+                if r["status"] != "pending":
+                    continue
+                if r["robot"] in robots:
+                    r["held"] = held["reason"]
+                elif r.get("held") and r["origin"] == "planner":
+                    # only the held replan made it
+                    r.update(status="superseded", t_done=self.clock(),
+                             result={"by": None, "why": "the planner's replan was answered or replaced"})  # fmt: skip
+                else:
+                    r["held"] = None
+            missing = [rb for rb in sorted(robots) if not any(
+                r["robot"] == rb and r["status"] == "pending" for r in self._recs.values())]  # fmt: skip
+        for robot in missing:
+            goal = goals.get(robot)
+            if goal and goal.get("pddl"):
+                batch = {"source": "omniplanner", "origin": "planner",
+                         "map_version": None, "changes": []}  # fmt: skip
+                self._recommend(robot, goal, batch, [(held["reason"], None, "high")])
+        self._publish()
 
     def on_replan_request(self, reason: str) -> None:
         self._event("replan_request", str(reason))
@@ -829,7 +873,9 @@ class SceneRepair:
                    "goal": dict(goal), "proposed_goal": proposed,
                    "rewrites": [{"from": k, "to": v} for k, v in rewrites.items()],
                    "llm": llm, "proposed_constraints": proposed_constraints if llm else None,
-                   "status": "pending", "result": None}  # fmt: skip
+                   "status": "pending", "result": None,
+                   "held": (self._held or {}).get("reason")
+                   if robot in ((self._held or {}).get("robots") or []) else None}  # fmt: skip
             self._supersede(robot, rid, "a newer recommendation")
             self._recs[rid] = rec
             while len(self._recs) > self._max_recs:
@@ -867,6 +913,23 @@ class SceneRepair:
         """Replan: send the proposed (rewritten) or the original goal again."""
         if variant not in ("proposed", "original"):
             raise ValueError(f"unknown variant {variant!r} (proposed / original)")
+        with self._lock:
+            rec = self._take(rid)
+            planner = (
+                bool(rec.get("held"))
+                and self.decide is not None
+                and (
+                    variant == "original" or rec["proposed_goal"] == rec["goal"]["pddl"]
+                )
+            )
+            if planner:
+                # the planner's own replan, which it holds for this answer
+                rec.update(status="confirmed", t_done=self.clock(),
+                           result={"ok": True, "variant": variant, "planner": "confirm"})  # fmt: skip
+        if planner:
+            self.decide("confirm")
+            self._publish()
+            return self.get(rid)
         if self.send is None:
             raise RuntimeError("no goal sender (ROS unavailable)")
         with self._lock:
@@ -919,6 +982,9 @@ class SceneRepair:
             rec.update(
                 status="declined", t_done=self.clock(), result={"resume": bool(resume)}
             )
+        if rec.get("held") and self.decide is not None:
+            self.decide("decline")  # the planner drops the replan it held
+            rec["result"]["planner"] = "decline"
         if resume:
             try:
                 rec["result"]["resumed"] = (

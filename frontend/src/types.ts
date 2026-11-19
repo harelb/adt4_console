@@ -613,6 +613,8 @@ export interface SceneRecommendation {
   llm?: boolean;
   /** the constraints sent with the LLM's goal (null: the goal's own) */
   proposed_constraints?: unknown[] | null;
+  /** omniplanner paused the robot and holds this replan until the operator answers */
+  held?: string | null;
   status: "pending" | "confirming" | "confirmed" | "declined" | "superseded";
   result: Record<string, unknown> | null;
 }

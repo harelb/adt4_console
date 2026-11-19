@@ -209,7 +209,7 @@ export function SceneRepairPanel({robot}: {robot: string | null}) {
 export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onDone?: () => void}) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [resume, setResume] = useState(false);
+  const [resume, setResume] = useState(!!rec.held);
   const base = `api/plan/scene_repair/${encodeURIComponent(rec.id)}`;
   const act = async (label: string, path: string, body: unknown) => {
     setBusy(label);
@@ -234,6 +234,9 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
         <Badge tone={PRIORITY_TONE[rec.priority] ?? "warn"}>{rec.priority}</Badge>
       </div>
       <p className="small scene-rec-reason">{rec.reason}</p>
+      {rec.held && (
+        <p className="small scene-rec-held">Robot paused: the planner replans only when you confirm (Dismiss keeps the current plan).</p>
+      )}
       {rec.changes.length > 0 && (
         <ul className="result-list small scene-rec-changes">
           {rec.changes.slice(-5).map((c, i) => (

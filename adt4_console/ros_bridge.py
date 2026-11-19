@@ -931,6 +931,11 @@ class RosBridge:
             lambda m: self.scene_repair is not None and self.scene_repair.on_replan_request(m.data), 10,
         )  # fmt: skip
         n.create_subscription(
+            import_type("std_msgs/msg/String"), f"/{self.planner_ns}/omniplanner_node/replan_pending",
+            lambda m: self.scene_repair is not None and self.scene_repair.on_replan_pending(m.data),
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL),
+        )  # fmt: skip
+        n.create_subscription(
             import_type("std_msgs/msg/Int64"), f"/{self.planner_ns}/omniplanner_node/map_version",
             self._on_planner_map_version,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL),
@@ -1055,6 +1060,15 @@ class RosBridge:
             self.scene_repair.on_applied(d["source"], d["map_version"], d["changes"])
         except Exception:  # noqa: BLE001
             log.exception("scene changes from %s", d.get("source"))
+
+    def decide_replan(self, decision: str) -> int:
+        """Answer omniplanner's held replan: "confirm" or "decline"."""
+        return self.publish(
+            f"/{self.planner_ns}/omniplanner_node/replan_decision",
+            "std_msgs/msg/String",
+            {"data": decision},
+            match_timeout=0.5,
+        )
 
     def publish_scene_changes(
         self, source: str, map_version, changes: list[dict]

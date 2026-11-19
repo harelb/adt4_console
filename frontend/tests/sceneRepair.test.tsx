@@ -168,3 +168,27 @@ describe("SceneRepairPanel", () => {
     expect(note.textContent).toContain("Publish them");
   });
 });
+
+describe("a replan the planner holds", () => {
+  it("says the robot is paused until confirmed, and Dismiss resumes it by default", async () => {
+    const held = {...REC, id: "sr2", origin: "planner", source: "omniplanner", changes: [], rewrites: [],
+                  proposed_goal: REC.goal.pddl, reason: "scene changed: o20 removed", held: "scene changed: o20 removed"};
+    const calls = stubFetch(state({recommendations: [held], pending: {hamilton: "sr2"}}));
+    render(<SceneRepairPanel robot="hamilton" />);
+    await flush();
+    expect(host!.textContent).toContain("Robot paused: the planner replans only when you confirm");
+    const box = host!.querySelector<HTMLInputElement>('input[aria-label="Resume robot on dismiss"]')!;
+    expect(box.checked).toBe(true);
+    click(byText("Dismiss"));
+    await flush();
+    expect(calls.find(([m, u]) => m === "POST" && u.includes("sr2/decline"))?.[2]).toEqual({resume: true});
+  });
+
+  it("an ordinary card leaves the robot as it is on Dismiss", async () => {
+    stubFetch(state());
+    render(<SceneRepairPanel robot="hamilton" />);
+    await flush();
+    expect(host!.textContent).not.toContain("Robot paused");
+    expect(host!.querySelector<HTMLInputElement>('input[aria-label="Resume robot on dismiss"]')!.checked).toBe(false);
+  });
+});

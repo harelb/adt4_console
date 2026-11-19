@@ -946,3 +946,66 @@ def test_confirming_keeps_the_operators_words_with_the_goal():
     (rec,) = _pending(sr)
     sr.confirm(rec["id"], "original")
     assert sent[-1][1] == {"request": "Visit all the cones"}
+
+
+# ---- 2026-11-19: omniplanner holds a scene change replan for the operator ----
+
+HELD = '{"reason": "scene changed: o20 removed before the visit the goal asks for", "robots": ["hamilton"]}'
+
+
+def make_held(**kw):
+    decided = []
+    sr, hub, sent, resumed = make(decide=decided.append, **kw)
+    return sr, sent, resumed, decided
+
+
+def test_a_held_replan_makes_a_card_that_says_the_robot_waits():
+    sr, sent, _, _ = make_held()
+    sr.on_replan_pending(HELD)
+    (rec,) = [r for r in sr.state()["recommendations"] if r["status"] == "pending"]
+    assert rec["robot"] == "hamilton" and rec["origin"] == "planner"
+    assert "o20 removed" in rec["reason"] and "o20 removed" in rec["held"]
+    assert rec["priority"] == "high" and sent == []
+
+
+def test_replan_same_goal_confirms_the_planners_replan_and_sends_no_goal():
+    sr, sent, _, decided = make_held()
+    sr.on_replan_pending(HELD)
+    rid = sr.state()["recommendations"][-1]["id"]
+    out = sr.confirm(rid, "original")
+    assert decided == ["confirm"] and sent == []
+    assert out["status"] == "confirmed" and out["result"]["planner"] == "confirm"
+
+
+def test_dismiss_declines_the_planners_replan_and_can_resume():
+    sr, sent, resumed, decided = make_held()
+    sr.on_replan_pending(HELD)
+    rid = sr.state()["recommendations"][-1]["id"]
+    out = sr.decline(rid, resume=True)
+    assert decided == ["decline"] and resumed == ["hamilton"] and sent == []
+    assert out["result"]["planner"] == "decline"
+
+
+def test_a_new_goal_proposed_on_a_held_card_is_sent_as_a_goal():
+    sr, sent, _, decided = make_held(robot_at=(0.0, 0.0))
+    sr.on_applied("awcd/hamilton", 7, [added("o99", "cone", 3.0, 0.0)])
+    sr.on_replan_pending(HELD)
+    (rec,) = [r for r in sr.state()["recommendations"] if r["status"] == "pending"]
+    assert rec["held"] and rec["proposed_goal"] != rec["goal"]["pddl"]
+    sr.confirm(rec["id"], "proposed")
+    assert decided == [] and sent and sent[-1][1] == rec["proposed_goal"]
+
+
+def test_when_the_planner_no_longer_holds_its_card_goes():
+    sr, _, _, _ = make_held()
+    sr.on_replan_pending(HELD)
+    sr.on_replan_pending("")
+    assert [r for r in sr.state()["recommendations"] if r["status"] == "pending"] == []
+
+
+def test_a_card_made_later_for_the_paused_robot_still_says_it_waits():
+    sr, _, _, _ = make_held()
+    sr.on_replan_pending(HELD)
+    sr.on_applied("console/op", 8, [added("o98", "chair", 50.0, 50.0)], local=True)
+    (rec,) = [r for r in sr.state()["recommendations"] if r["status"] == "pending"]
+    assert rec["origin"] == "edit" and "o20 removed" in rec["held"]

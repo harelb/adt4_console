@@ -1653,15 +1653,20 @@ semantic_label, old_position, new_position, confidence}`). The state updater pub
 robots' own placements there with source `executor/<robot>`; heracles_agents' chat (SGET)
 publishes its edits with source `sget/...`. omniplanner's repair node replans for changes to
 objects its plan depends on (`/<planner_ns>/omniplanner_node/replan_request`, String reason)
-and latches `/<planner_ns>/omniplanner_node/map_version` (Int64).
+and latches `/<planner_ns>/omniplanner_node/map_version` (Int64). With its `confirm_replans`
+(the default) a replan for a scene change, a map reload or a cut route is held instead: the
+robots stay paused, the replan is latched on `/<planner_ns>/omniplanner_node/replan_pending`
+(String JSON `{reason, robots}`, `""` when none waits) and goes out only when the console
+publishes `confirm` on `/<planner_ns>/omniplanner_node/replan_decision` (`decline` drops it).
+A failed pick is still replanned at once.
 
 An **added** object is a new symbol, which no plan depends on, so omniplanner ignores it ("go
 to the nearest cone" and change detection finds a nearer cone). The console closes that gap.
 It recommends replanning and the operator confirms.
 
 **What the console subscribes to** (once, planner-wide): `/scene_graph/changes_applied` (skipped
-with a log line when the message type is missing), `replan_request` (logged as events) and
-`map_version` (TRANSIENT_LOCAL). Every applied batch from ROS also invalidates the live Neo4j
+with a log line when the message type is missing), `replan_request` (logged as events),
+`replan_pending` and `map_version` (both TRANSIENT_LOCAL). Every applied batch from ROS also invalidates the live Neo4j
 target's graph cache (`graph/<src>/version`).
 
 **Console edits publish scene changes.** After a committed map edit on the live target
@@ -1731,7 +1736,12 @@ and rewrites forward.
 
 Recommendation: `{id, robot, t, source, origin (edit|perception), map_version, reason, reasons[],
 priority (high|normal|low), changes[], goal (active goal), proposed_goal, rewrites [{from, to}],
-status (pending|confirming|confirmed|declined|superseded), result}`.
+status (pending|confirming|confirmed|declined|superseded), result, held}`. `held` is the
+reason of the replan omniplanner holds for this robot (else null); a held replan with no card
+for the robot makes one (`origin: planner`). On such a card **Replan same goal** answers
+`confirm` (no goal is sent: the planner replans as it would have) and **Dismiss** answers
+`decline` (resume is ticked by default: the robot was paused). A proposed different goal is sent
+as a goal, and its new plan drops the held replan.
 
 | Method | Path | Body / notes |
 |---|---|---|
