@@ -8,6 +8,7 @@ import {fmtTime} from "../lib/fuzzy";
 import type {
   ConstraintFact,
   GoalSendResult,
+  HeldReplan,
   RepairAlert,
   RepairStatus,
   SceneChangeBatch,
@@ -209,7 +210,9 @@ export function SceneRepairPanel({robot}: {robot: string | null}) {
 export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onDone?: () => void}) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [resume, setResume] = useState(!!rec.held);
+  // ticked while the card is held, unless the operator chose otherwise
+  const [resumeChoice, setResume] = useState<boolean | null>(null);
+  const resume = resumeChoice ?? !!rec.held;
   const base = `api/plan/scene_repair/${encodeURIComponent(rec.id)}`;
   const act = async (label: string, path: string, body: unknown) => {
     setBusy(label);
@@ -234,9 +237,7 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
         <Badge tone={PRIORITY_TONE[rec.priority] ?? "warn"}>{rec.priority}</Badge>
       </div>
       <p className="small scene-rec-reason">{rec.reason}</p>
-      {rec.held && (
-        <p className="small scene-rec-held">Robot paused: the planner replans only when you confirm (Dismiss keeps the current plan).</p>
-      )}
+      {rec.held && <HeldNote rec={rec} held={rec.held} />}
       {rec.changes.length > 0 && (
         <ul className="result-list small scene-rec-changes">
           {rec.changes.slice(-5).map((c, i) => (
@@ -249,7 +250,7 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
       <div className="scene-rec-goals small">
         <div>
           <span className="muted">goal </span>
-          <code className="mono">{rec.goal.pddl}</code>
+          {rec.goal.pddl ? <code className="mono">{rec.goal.pddl}</code> : <span className="muted">the planner's (not sent from this console)</span>}
         </div>
         {rewritten && (
           <div>
@@ -281,6 +282,30 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
         </label>
       </div>
       {err && <div className="inline-msg tone-err small">{err}</div>}
+    </div>
+  );
+}
+
+function HeldNote({rec, held}: {rec: SceneRecommendation; held: HeldReplan}) {
+  const stopped = held.stopped.includes(rec.robot);
+  const others = held.robots.filter(r => r !== rec.robot);
+  const stoppedOthers = held.stopped.filter(r => r !== rec.robot);
+  return (
+    <div className="small scene-rec-held" role="status">
+      {stopped ? (
+        <p>
+          Robot stopped: the planner replans only when you confirm. Dismiss drops the replan; {rec.robot} stays stopped
+          until it gets a new goal.
+        </p>
+      ) : (
+        <p>Robot paused: the planner replans only when you confirm. Dismiss drops the replan; with resume ticked the robot continues.</p>
+      )}
+      {others.length > 0 && (
+        <p className="scene-rec-held-all">
+          This answer applies to all of {held.robots.join(", ")}: the planner holds them together.
+          {stoppedOthers.length > 0 && ` ${stoppedOthers.join(", ")} ${stoppedOthers.length > 1 ? "are" : "is"} stopped and need${stoppedOthers.length > 1 ? "" : "s"} a new goal on Dismiss.`}
+        </p>
+      )}
     </div>
   );
 }

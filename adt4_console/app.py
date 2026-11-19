@@ -344,6 +344,33 @@ def _object_row(svc, sym: str) -> dict | None:
     return dict(rows[0]) if rows else None
 
 
+def _region_row(svc, sym: str, xy=None) -> dict | None:
+    """The live map's region (Room) holding Object ``sym`` ({symbol, name}): by
+    the place that contains it or, not linked yet, the place nearest ``xy``."""
+    t = _live_target(svc)
+    if t is None:
+        return None
+    from .graph_service import parse_symbol
+
+    rows = []
+    try:
+        c, i = parse_symbol(sym)
+        rows = t.query("MATCH (r:Room)-[:CONTAINS]->(:MeshPlace)-[:CONTAINS]->(o:Object) "
+                       "WHERE o.nodeSymbol IN $syms RETURN r.nodeSymbol AS symbol, r.name AS name LIMIT 1",
+                       syms=[f"{c.upper()}{i}", f"{c.upper()}({i})"])  # fmt: skip
+    except Exception:  # noqa: BLE001
+        rows = []
+    if not rows and xy is not None:
+        try:
+            rows = t.query("MATCH (r:Room)-[:CONTAINS]->(p:MeshPlace) WHERE p.center IS NOT NULL "
+                           "WITH r, (p.center.x - $x) ^ 2 + (p.center.y - $y) ^ 2 AS d "
+                           "RETURN r.nodeSymbol AS symbol, r.name AS name ORDER BY d LIMIT 1",
+                           x=float(xy[0]), y=float(xy[1]))  # fmt: skip
+        except Exception:  # noqa: BLE001
+            rows = []
+    return dict(rows[0]) if rows else None
+
+
 def relocalized_xy(svc, robot: str):
     """The robot's fleetlink live pose in the global map frame, only when it is
     relocalized (``frame_align.ok``) or already reports the global frame; else
@@ -441,10 +468,15 @@ def wire_scene_repair(svc) -> None:
         position_of=position_of, robot_xy=robot_xy, map_changed=map_changed,
         recheck=recheck,
         recheck_on=lambda: getattr(svc, "chat", None) is not None and svc.chat.recheck_available(),
-        decide=lambda decision: svc.ros.decide_replan(decision),
+        decide=lambda qid, decision: svc.ros.decide_replan(qid, decision),
+        platform_of=lambda robot: svc.ros.platform(robot),
+        region_of=lambda sym, xy: _region_row(svc, sym, xy),
     )  # fmt: skip
     svc.scene_repair = sr
     svc.ros.scene_repair = sr
+    held = getattr(svc.ros, "replan_pending", None)
+    if held is not None:  # latched before scene repair was wired
+        sr.on_replan_pending(held)
 
     def on_commit(src_id, out, prov):
         t = _live_target(svc)

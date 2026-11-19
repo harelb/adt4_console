@@ -169,16 +169,22 @@ describe("SceneRepairPanel", () => {
   });
 });
 
+const HELD = {id: "q1", robots: ["hamilton"], reasons: ["scene changed: o20 removed"], reason: "scene changed: o20 removed",
+              source: "awcd/hamilton", t: 1_700_000_000, stopped: [] as string[]};
+const heldRec = (over: Partial<SceneRecommendation> = {}): SceneRecommendation => ({
+  ...REC, id: "sr2", origin: "planner", source: "awcd/hamilton", changes: [], rewrites: [],
+  proposed_goal: REC.goal.pddl, reason: "scene changed: o20 removed", held: HELD, ...over,
+});
+const resumeBox = () => host!.querySelector<HTMLInputElement>('input[aria-label="Resume robot on dismiss"]')!;
+
 describe("a replan the planner holds", () => {
   it("says the robot is paused until confirmed, and Dismiss resumes it by default", async () => {
-    const held = {...REC, id: "sr2", origin: "planner", source: "omniplanner", changes: [], rewrites: [],
-                  proposed_goal: REC.goal.pddl, reason: "scene changed: o20 removed", held: "scene changed: o20 removed"};
-    const calls = stubFetch(state({recommendations: [held], pending: {hamilton: "sr2"}}));
+    const calls = stubFetch(state({recommendations: [heldRec()], pending: {hamilton: "sr2"}}));
     render(<SceneRepairPanel robot="hamilton" />);
     await flush();
     expect(host!.textContent).toContain("Robot paused: the planner replans only when you confirm");
-    const box = host!.querySelector<HTMLInputElement>('input[aria-label="Resume robot on dismiss"]')!;
-    expect(box.checked).toBe(true);
+    expect(host!.textContent).not.toContain("applies to all");
+    expect(resumeBox().checked).toBe(true);
     click(byText("Dismiss"));
     await flush();
     expect(calls.find(([m, u]) => m === "POST" && u.includes("sr2/decline"))?.[2]).toEqual({resume: true});
@@ -189,6 +195,48 @@ describe("a replan the planner holds", () => {
     render(<SceneRepairPanel robot="hamilton" />);
     await flush();
     expect(host!.textContent).not.toContain("Robot paused");
-    expect(host!.querySelector<HTMLInputElement>('input[aria-label="Resume robot on dismiss"]')!.checked).toBe(false);
+    expect(resumeBox().checked).toBe(false);
+  });
+
+  it("ticks resume when a card it shows becomes held, unless the operator chose", async () => {
+    stubFetch(state());
+    render(<SceneRepairPanel robot="hamilton" />);
+    await flush();
+    expect(resumeBox().checked).toBe(false);
+    act(() => handlers.get(SCENE_REPAIR_TOPIC)!(state({recommendations: [{...REC, held: HELD}]})));
+    expect(resumeBox().checked).toBe(true);
+    act(() => resumeBox().click());
+    expect(resumeBox().checked).toBe(false);
+    act(() => handlers.get(SCENE_REPAIR_TOPIC)!(state({recommendations: [{...REC, held: {...HELD, id: "q2"}}]})));
+    expect(resumeBox().checked).toBe(false);
+  });
+
+  it("says the answer applies to every held robot", async () => {
+    const held = {...HELD, robots: ["euclid", "gauss", "hamilton"], stopped: ["gauss"]};
+    stubFetch(state({recommendations: [heldRec({held})], pending: {hamilton: "sr2"}}));
+    render(<SceneRepairPanel robot="hamilton" />);
+    await flush();
+    expect(host!.textContent).toContain("This answer applies to all of euclid, gauss, hamilton");
+    expect(host!.textContent).toContain("gauss is stopped and needs a new goal on Dismiss");
+  });
+
+  it("a held Husky is stopped and needs a new goal, not the current plan", async () => {
+    const held = {...HELD, robots: ["gauss"], stopped: ["gauss"]};
+    stubFetch(state({recommendations: [heldRec({robot: "gauss", held})], pending: {gauss: "sr2"}}));
+    render(<SceneRepairPanel robot="gauss" />);
+    await flush();
+    expect(host!.textContent).toContain("Robot stopped");
+    expect(host!.textContent).toContain("gauss stays stopped until it gets a new goal");
+    expect(host!.textContent).not.toContain("current plan");
+    expect(host!.textContent).not.toContain("continues");
+  });
+
+  it("a held robot whose goal the console did not send says so", async () => {
+    const rec = heldRec({goal: {pddl: "", constraints: [], engine: null, unknown: true}, proposed_goal: ""});
+    stubFetch(state({recommendations: [rec], pending: {hamilton: "sr2"}}));
+    render(<SceneRepairPanel robot="hamilton" />);
+    await flush();
+    expect(host!.textContent).toContain("the planner's (not sent from this console)");
+    expect(byText("Replan same goal")).toBeTruthy();
   });
 });

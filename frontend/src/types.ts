@@ -586,7 +586,9 @@ export interface SceneChangeBatch {
 
 /** The last PDDL goal the console sent a robot (what a recommendation replans). */
 export interface ActiveGoal {
+  /** "" with unknown: the planner holds a robot whose goal the console did not send */
   pddl: string;
+  unknown?: boolean;
   constraints?: unknown[];
   engine?: string | null;
   route?: string;
@@ -594,12 +596,27 @@ export interface ActiveGoal {
   via?: string | null;
 }
 
+/** omniplanner's held replan question (replan_pending), as a card shows it */
+export interface HeldReplan {
+  id: string;
+  /** every robot the question holds: the answer applies to all of them */
+  robots: string[];
+  reasons: string[];
+  reason: string;
+  /** the last source that caused it (awcd/..., sget/..., console/...) */
+  source: string;
+  t: number | null;
+  /** held robots that were stopped (Huskies): Resume does nothing, they need a new goal */
+  stopped: string[];
+}
+
 export interface SceneRecommendation {
   id: string;
   robot: string;
   t: number;
   source: string;
-  origin: SceneChangeBatch["origin"];
+  /** planner: made for a robot the planner holds that had no card */
+  origin: SceneChangeBatch["origin"] | "planner";
   map_version: number | null;
   reason: string;
   reasons: string[];
@@ -613,8 +630,9 @@ export interface SceneRecommendation {
   llm?: boolean;
   /** the constraints sent with the LLM's goal (null: the goal's own) */
   proposed_constraints?: unknown[] | null;
-  /** omniplanner paused the robot and holds this replan until the operator answers */
-  held?: string | null;
+  /** omniplanner paused (Spot) / stopped (Husky) the robot and holds this replan
+   *  question until the operator answers; one answer covers all its robots */
+  held?: HeldReplan | null;
   status: "pending" | "confirming" | "confirmed" | "declined" | "superseded";
   result: Record<string, unknown> | null;
 }

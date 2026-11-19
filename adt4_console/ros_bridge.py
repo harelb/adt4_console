@@ -639,6 +639,8 @@ class RosBridge:
         # scene_repair.SceneRepair (the app binds it): fed applied scene changes,
         # omniplanner replan requests / map versions and the goals sent
         self.scene_repair = None
+        # omniplanner's latched replan_pending, last received ("" / JSON / None)
+        self.replan_pending: str | None = None
         # what the planner says it believes (planner_state): goal_manager's
         # robot_plan_states, omniplanner's plan_robots / map_version / map_epoch
         self._planner: dict = {}
@@ -932,7 +934,7 @@ class RosBridge:
         )  # fmt: skip
         n.create_subscription(
             import_type("std_msgs/msg/String"), f"/{self.planner_ns}/omniplanner_node/replan_pending",
-            lambda m: self.scene_repair is not None and self.scene_repair.on_replan_pending(m.data),
+            self._on_replan_pending,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL),
         )  # fmt: skip
         n.create_subscription(
@@ -940,6 +942,13 @@ class RosBridge:
             self._on_planner_map_version,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL),
         )  # fmt: skip
+
+    def _on_replan_pending(self, msg) -> None:
+        # kept: a latched question that arrives before scene repair is wired is
+        # handed to it then (app.wire_scene_repair)
+        self.replan_pending = msg.data
+        if self.scene_repair is not None:
+            self.scene_repair.on_replan_pending(msg.data)
 
     def _on_planner_map_version(self, msg) -> None:
         self._planner_set(map_version=int(msg.data))
@@ -1061,12 +1070,18 @@ class RosBridge:
         except Exception:  # noqa: BLE001
             log.exception("scene changes from %s", d.get("source"))
 
-    def decide_replan(self, decision: str) -> int:
-        """Answer omniplanner's held replan: "confirm" or "decline"."""
+    def decide_replan(self, question_id: str, decision: str) -> int:
+        """Answer omniplanner's held replan question ``question_id`` (its
+        ``replan_pending`` id): "confirm" or "decline". Returns the matched
+        subscribers (0: the planner did not get it)."""
+        import json
+
+        if decision not in ("confirm", "decline"):
+            raise ValueError(f"unknown decision {decision!r} (confirm / decline)")
         return self.publish(
             f"/{self.planner_ns}/omniplanner_node/replan_decision",
             "std_msgs/msg/String",
-            {"data": decision},
+            {"data": json.dumps({"id": str(question_id), "decision": decision})},
             match_timeout=0.5,
         )
 

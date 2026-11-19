@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ..ros_bridge import RosUnavailable
-from ..scene_repair import NotPending
+from ..scene_repair import DecisionFailed, NotPending
 from . import services
 
 router = APIRouter(prefix="/api")
@@ -45,6 +45,8 @@ def scene_repair_confirm(rid: str, request: Request, body: ConfirmBody | None = 
         raise HTTPException(404, f"unknown recommendation {rid}") from None
     except NotPending as e:
         raise HTTPException(409, str(e)) from None
+    except DecisionFailed as e:  # the card stays pending with the error
+        raise HTTPException(502, str(e)) from None
     except RosUnavailable:
         raise
     except (ValueError, LookupError) as e:  # bad goal / no planner
@@ -59,3 +61,5 @@ def scene_repair_decline(rid: str, request: Request, body: DeclineBody | None = 
         raise HTTPException(404, f"unknown recommendation {rid}") from None
     except NotPending as e:
         raise HTTPException(409, str(e)) from None
+    except DecisionFailed as e:  # the card stays pending with the error
+        raise HTTPException(502, str(e)) from None

@@ -1653,12 +1653,22 @@ semantic_label, old_position, new_position, confidence}`). The state updater pub
 robots' own placements there with source `executor/<robot>`; heracles_agents' chat (SGET)
 publishes its edits with source `sget/...`. omniplanner's repair node replans for changes to
 objects its plan depends on (`/<planner_ns>/omniplanner_node/replan_request`, String reason)
-and latches `/<planner_ns>/omniplanner_node/map_version` (Int64). With its `confirm_replans`
-(the default) a replan for a scene change, a map reload or a cut route is held instead: the
-robots stay paused, the replan is latched on `/<planner_ns>/omniplanner_node/replan_pending`
-(String JSON `{reason, robots}`, `""` when none waits) and goes out only when the console
-publishes `confirm` on `/<planner_ns>/omniplanner_node/replan_decision` (`decline` drops it).
-A failed pick is still replanned at once.
+and latches `/<planner_ns>/omniplanner_node/map_version` (Int64).
+
+**Held replans** (omniplanner's `confirm_replans`, default on). Only a replan that **change
+detection** caused (a batch from `awcd/...` that removes or moves a goal or plan object) is held
+for the operator; map edits (`console/...`, `sget/...`), map reloads, cut routes and failed-pick
+retries replan at once, as before. The robots are paused (Spots) or stopped with an empty Path
+(Huskies) when the change is detected. The question is latched on
+`/<planner_ns>/omniplanner_node/replan_pending` (String, TRANSIENT_LOCAL): `""` when none waits,
+else JSON `{id, robots[], reasons[], reason, source, t}`. `id` is stable for one question (a new
+question gets a new id); `robots` are the robots it still holds (it shrinks as robots get a new
+plan or their plan ends; a further change makes a new id); `reasons` has one entry per held
+change. A message without `id` is ignored. The console answers on
+`/<planner_ns>/omniplanner_node/replan_decision` (String JSON `{id, decision: confirm|decline}`):
+confirm makes the planner replan (each reason as its own `replan_request`), decline drops the
+replan and the planner sends nothing. Either way the planner then publishes `""`. A console whose
+planner never publishes `replan_pending` behaves exactly as without held replans.
 
 An **added** object is a new symbol, which no plan depends on, so omniplanner ignores it ("go
 to the nearest cone" and change detection finds a nearer cone). The console closes that gap.
@@ -1705,7 +1715,10 @@ Perception rules (symbols compared case-insensitively: `o12` = `O12` = `O(12)`):
 change recheck (`SceneChangeListener` and the SCENE CHANGE REPORTS rules of `repair_chat.yaml`)
 brought into the console's chat. A batch related to a robot's running goal -- an edit, a rule
 finding above, or an **added or moved** object of a goal object's class or of a class the
-operator's request names ("all the cones") -- is not turned into a recommendation at once. It is
+operator's request names ("all the cones"), or an added or moved object of **any class inside a
+region** the goal names (`r5`) or the request names ("region 5", "region5", the region's name;
+the object's Room by the MeshPlace that contains it in the live map, else by the place nearest
+the change's position) -- is not turned into a recommendation at once. It is
 collected for `recheck_settle_s` (3 s; changes arriving together are one question), then the
 chat's LLM redoes the operator's request on the changed map (`ChatService.recheck`, prompt
 `RECHECK_PROMPT`: "all X" adds a new X and drops a removed one; "the nearest X" recomputes; a
@@ -1734,20 +1747,41 @@ One pending recommendation per robot. A newer one supersedes it (`status: supers
 `result.by`). While the goal is the same, the new one carries the older one's reasons, changes
 and rewrites forward.
 
-Recommendation: `{id, robot, t, source, origin (edit|perception), map_version, reason, reasons[],
+Recommendation: `{id, robot, t, source, origin (edit|perception|planner), map_version, reason, reasons[],
 priority (high|normal|low), changes[], goal (active goal), proposed_goal, rewrites [{from, to}],
-status (pending|confirming|confirmed|declined|superseded), result, held}`. `held` is the
-reason of the replan omniplanner holds for this robot (else null); a held replan with no card
-for the robot makes one (`origin: planner`). On such a card **Replan same goal** answers
-`confirm` (no goal is sent: the planner replans as it would have) and **Dismiss** answers
-`decline` (resume is ticked by default: the robot was paused). A proposed different goal is sent
-as a goal, and its new plan drops the held replan.
+status (pending|confirming|confirmed|declined|superseded), result, held}`.
+
+`held` is the planner's held question when it holds this robot (else null):
+`{id, robots[], reasons[], reason, source, t, stopped[]}`, where `stopped` lists the held robots
+on a Husky platform (phoenix). The console keeps the question apart from the cards: **every robot
+it holds always has a pending card**. One is made with `origin: planner` (the question's reasons,
+priority high) when the robot has none -- also when the console has no recorded goal for it (a
+team goal sent through another robot, a goal sent elsewhere, a console restart: then
+`goal: {pddl: "", unknown: true}`), when the latched question arrived before scene repair was
+wired, and after a newer recommendation, a change detection reset, an LLM recheck that keeps the
+goal or history eviction retired the robot's last card (eviction skips held cards). A card the
+question alone made is superseded when the question no longer holds its robot.
+
+One question covers all its `robots`, and each of their cards says the answer applies to all of
+them. On a held card:
+- **Replan same goal** (or **Replan with ...** whose goal and constraints equal the active goal's)
+  publishes `{id, decision: "confirm"}`; no goal is sent.
+- A proposal that differs in the goal **or only in its constraints** is sent as a goal (with those
+  constraints); no decision is published, and its new plan takes the robot out of the question.
+- **Dismiss** publishes `{id, decision: "decline"}`; with `resume` (ticked by default on a held
+  card) the console resumes **every held Spot** (`result.resumed` per robot). A held Husky is not
+  resumed: it was stopped and needs a new goal (`result.stopped`).
+- The card is marked `confirmed` / `declined` only once the decision is published (`result:
+  {ok, planner, question, robots, ...}`); the other held robots' `origin: planner` cards are
+  answered with it (`result.by`), and their other cards just lose `held`. When publishing fails
+  (ROS down, or no subscriber matched) the card stays pending with `result.error` and the route
+  answers 502.
 
 | Method | Path | Body / notes |
 |---|---|---|
 | GET | `/plan/scene_repair` | `{map_version, changes: [{id, source, origin, map_version, t, summary, changes: [{kind added\|removed\|moved, symbol, label, old, new, confidence?}]}], events: [{t, kind: replan_request, text}], recommendations: [...], pending: {robot: id}}` |
-| POST | `/plan/scene_repair/{id}/confirm` | `{variant: "proposed" (default) \| "original"}`: `send_pddl_goal(robot, goal, engine=...)`. The bridge resends the persistent constraints. A GRSTAPS-X goal's `before` facts go with it, rewritten like the goal. → the record (`status: confirmed`, `result {ok, variant, pddl, send}`). 404 unknown id, 409 not pending, 400 no planner, 503 ROS down. A failed send leaves it pending with `result.error` |
-| POST | `/plan/scene_repair/{id}/decline` | `{resume: false}`. `resume: true` also resumes the robot (as the Resume route does), since goal_manager may have paused it. 404 / 409 as above |
+| POST | `/plan/scene_repair/{id}/confirm` | `{variant: "proposed" (default) \| "original"}`: `send_pddl_goal(robot, goal, engine=...)`. The bridge resends the persistent constraints. A GRSTAPS-X goal's `before` facts go with it, rewritten like the goal. → the record (`status: confirmed`, `result {ok, variant, pddl, send}`). 404 unknown id, 409 not pending, 400 no planner, 503 ROS down. A failed send leaves it pending with `result.error`. On a held card the same request answers `confirm` instead (above); 502 when that decision was not published |
+| POST | `/plan/scene_repair/{id}/decline` | `{resume: false}`. `resume: true` also resumes the robot (as the Resume route does), since goal_manager may have paused it. On a held card: publishes `decline` and resumes every held Spot; 502 when the decision was not published (nothing resumed). 404 / 409 as above |
 
 Hub topic `plan/scene_repair` carries the full state on every change. **UI:** the Plan panel's
 current plan section (under the plan repair alerts) shows the robot's pending recommendation.
