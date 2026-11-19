@@ -1,0 +1,5 @@
+# python -m adt4_console.mission_prep compile / render / verify (no ROS needed)
+neo4j>=5
+matplotlib
+shapely>=2
+contextily
