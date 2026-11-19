@@ -500,7 +500,11 @@ class SceneRepair:
             elif r.get("held"):
                 if r["held"].get("id") in self._deciding:
                     continue  # being answered: _answer_held marks it
-                if r["origin"] == "planner" and r["status"] == "pending":
+                if r["status"] == "pending" and (
+                    r["origin"] == "planner" or _covered(r, r["held"])
+                ):
+                    # the question went (answered, carried, released): so does a
+                    # card that asks only about its changes
                     r.update(status="superseded", t_done=self.clock(),
                              result={"by": None, "why": "the planner no longer holds a replan for "
                                                         f"{r['robot']}"})  # fmt: skip
@@ -1094,6 +1098,10 @@ class SceneRepair:
                     f"recommendation {rid}: the planner's question changed; look at the card again"
                 )
             rec["status"] = "confirming"
+            if was:
+                # the new goal answers the question: no "Replan same goal" again
+                # for it (no second replan) until the planner clears or replaces it
+                self._held_done[was] = "goal"
             goal = rec["goal"]
             pddl = rec["proposed_goal"] if variant == "proposed" else goal["pddl"]
             if (
@@ -1118,6 +1126,8 @@ class SceneRepair:
             res = self.send(rec["robot"], pddl, constraints, goal.get("engine"), **kw)
         except Exception as e:  # noqa: BLE001 — leave it pending: the operator may retry
             with self._lock:
+                if was and self._held_done.get(was) == "goal":
+                    del self._held_done[was]
                 rec.update(
                     status="pending",
                     result={"ok": False, "error": str(e), "variant": variant},
@@ -1237,6 +1247,10 @@ class SceneRepair:
                     r.update(status=done, t_done=self.clock(),
                              result={"ok": True, "planner": decision, "question": q["id"], "by": rid,
                                      "waiting": True, "why": f"answered on {rec['robot']}'s card"})  # fmt: skip
+                elif _covered(r, q):  # it asks only about the question's changes
+                    r.update(status="superseded", t_done=self.clock(),
+                             result={"by": rid, "question": q["id"],
+                                     "why": "answered with the planner's question"})  # fmt: skip
                 else:
                     r["held"] = None  # its own finding is still asked
         self._publish()
@@ -1278,6 +1292,15 @@ def _per_goal_constraints(goal: dict, rewrites: list[dict]) -> list | None:
     out = [{"predicate": f["predicate"], "symbols": [m.get(s, s) for s in f["symbols"]]}
            for f in facts if f["predicate"] == "before"]  # fmt: skip
     return out or None
+
+
+def _covered(rec: dict, q: dict) -> bool:
+    """``rec`` asks only about objects the held question ``q`` names (its
+    changes' symbols, else its reasons')."""
+    asked = goal_symbols(" ".join(q.get("reasons") or [q.get("reason") or ""]))
+    mine = {sym_key(c.get("symbol")) for c in rec.get("changes") or []} - {""}
+    mine = mine or goal_symbols(" ".join(rec.get("reasons") or []))
+    return bool(mine) and mine <= asked
 
 
 def _same_request(rec: dict) -> bool:

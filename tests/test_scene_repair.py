@@ -1738,3 +1738,93 @@ def test_every_occurrence_of_a_region_name_counts():
     sr.on_applied("awcd/hamilton", 5, [_added("o77", "box")])
     run()
     assert len(asked) == 1
+
+
+# ---- e2e probe of 4fb4e52 ----
+
+
+def _removed_o20_card(sr):
+    sr.on_applied(
+        "awcd/hamilton", 7, [REMOVED_O20]
+    )  # the known goal's robot: its own card
+    sr.on_replan_pending(pending_msg(["euclid", "gauss", "hamilton"]))
+    c = _by_robot(sr)
+    assert (
+        c["euclid"]["origin"] == "perception" and "O20 removed" in c["euclid"]["reason"]
+    )
+    return c
+
+
+@pytest.mark.parametrize("answer", ["confirm", "decline", "cleared"])
+def test_a_card_asking_only_about_the_held_change_goes_with_the_question(answer):
+    """C1: answered on another robot's card, or cleared by the planner (a
+    failed-pick replan, a restart): euclid's card about O20 is not left over."""
+    sr, sent, _, p = make_held(goals={"euclid": _g()})
+    c = _removed_o20_card(sr)
+    if answer == "confirm":
+        sr.confirm(c["gauss"]["id"], "original")
+    elif answer == "decline":
+        sr.decline(c["gauss"]["id"])
+    else:
+        sr.on_replan_pending("")
+    assert _pending(sr) == [] and sent == []
+    assert sr.get(c["euclid"]["id"])["status"] == "superseded"
+
+
+def test_a_card_with_a_finding_beyond_the_question_stays():
+    sr, _, _, _ = make_held(goals={"euclid": _g()}, robot_at=(0.0, 0.0))
+    sr.on_applied(
+        "awcd/hamilton", 6, [added("o99", "cone", 3.0, 0.0)]
+    )  # a closer cone: not held
+    c = _removed_o20_card(sr)
+    sr.decline(c["gauss"]["id"])
+    (left,) = _pending(sr)
+    assert left["id"] == c["euclid"]["id"] and left["held"] is None and left["rewrites"]
+
+
+def test_a_goal_sent_from_a_held_card_answers_the_question():
+    """C2: until the planner plans the new goal it still lists the robots; no
+    "Replan same goal" card is made again and no confirm can follow."""
+    new = "(and (visited-object o21))"
+    p = Planner(clears=False)
+    sr, sent, _, run = make_llm(lambda r, g, rep: {"goal": new, "constraints": [], "text": "drop o20"},
+                                goals={"hamilton": _g(CONES, request="Visit all the cones", t=1.0),
+                                       "euclid": _g(CONES, t=1.0)}, decide=p)  # fmt: skip
+    p.sr = sr
+    sr.on_applied("awcd/hamilton", 5, [REMOVED_O20])
+    run()
+    sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))
+    c = _by_robot(sr)
+    assert c["hamilton"]["llm"] and c["hamilton"]["held"]
+    sr.confirm(c["hamilton"]["id"], "proposed", held_id="q1")
+    assert sent[-1][1] == new
+    sr.on_replan_pending(
+        pending_msg(["euclid", "hamilton"])
+    )  # the planner has not planned it yet
+    assert _pending(sr) == []
+    for card in c.values():
+        with pytest.raises(NotPending):
+            sr.confirm(card["id"], "original")
+    assert p.decisions == []
+    sr.on_replan_pending(
+        pending_msg(["hamilton"], qid="q2")
+    )  # a new question: asked again
+    assert _by_robot(sr)["hamilton"]["held"]["id"] == "q2"
+
+
+def test_a_failed_goal_send_from_a_held_card_keeps_the_question_open():
+    sr, sent, _, p = make_held(robot_at=(0.0, 0.0))
+    sr.on_applied("awcd/hamilton", 7, [added("o99", "cone", 3.0, 0.0)])
+    sr.on_replan_pending(pending_msg(["hamilton"]))
+    (rec,) = _pending(sr)
+
+    def fail(*a, **k):
+        raise RuntimeError("no route")
+
+    sr.send = fail
+    with pytest.raises(RuntimeError):
+        sr.confirm(rec["id"], "proposed")
+    (rec,) = _pending(sr)
+    assert rec["held"]["id"] == "q1"
+    sr.confirm(rec["id"], "original")
+    assert p.decisions == [{"id": "q1", "decision": "confirm"}]

@@ -1772,12 +1772,16 @@ them. On a held card:
   publishes `{id, decision: "confirm"}`; no goal is sent.
 - A proposal that differs in the goal **or only in its constraints** is sent as a goal (with those
   constraints); no decision is published, and its new plan takes the robot out of the question.
+  Sending it answers the question: until the planner clears or replaces it, no card is made
+  for it again and confirm / decline for it are 409 (no second replan beside the new goal).
 - **Dismiss** only publishes `{id, decision: "decline"}`: nothing was paused, so nothing is
   resumed (a held card has no resume box; `resume` is ignored). Other cards keep the Dismiss of
   before (resume unticked by default).
 - The card is marked `confirmed` / `declined` only once the decision is published (`result:
   {ok, planner, question, robots, ...}`); the other held robots' `origin: planner` cards are
-  answered with it (`result.by`), and their other cards just lose `held`. When publishing fails
+  answered with it (`result.by`); their other cards are superseded with it when they ask only
+  about the question's objects, else they just lose `held` (the same when the planner clears
+  the question). When publishing fails
   (ROS down, or no subscriber matched) the card stays pending with `result.error` and the route
   answers 502.
 - An answered card stays shown with `result.waiting: true` until the planner publishes `""`, a
