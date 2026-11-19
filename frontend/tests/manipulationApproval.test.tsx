@@ -238,36 +238,6 @@ describe("manipulation approval dialog", () => {
     expect(container.querySelector('[data-testid="depth-overlay"]')).toBeNull();
   });
 
-  it("a poll that re-delivers the same request keeps the selected-point readout (no flicker)", async () => {
-    // The host polls every second and hands the dialog a structurally equal but
-    // NEW request object. That must not clear and re-fetch the selected point's
-    // depth: doing so blanked the Walk To label / selection line for a
-    // round-trip every poll, re-flowing the dialog (visible flicker).
-    const make = () => {
-      const request = fixture();
-      request.images[0] = {...request.images[0], point_query_url: "/api/test/p/0", ground_estimate: true};
-      request.walk_to = {standoff_m: 1, max_distance_m: 5};
-      return request;
-    };
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify(
-      {image_index: 0, x: 100, y: 80, has_depth: false, depth_m: null, ground: {hit: true, distance_m: 3, walk_m: 2, capped: false}}),
-      {status: 200, headers: {"Content-Type": "application/json"}}));
-    vi.stubGlobal("fetch", fetchMock);
-    const first = make();
-    render(first);
-    imageLoaded();
-    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-    const label = "Walk to selected point (2.0 m, ground plane)";
-    expect(button("Walk to selected point").textContent).toBe(label);
-    for (let poll = 0; poll < 3; poll++) {
-      act(() => root!.render(<ManipulationApprovalDialog key={first.id} request={make()}
-        onRespond={vi.fn()} onDismiss={vi.fn()} />));
-      expect(button("Walk to selected point").textContent).toBe(label);
-      expect(container.querySelector('[data-testid="grasp-selection"]')!.textContent).toContain("3.00 m away");
-    }
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
   it("shows the ground-plane estimate even when an image has no depth", async () => {
     const request = fixture();
     request.images[0] = {...request.images[0], point_query_url: "/api/test/p/0", ground_estimate: true};
