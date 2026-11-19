@@ -424,3 +424,31 @@ def test_quad_routes(quad_chat):
         client.get("/api/quad/captures").json()["captures"][0]["id"] == r.json()["id"]
     )
     assert client.get("/api/quad/captures/nope.jpg").status_code == 404
+
+
+def test_quad_takeoff_env(monkeypatch):
+    from adt4_console.cli import parse_args, quad_takeoff_env, settings_from_args
+
+    assert quad_takeoff_env({}) is None
+    assert quad_takeoff_env({"ADT4_QUAD_TAKEOFF": " "}) is None
+    assert quad_takeoff_env({"ADT4_QUAD_TAKEOFF": "39.941166, -75.198838"}) == (39.941166, -75.198838)
+    assert quad_takeoff_env({"ADT4_QUAD_TAKEOFF": "39.941166 -75.198838"}) == (39.941166, -75.198838)
+    for bad in ("39.9", "a,b", "1,2,3", "-75.198838,39.941166x", "120,0"):
+        with pytest.raises(SystemExit):
+            quad_takeoff_env({"ADT4_QUAD_TAKEOFF": bad})
+    monkeypatch.setenv("ADT4_QUAD_TAKEOFF", "39.941166,-75.198838")
+    assert settings_from_args(parse_args([])).quad_takeoff == (39.941166, -75.198838)
+    s = settings_from_args(parse_args(["--quad-takeoff", "1", "2"]))  # the flag wins
+    assert s.quad_takeoff == (1.0, 2.0)
+
+
+def test_takeoff_frame_sends_offsets_from_takeoff():
+    """With the takeoff set, map points go to the quad as metres east / north of it."""
+    origin = (483012.68, 4421246.18)
+    anchor = NS(map_to_utm=lambda x, y: (origin[0] + 100 + x, origin[1] - 50 + y),
+                utm_to_map=lambda e, n: (e - origin[0] - 100, n - origin[1] + 50), yaw=0.0)  # fmt: skip
+    f = protocol.QuadFrame(anchor)
+    f.set_origin(*origin, "takeoff_flag")
+    assert f.map_to_quad(-100, 50) == pytest.approx((0.0, 0.0))  # the takeoff itself
+    assert f.map_to_quad(-90, 70) == pytest.approx((10.0, 20.0))
+    assert f.quad_to_map(10.0, 20.0) == pytest.approx((-90, 70))

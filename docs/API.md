@@ -1353,7 +1353,7 @@ anything that answers no pending request goes to listeners. Wire formats: `quad/
   position_covariance}, heading_deg (unreliable), rel_alt_m}`.
 
 **Frame.** Map ↔ quad goes through UTM (the map's geo anchor, looked up on every use, so it
-follows the map loaded now): quad = UTM − takeoff. The takeoff point is `--quad-takeoff LAT LON`,
+follows the map loaded now): quad = UTM − takeoff. The takeoff point is `--quad-takeoff LAT LON` (or `$ADT4_QUAD_TAKEOFF="LAT,LON"`; the flag wins),
 else calibrated from GPS: status position and a capture's GPS taken together, takeoff =
 UTM(GPS) − position, rejected while moving (> 1 m), with a stale image (> 1 s) or a poor fix
 (covariance > 25 m²); retried every 10 s until it works (`POST /api/quad/calibrate` forces it).

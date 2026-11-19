@@ -19,6 +19,21 @@ def _pairs(values, flag) -> dict[str, str]:
     return out
 
 
+def quad_takeoff_env(environ=None) -> tuple[float, float] | None:
+    """``$ADT4_QUAD_TAKEOFF`` as (lat, lon): "LAT,LON" or "LAT LON"; unset/empty -> None."""
+    raw = ((os.environ if environ is None else environ).get("ADT4_QUAD_TAKEOFF") or "").strip()
+    if not raw:
+        return None
+    parts = raw.replace(",", " ").split()
+    try:
+        lat, lon = (float(v) for v in parts)
+    except ValueError:
+        raise SystemExit(f"ADT4_QUAD_TAKEOFF expects 'LAT,LON', got {raw!r}") from None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise SystemExit(f"ADT4_QUAD_TAKEOFF out of range (LAT,LON): {raw!r}")
+    return lat, lon
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
         prog="adt4-console", description="ADT4 web console (base-station server)"
@@ -136,7 +151,9 @@ def parse_args(argv=None):
                    help="this machine's address the quad connects back to, e.g. 10.10.10.240 "
                    "(default: the local address on the route to the quad) [$ADT4_QUAD_REPLY_HOST]")  # fmt: skip
     g.add_argument("--quad-takeoff", type=float, nargs=2, metavar=("LAT", "LON"),
-                   help="the quad's takeoff point (default: calibrated from its GPS)")  # fmt: skip
+                   default=quad_takeoff_env(),
+                   help="the quad's takeoff point; goals go to the quad as metres east / north of it "
+                   "(default: calibrated from its GPS) [$ADT4_QUAD_TAKEOFF='LAT,LON']")  # fmt: skip
     g.add_argument("--quad-hfov", type=float, default=70.0,
                    help="quad camera horizontal field of view, degrees (detection positions)")  # fmt: skip
     g.add_argument("--quad-utm-origin", type=float, nargs=2, default=(0.0, 0.0), metavar=("E", "N"),
