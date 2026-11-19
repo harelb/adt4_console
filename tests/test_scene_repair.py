@@ -1828,3 +1828,38 @@ def test_a_failed_goal_send_from_a_held_card_keeps_the_question_open():
     assert rec["held"]["id"] == "q1"
     sr.confirm(rec["id"], "original")
     assert p.decisions == [{"id": "q1", "decision": "confirm"}]
+
+
+@pytest.mark.parametrize("answer", ["decline", "confirm"])
+def test_a_recheck_still_queued_when_the_question_is_answered_makes_no_card(answer):
+    """Review of 7a600bd: Dismiss before the LLM recheck of the same removal
+    finished: its result must not ask about the removal a second time."""
+    p = Planner()
+    goals = {"hamilton": _g(CONES, request="Visit all the cones", t=1.0)}
+    sr, sent, asked, run = make_llm(lambda r, g, rep: NO_CHANGE, goals=goals, decide=p)
+    p.sr = sr
+    sr.on_applied("awcd/hamilton", 5, [REMOVED_O20])  # queued for the LLM
+    sr.on_replan_pending(pending_msg(["hamilton"]))
+    (rec,) = _pending(sr)
+    assert rec["origin"] == "planner"
+    if answer == "decline":
+        sr.decline(rec["id"], held_id="q1")
+    else:
+        sr.confirm(rec["id"], "original", held_id="q1")
+    run()  # the recheck finishes after the answer
+    assert _pending(sr) == [] and sent == []
+
+
+def test_a_later_change_of_the_same_object_is_asked_again():
+    p = Planner()
+    goals = {"hamilton": _g(CONES, request="Visit all the cones", t=1.0)}
+    clock = iter(range(100, 200))
+    sr, _, _, run = make_llm(lambda r, g, rep: NO_CHANGE, goals=goals, decide=p,
+                             clock=lambda: next(clock))  # fmt: skip
+    p.sr = sr
+    sr.on_replan_pending(pending_msg(["hamilton"]))
+    sr.decline(_pending(sr)[0]["id"])
+    sr.on_applied("awcd/hamilton", 6, [REMOVED_O20])  # after the answer
+    run()
+    (rec,) = _pending(sr)
+    assert "O20 removed" in rec["reason"]

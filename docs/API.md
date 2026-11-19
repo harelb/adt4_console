@@ -1781,7 +1781,8 @@ them. On a held card:
   {ok, planner, question, robots, ...}`); the other held robots' `origin: planner` cards are
   answered with it (`result.by`); their other cards are superseded with it when they ask only
   about the question's objects, else they just lose `held` (the same when the planner clears
-  the question). When publishing fails
+  the question). An LLM recheck of changes seen before the answer (a goal sent
+  included) that the question covers makes no card when it finishes later. When publishing fails
   (ROS down, or no subscriber matched) the card stays pending with `result.error` and the route
   answers 502.
 - An answered card stays shown with `result.waiting: true` until the planner publishes `""`, a

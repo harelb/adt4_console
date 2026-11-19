@@ -319,6 +319,9 @@ class SceneRepair:
         # question ids whose decision is being published: the planner may clear
         # the question before the cards it answers are marked
         self._deciding: set[str] = set()
+        # (time, question) answered here: a recheck of changes seen before then
+        # that the question covered makes no card for them again
+        self._answered_qs: collections.deque = collections.deque(maxlen=20)
         self.resume = resume  # (robot) -> result dict
         self.active_goals = active_goals or (lambda: {})  # () -> {robot: goal record}
         self.plan_of = plan_of or (
@@ -790,7 +793,13 @@ class SceneRepair:
                 return (
                     None  # the goal changed while the LLM answered: its answer is stale
                 )
-            if res is None:
+            t_seen = max((b.get("t") or 0) for b in q["batches"])
+            if any(t >= t_seen and _covered({"changes": batch["changes"]}, aq)
+                   for t, aq in self._answered_qs):  # fmt: skip
+                rec = None  # the operator already answered the planner's question about them
+                self._events.append({"t": self.clock(), "kind": "recheck",
+                                     "text": f"{robot}: answered with the planner's question"})  # fmt: skip
+            elif res is None:
                 # no LLM answer: the rules decide, exactly as without the recheck
                 rec = (
                     self._recommend(robot, goal, batch, q["findings"])
@@ -1102,6 +1111,7 @@ class SceneRepair:
                 # the new goal answers the question: no "Replan same goal" again
                 # for it (no second replan) until the planner clears or replaces it
                 self._held_done[was] = "goal"
+                self._answered_qs.append((self.clock(), rec["held"]))
             goal = rec["goal"]
             pddl = rec["proposed_goal"] if variant == "proposed" else goal["pddl"]
             if (
@@ -1128,6 +1138,7 @@ class SceneRepair:
             with self._lock:
                 if was and self._held_done.get(was) == "goal":
                     del self._held_done[was]
+                    self._answered_qs.pop()
                 rec.update(
                     status="pending",
                     result={"ok": False, "error": str(e), "variant": variant},
@@ -1223,6 +1234,7 @@ class SceneRepair:
         robots = list(q["robots"])
         with self._lock:
             self._held_done[q["id"]] = decision
+            self._answered_qs.append((self.clock(), q))
             self._deciding.discard(q["id"])
             while len(self._held_done) > 20:
                 self._held_done.popitem(last=False)
