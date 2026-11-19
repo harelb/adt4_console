@@ -22,10 +22,15 @@ The scene graph changes under a running plan in two ways:
 
   Our own robots' placements (source ``executor/<robot>``) are ignored.
 
-omniplanner's repair node already replans for (a)/(b) on its own (its
-``replan_request`` reasons are logged here as events); (c) is the gap -- a new
-symbol is nothing omniplanner's plan depends on -- so the console recommends it
-and the operator confirms.
+omniplanner's repair node replans for (a)/(b) on its own. A replan that change
+detection caused is held for the operator (its ``confirm_replans``): the robots
+keep their current plans and ``replan_pending`` names the question
+(:meth:`on_replan_pending`, JSON ``{id, robots, reasons, reason, source, t}``).
+One question covers every robot it names: each of them has a card (one is made
+when it has none, ``origin: planner``) that says the answer applies to all of
+them; "Replan same goal" answers ``confirm`` (the repaired plans) and Dismiss
+``decline`` (the current plans go on; ``decide(id, decision)``). (c) is the gap -- a new symbol is nothing omniplanner's plan depends
+on -- so the console recommends it and the operator confirms.
 
 One pending recommendation per robot: a newer one supersedes it (and carries
 its findings forward while the goal is the same).  Pure python: every
@@ -64,6 +69,11 @@ _SYM = re.compile(r"(?<![A-Za-z0-9_-])([A-Za-z])(?:\((\d+)\)|(\d+))(?![\w(])")
 
 class NotPending(Exception):
     """The recommendation was already confirmed / declined / superseded (-> 409)."""
+
+
+class DecisionFailed(Exception):
+    """The answer to the planner's held replan was not published (-> 502); the
+    card stays pending."""
 
 
 def sym_key(sym) -> str:
@@ -276,7 +286,8 @@ class SceneRepair:
                  class_of=None, position_of=None, robot_xy=None, invalidate=None,
                  map_changed=None, clock=time.time, max_changes: int = 100, max_recs: int = 50,
                  planner_wait_s: float = 10.0, recheck=None, recheck_on=None,
-                 recheck_settle_s: float = 3.0, run_later=None):  # fmt: skip
+                 recheck_settle_s: float = 3.0, run_later=None, decide=None,
+                 region_of=None):  # fmt: skip
         self.hub = hub
         # (robot, goal record, report text) -> {"goal", "constraints", "text"} | None:
         # the chat's LLM redoes the operator's request on the changed map (see
@@ -295,12 +306,32 @@ class SceneRepair:
             str, tuple
         ] = {}  # robot -> (goal key, changes key) last asked
         self.send = send  # (robot, pddl, constraints, engine) -> result dict
+        # (question id, "confirm" | "decline") -> matched subscribers | None:
+        # answers the planner's held replan (replan_decision)
+        self.decide = decide
+        # the planner's held question as it last published it ({id, robots,
+        # reasons, reason, source, t}) or None. Kept apart from the
+        # cards: every robot it holds gets a card whenever the state is read.
+        self._held: dict | None = None
+        # question ids answered here (decision published), newest last: the
+        # planner clears them; a late copy is not asked again
+        self._held_done: collections.OrderedDict[str, str] = collections.OrderedDict()
+        # question ids whose decision is being published: the planner may clear
+        # the question before the cards it answers are marked
+        self._deciding: set[str] = set()
+        # (time, question) answered here: a recheck of changes seen before then
+        # that the question covered makes no card for them again
+        self._answered_qs: collections.deque = collections.deque(maxlen=20)
         self.resume = resume  # (robot) -> result dict
         self.active_goals = active_goals or (lambda: {})  # () -> {robot: goal record}
         self.plan_of = plan_of or (
             lambda robot: None
         )  # robot -> ros.plan(robot)-like dict
         self.class_of = class_of or (lambda sym: None)
+        # (symbol, (x, y) | None) -> {"symbol": "r5", "name": ...} | "r5" | None:
+        # the region (Room) holding the object, by its place in the live map or,
+        # not linked yet, by its position. None: regions are not checked.
+        self.region_of = region_of
         self.position_of = position_of or (lambda sym: None)
         self.robot_xy = robot_xy or (lambda robot: None)
         self.invalidate = invalidate  # () -> None: a batch from ROS changed the map
@@ -398,6 +429,109 @@ class SceneRepair:
                 self._mv_cv.wait(left)
         return self.clock() - t0, True
 
+    def on_replan_pending(self, text: str) -> None:
+        """omniplanner's held replan question (``replan_pending``): ``""`` when
+        none waits, else JSON ``{id, robots, reasons, reason, source, t}``. A
+        message without an id (an older planner) is ignored."""
+        import json
+
+        raw = (text or "").strip()
+        if not raw:
+            held = None
+        else:
+            try:
+                held = json.loads(raw)
+            except ValueError:
+                log.warning("unreadable replan_pending %r", text)
+                return
+            if not isinstance(held, dict) or not str(held.get("id") or "").strip():
+                log.warning("replan_pending without an id ignored: %r", text)
+                return
+            robots = [str(r) for r in held.get("robots") or [] if str(r or "").strip()]
+            reasons = [
+                str(r) for r in held.get("reasons") or [] if str(r or "").strip()
+            ]
+            reason = str(held.get("reason") or "").strip() or "; ".join(reasons)
+            held = {"id": str(held["id"]), "robots": robots,
+                    "reasons": reasons or ([reason] if reason else []),
+                    "reason": reason or "the planner holds a replan",
+                    "source": str(held.get("source") or ""), "t": held.get("t")}  # fmt: skip
+            if not robots:
+                log.warning("replan_pending %s names no robot", held["id"])
+        with self._lock:
+            # an answered id again (robots left it, or our answer was lost): its
+            # cards stay answered and waiting; only the same answer can be re-sent
+            self._held = held
+        self._publish()  # the hub only: nothing here publishes on ROS
+
+    def _hold(self) -> dict | None:
+        """The planner's question still waiting for an answer from here."""
+        h = self._held
+        return h if h is not None and h["id"] not in self._held_done else None
+
+    def _held_view(self, robot) -> dict | None:
+        """What a card of ``robot`` says about the held question (None: not held)."""
+        h = self._hold()
+        if h is None or robot not in h["robots"]:
+            return None
+        return {**h, "robots": list(h["robots"]), "reasons": list(h["reasons"])}
+
+    def _sync_held(self) -> None:
+        """Cards follow the held question (under the lock): every robot it holds
+        has a pending (or confirming) card saying so -- made here when it has
+        none, whatever superseded or evicted the last one and whether or not
+        the console knows the robot's goal; a card the question alone made
+        goes when the question no longer holds its robot."""
+        h = self._hold()
+        robots = set(h["robots"]) if h else set()
+        covered = set()
+        for r in self._recs.values():
+            res = r.get("result") or {}
+            if res.get("waiting"):  # answered: shown until the planner takes it
+                now = self._held
+                if (now is None or now["id"] != res.get("question") or r["robot"] not in now["robots"]
+                        or now["id"] not in self._held_done):  # fmt: skip
+                    res["waiting"] = False
+            if r["status"] not in ("pending", "confirming"):
+                continue
+            view = self._held_view(r["robot"])
+            if view is not None:
+                covered.add(r["robot"])
+                r["held"] = view
+                if r["origin"] == "planner":
+                    r["reasons"], r["reason"] = list(view["reasons"]), view["reason"]
+            elif r.get("held"):
+                if r["held"].get("id") in self._deciding:
+                    continue  # being answered: _answer_held marks it
+                if r["status"] == "pending" and (
+                    r["origin"] == "planner" or _covered(r, r["held"])
+                ):
+                    # the question went (answered, carried, released): so does a
+                    # card that asks only about its changes
+                    r.update(status="superseded", t_done=self.clock(),
+                             result={"by": None, "why": "the planner no longer holds a replan for "
+                                                        f"{r['robot']}"})  # fmt: skip
+                else:
+                    r["held"] = None
+        missing = sorted(robots - covered)
+        if not missing:
+            return
+        try:
+            goals = dict(self.active_goals() or {})
+        except Exception:  # noqa: BLE001
+            goals = {}
+        for robot in missing:
+            goal = goals.get(robot) or {}
+            if not goal.get("pddl"):
+                # a team goal sent through another robot, a goal sent elsewhere,
+                # a console restart: the planner knows the goal, the console not
+                goal = {"pddl": "", "constraints": [], "engine": None, "unknown": True}
+            batch = {"source": h["source"] or "omniplanner", "origin": "planner",
+                     "map_version": None, "changes": []}  # fmt: skip
+            self._recommend(
+                robot, goal, batch, [(x, None, "high") for x in h["reasons"]]
+            )
+
     def on_replan_request(self, reason: str) -> None:
         self._event("replan_request", str(reason))
 
@@ -491,7 +625,8 @@ class SceneRepair:
     def _class_relevant(self, goal: dict, changes: list[dict]) -> list[dict]:
         """Added or moved objects of a class the goal is about: the class of an
         object the goal names, or a class the operator's request names ("all
-        the cones", "the nearest chair")."""
+        the cones", "the nearest chair"); and objects of any class inside a
+        region the goal (r5) or the request ("region 5", its name) names."""
         cand = [
             c for c in changes if c["kind"] in ("added", "moved") and c.get("symbol")
         ]
@@ -518,6 +653,53 @@ class SceneRepair:
                 lab in classes
                 or f" {lab} " in f" {request} "
                 or (" " not in lab and lab in words)
+            ):
+                out.append(c)
+        rest = [c for c in cand if c not in out]
+        if rest and self.region_of is not None:
+            out.extend(self._in_named_region(goal, request, rest))
+        return out
+
+    def _in_named_region(
+        self, goal: dict, request: str, changes: list[dict]
+    ) -> list[dict]:
+        """The changes whose object lies in a region the goal or the request
+        names ("visit all objects in region 5")."""
+        regions = _visited_regions(goal.get("pddl") or "")
+        words = _words(request)  # "the kitchen." -> "the kitchen"
+        regions |= {
+            f"r{m.group(1)}"
+            for m in _REGION_WORD.finditer(words)
+            if _in_region(words, m.start())
+        }
+        if not regions and not words:
+            return []
+        out = []
+        for c in changes:
+            try:
+                reg = self.region_of(c["symbol"], _xy(c.get("new")))
+            except Exception:  # noqa: BLE001 — no live map: not judged by region
+                reg = None
+            if not reg:
+                continue
+            if isinstance(reg, str):
+                reg = {"symbol": reg}
+            sym, name = (
+                sym_key(reg.get("symbol") or ""),
+                _words(reg.get("name") or ""),
+            )
+            hits = (
+                [
+                    m.start()
+                    for m in re.finditer(
+                        rf"(?<=\s){re.escape(name)}(?=\s)", f" {words} "
+                    )
+                ]
+                if len(name) > 2
+                else []
+            )
+            if (sym and sym in regions) or any(
+                _in_region(words, at - 1) for at in hits
             ):
                 out.append(c)
         return out
@@ -611,7 +793,13 @@ class SceneRepair:
                 return (
                     None  # the goal changed while the LLM answered: its answer is stale
                 )
-            if res is None:
+            t_seen = max((b.get("t") or 0) for b in q["batches"])
+            if any(t >= t_seen and _covered({"changes": batch["changes"]}, aq)
+                   for t, aq in self._answered_qs):  # fmt: skip
+                rec = None  # the operator already answered the planner's question about them
+                self._events.append({"t": self.clock(), "kind": "recheck",
+                                     "text": f"{robot}: answered with the planner's question"})  # fmt: skip
+            elif res is None:
                 # no LLM answer: the rules decide, exactly as without the recheck
                 rec = (
                     self._recommend(robot, goal, batch, q["findings"])
@@ -829,11 +1017,18 @@ class SceneRepair:
                    "goal": dict(goal), "proposed_goal": proposed,
                    "rewrites": [{"from": k, "to": v} for k, v in rewrites.items()],
                    "llm": llm, "proposed_constraints": proposed_constraints if llm else None,
-                   "status": "pending", "result": None}  # fmt: skip
+                   "status": "pending", "result": None, "held": self._held_view(robot)}  # fmt: skip
             self._supersede(robot, rid, "a newer recommendation")
             self._recs[rid] = rec
             while len(self._recs) > self._max_recs:
-                self._recs.popitem(last=False)
+                # the oldest card, but never this one or one that asks the held
+                # question (those may exceed the limit)
+                old = next((k for k, r in self._recs.items() if k != rid
+                            and not (r.get("held") and r["status"] in ("pending", "confirming"))
+                            and not (r.get("result") or {}).get("waiting")), None)  # fmt: skip
+                if old is None:
+                    break
+                del self._recs[old]
             return dict(rec)
 
     def _supersede(self, robot, by, why) -> bool:
@@ -855,23 +1050,68 @@ class SceneRepair:
                 raise KeyError(rid)
             return dict(self._recs[rid])
 
-    def _take(self, rid: str) -> dict:
+    def _take(self, rid: str, waiting: bool = False) -> dict:
+        """``waiting``: also an answered card still waiting for the planner (a
+        retry of its answer)."""
         rec = self._recs.get(rid)
         if rec is None:
             raise KeyError(rid)
+        if waiting and (rec.get("result") or {}).get("waiting"):
+            return rec
         if rec["status"] != "pending":
             raise NotPending(f"recommendation {rid} is {rec['status']}")
         return rec
 
-    def confirm(self, rid: str, variant: str = "proposed") -> dict:
+    def _check_held_id(self, rec: dict, held_id) -> None:
+        """``held_id``: the question the operator saw on the card ("" none; None
+        not said). Another question now: the answer would be for it (-> 409)."""
+        now = (rec.get("held") or {}).get("id") or ""
+        if held_id is not None and held_id != now:
+            raise NotPending(f"recommendation {rec['id']}: the planner's question changed "
+                             f"({held_id or 'none'} -> {now or 'none'}); look at the card again")  # fmt: skip
+
+    def confirm(self, rid: str, variant: str = "proposed", held_id=None) -> dict:
         """Replan: send the proposed (rewritten) or the original goal again."""
         if variant not in ("proposed", "original"):
             raise ValueError(f"unknown variant {variant!r} (proposed / original)")
+        with self._lock:
+            self._sync_held()
+            rec = self._take(rid, waiting=True)
+            self._check_held_id(rec, held_id)
+            # the planner's own replan, which it holds for this answer: the
+            # same goal with the same constraints (else the new request is sent
+            # as a goal, and its plan takes the robot out of the question)
+            planner = (
+                bool(rec.get("held"))
+                and self.decide is not None
+                and (variant == "original" or _same_request(rec))
+            )
+            if (rec.get("result") or {}).get("waiting") and not planner:
+                raise NotPending(f"recommendation {rid} was answered "
+                                 f"{rec['result'].get('planner')}; only that can be sent again")  # fmt: skip
+            was = (rec.get("held") or {}).get("id")
+        if planner:
+            return self._answer_held(rid, "confirm", variant=variant, held_id=held_id)
         if self.send is None:
             raise RuntimeError("no goal sender (ROS unavailable)")
+        if not rec["goal"].get("pddl"):
+            raise ValueError(
+                f"the console does not know {rec['robot']}'s goal: nothing to send"
+            )
         with self._lock:
+            self._sync_held()
             rec = self._take(rid)
+            self._check_held_id(rec, held_id)
+            if (rec.get("held") or {}).get("id") != was:  # held or released meanwhile
+                raise NotPending(
+                    f"recommendation {rid}: the planner's question changed; look at the card again"
+                )
             rec["status"] = "confirming"
+            if was:
+                # the new goal answers the question: no "Replan same goal" again
+                # for it (no second replan) until the planner clears or replaces it
+                self._held_done[was] = "goal"
+                self._answered_qs.append((self.clock(), rec["held"]))
             goal = rec["goal"]
             pddl = rec["proposed_goal"] if variant == "proposed" else goal["pddl"]
             if (
@@ -896,6 +1136,9 @@ class SceneRepair:
             res = self.send(rec["robot"], pddl, constraints, goal.get("engine"), **kw)
         except Exception as e:  # noqa: BLE001 — leave it pending: the operator may retry
             with self._lock:
+                if was and self._held_done.get(was) == "goal":
+                    del self._held_done[was]
+                    self._answered_qs.pop()
                 rec.update(
                     status="pending",
                     result={"ok": False, "error": str(e), "variant": variant},
@@ -912,13 +1155,20 @@ class SceneRepair:
         self._publish()
         return out
 
-    def decline(self, rid: str, resume: bool = False) -> dict:
-        """Dismiss; ``resume`` also resumes the robot (goal_manager may have paused it)."""
+    def decline(self, rid: str, resume: bool = False, held_id=None) -> dict:
+        """Dismiss; ``resume`` also resumes the robot (goal_manager may have paused
+        it). On a held card it only declines the planner's question (nothing was
+        paused: the current plans go on; :meth:`_answer_held`)."""
         with self._lock:
-            rec = self._take(rid)
-            rec.update(
-                status="declined", t_done=self.clock(), result={"resume": bool(resume)}
-            )
+            self._sync_held()
+            rec = self._take(rid, waiting=True)
+            self._check_held_id(rec, held_id)
+            held = bool(rec.get("held")) and self.decide is not None
+            if not held:
+                rec.update(status="declined", t_done=self.clock(),
+                           result={"resume": bool(resume)})  # fmt: skip
+        if held:
+            return self._answer_held(rid, "decline", held_id=held_id)
         if resume:
             try:
                 rec["result"]["resumed"] = (
@@ -929,9 +1179,102 @@ class SceneRepair:
         self._publish()
         return dict(rec)
 
+    def _answer_held(
+        self, rid: str, decision: str, *, variant=None, held_id=None
+    ) -> dict:
+        """Publish ``decision`` for the question ``rid``'s card shows. It answers
+        for every robot the question holds: their cards the question alone made
+        are answered with it. The card is answered only once the decision is
+        published."""
+        with self._lock:
+            self._sync_held()
+            rec = self._take(rid, waiting=True)
+            self._check_held_id(rec, held_id)
+            q = rec.get("held")
+            now = self._held
+            if (
+                q is None
+                or now is None
+                or now["id"] != q["id"]
+                or rec["robot"] not in now["robots"]
+            ):
+                raise NotPending(
+                    f"recommendation {rid}: the planner no longer holds that question"
+                )
+            if q["id"] in self._deciding:
+                raise NotPending(
+                    f"the planner's question {q['id']} is being answered on another card"
+                )
+            if self._held_done.get(q["id"], decision) != decision:
+                raise NotPending(f"the planner's question {q['id']} was answered "
+                                 f"{self._held_done[q['id']]}; only that can be sent again")  # fmt: skip
+            before = (rec["status"], rec.get("result"))
+            rec["status"] = "confirming"
+            self._deciding.add(q["id"])
+        self._publish()
+        try:
+            n = self.decide(q["id"], decision)
+            if isinstance(n, int) and not isinstance(n, bool) and n == 0:
+                raise RuntimeError("omniplanner is not subscribed to replan_decision")
+        except Exception as e:  # noqa: BLE001 — leave it pending: the operator may retry
+            with self._lock:
+                self._deciding.discard(q["id"])
+                if (before[1] or {}).get(
+                    "waiting"
+                ):  # a retry: still answered, still waiting
+                    rec.update(status=before[0], result={**before[1], "error": str(e)})
+                else:
+                    rec.update(status="pending", result={"ok": False, "error": str(e), "planner": decision,
+                                                         **({"variant": variant} if variant else {})})  # fmt: skip
+            self._publish()
+            raise DecisionFailed(
+                f"the {decision} was not sent to the planner: {e}"
+            ) from e
+        done = "confirmed" if decision == "confirm" else "declined"
+        robots = list(q["robots"])
+        with self._lock:
+            self._held_done[q["id"]] = decision
+            self._answered_qs.append((self.clock(), q))
+            self._deciding.discard(q["id"])
+            while len(self._held_done) > 20:
+                self._held_done.popitem(last=False)
+            result = {
+                "ok": True,
+                "planner": decision,
+                "question": q["id"],
+                "robots": robots,
+                "waiting": True,  # until the planner clears or replaces the question
+            }
+            if variant:
+                result["variant"] = variant
+            rec.update(status=done, t_done=self.clock(), result=result)
+            for r in self._recs.values():
+                if (
+                    r is rec
+                    or r["status"] != "pending"
+                    or (r.get("held") or {}).get("id") != q["id"]
+                ):
+                    continue
+                if r["origin"] == "planner":
+                    r.update(status=done, t_done=self.clock(),
+                             result={"ok": True, "planner": decision, "question": q["id"], "by": rid,
+                                     "waiting": True, "why": f"answered on {rec['robot']}'s card"})  # fmt: skip
+                elif _covered(r, q):  # it asks only about the question's changes
+                    r.update(status="superseded", t_done=self.clock(),
+                             result={"by": rid, "question": q["id"],
+                                     "why": "answered with the planner's question"})  # fmt: skip
+                else:
+                    r["held"] = None  # its own finding is still asked
+        self._publish()
+        return self.get(rid)
+
     # --------------------------------------------------------------- output
     def state(self) -> dict:
         with self._lock:
+            try:
+                self._sync_held()
+            except Exception:  # noqa: BLE001
+                log.exception("cards for the held replan")
             recs = [dict(r) for r in self._recs.values()]
             return {"map_version": self.map_version, "planner_map_version": self.planner_map_version, "changes": list(self._changes)[-50:],
                     "events": list(self._events), "recommendations": recs,
@@ -939,9 +1282,10 @@ class SceneRepair:
                     "pending": {r["robot"]: r["id"] for r in recs if r["status"] == "pending"}}  # fmt: skip
 
     def _publish(self) -> None:
+        st = self.state()  # also brings the cards in line with the held question
         if self.hub is not None:
             try:
-                self.hub.publish(HUB_TOPIC, self.state())
+                self.hub.publish(HUB_TOPIC, st)
             except Exception:  # noqa: BLE001
                 log.exception("publish %s", HUB_TOPIC)
 
@@ -960,6 +1304,25 @@ def _per_goal_constraints(goal: dict, rewrites: list[dict]) -> list | None:
     out = [{"predicate": f["predicate"], "symbols": [m.get(s, s) for s in f["symbols"]]}
            for f in facts if f["predicate"] == "before"]  # fmt: skip
     return out or None
+
+
+def _covered(rec: dict, q: dict) -> bool:
+    """``rec`` asks only about objects the held question ``q`` names (its
+    changes' symbols, else its reasons')."""
+    asked = goal_symbols(" ".join(q.get("reasons") or [q.get("reason") or ""]))
+    mine = {sym_key(c.get("symbol")) for c in rec.get("changes") or []} - {""}
+    mine = mine or goal_symbols(" ".join(rec.get("reasons") or []))
+    return bool(mine) and mine <= asked
+
+
+def _same_request(rec: dict) -> bool:
+    """The card's proposal is its goal as it is: the same PDDL and, for an LLM
+    proposal, the same constraints."""
+    goal = rec["goal"]
+    if not _same_goal(rec.get("proposed_goal") or "", goal.get("pddl") or ""):
+        return False
+    pc = rec.get("proposed_constraints") if rec.get("llm") else None
+    return pc is None or _cons_key(pc) == _cons_key(goal.get("constraints"))
 
 
 def _remaining_from(plan_state) -> int:
@@ -1049,6 +1412,37 @@ def _changes_key(changes: list[dict]) -> frozenset:
 
 def _one_line(x) -> str:
     return " ".join(str(x or "").split())
+
+
+# "region 5", "region5", "region_5" in the operator's request -> r5
+_REGION_WORD = re.compile(r"\bregion[\s_-]*(\d+)\b", re.I)
+
+
+# a region named after these is where things are looked at ("objects in region
+# 5", "explore the kitchen"); after "to" / "into" it is a destination
+_IN_WORDS = {"in", "inside", "within", "of", "around", "across", "throughout", "visit", "explore",
+             "search", "check", "inspect", "scan", "patrol", "survey"}  # fmt: skip
+_PREDICATE = re.compile(r"\(\s*([A-Za-z][\w-]*)([^()]*)\)")
+
+
+def _in_region(words: str, at: int) -> bool:
+    """The region named at ``at`` in ``words`` is one to look in, not a destination."""
+    before = [w for w in words[:at].split() if w not in ("the", "a", "an", "all")]
+    return bool(before) and before[-1] in _IN_WORDS
+
+
+def _visited_regions(pddl: str) -> set[str]:
+    """Region symbols in the goal's visit / explore / inspect predicates."""
+    out = set()
+    for m in _PREDICATE.finditer(pddl or ""):
+        if re.search(r"visit|explor|inspect", m.group(1), re.I):
+            out |= {s for s in goal_symbols(m.group(2)) if s.startswith("r")}
+    return out
+
+
+def _words(s) -> str:
+    """Lower-case words, punctuation as spaces."""
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).split())
 
 
 def _norm_label(s) -> str:
