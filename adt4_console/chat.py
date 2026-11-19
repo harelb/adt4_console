@@ -182,19 +182,8 @@ object cannot be both held and placed; no husky, and no robot without an arm. GR
 no or / at-*: those need Fast Downward (engine='fast_downward', the planner toggle); with no or, \
 "each robot picks up a different cone" names a specific robot for each cone. The rules above are for <engine>, <engine_why>; propose PDDL goals with \
 engine='<engine>' unless the operator asks for the other engine.
-- "Goals sent from this console" below lists the last goals: when the operator adds a task \
-and no robot is EXECUTING, re-send the tasks of the last one that are still wanted.
-- ADDING A TASK WHILE ROBOTS EXECUTE (the fleet roster marks them "EXECUTING a goal now"): \
-this replaces the re-send rule above. Propose a goal with only the new task(s), and always \
-with a use-robots constraint naming the robots that do it: the robots the operator names for \
-it; when the operator names none, the online robots that are not EXECUTING and can do the \
-task (an arm for picking up or moving an object). The planner then replans those robots only \
-and leaves the others to their plans. Do not re-send the tasks of robots the goal does not \
-name: a goal that lists them is the whole team's, and the planner may interrupt them. A robot \
-named in use-robots gets a new plan: when it is EXECUTING itself, re-send its own tasks that \
-are still wanted with the new one. When no robot is free and the operator names none, ask \
-which robot should do it. The whole team's goal is re-sent only when the operator asks for \
-every robot, a new mission, or to replan the team.
+- "Goals sent from this console" below lists the last goals: when the operator adds a task, \
+re-send the tasks of the last one that are still wanted.
 """
 # GRSTAPS-X is optional (not installed, or no GRSTAPS-X planner running): without
 # it the engine note names Fast Downward only

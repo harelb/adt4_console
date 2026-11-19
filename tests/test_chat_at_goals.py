@@ -174,11 +174,9 @@ def test_grstaps_system_presents_holding_and_use_robots_and_at_or_as_fast_downwa
 
 # Lines of the Fast Downward system prompt rewritten since the fixture (1e02705):
 # the engine bullet (842a522) and, in the 2026-11-12 follow-up, two team goal
-# rules (use-robots; robot names and the fleet) and the roster's heading; on
-# 2026-11-18 the re-send note (it now applies only while no robot is executing).
+# rules (use-robots; robot names and the fleet) and the roster's heading.
 _REWRITTEN = ("- engine: ", '- "Both robots", "hamilton and euclid"', "- Robot names are lowercase",
-              "Fleet roster (platform from the fleet topology",
-              '- "Goals sent from this console" below lists')  # fmt: skip
+              "Fleet roster (platform from the fleet topology")  # fmt: skip
 
 
 @needs_heracles_agents
