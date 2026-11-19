@@ -2115,3 +2115,61 @@ def test_the_same_request_with_inherited_use_robots_confirms():
     (rec,) = _pending(sr)
     sr.confirm(rec["id"], "proposed")
     assert sent == [] and p.decisions == [{"id": "q1", "decision": "confirm"}]
+
+
+# ---- Codex re-review of e5d5d1f ----
+
+
+def test_a_goal_send_stops_when_the_question_was_replaced_while_waiting():
+    sr, sent, _, _, p, c = _llm_held(lambda r, g, rep: NEW_GOAL)
+
+    def wait(needed):  # meanwhile: the planner asks Q2 and euclid's card declines it
+        sr.on_replan_pending(pending_msg(["euclid", "hamilton"], qid="q2"))
+        sr.decline(c["euclid"]["id"], held_id="q2")
+        return 0.0, True
+
+    sr._wait_for_planner = wait
+    with pytest.raises(NotPending, match="question changed"):
+        sr.confirm(c["hamilton"]["id"], "proposed", held_id="q1")
+    assert sent == [] and p.decisions == [{"id": "q2", "decision": "decline"}]
+    assert (
+        sr.get(c["hamilton"]["id"])["status"] == "pending" and "q1" not in sr._deciding
+    )
+
+
+def test_a_restoration_during_a_slow_decline_is_still_asked():
+    p = Planner()
+    goals = {"hamilton": _g(CONES, request="Visit all the cones", t=1.0)}
+    clock = iter(range(1000, 2000))
+    sr, _, asked, run = make_llm(lambda r, g, rep: NO_CHANGE, goals=goals, decide=p,
+                                 clock=lambda: next(clock))  # fmt: skip
+    p.sr = sr
+    sr.on_replan_pending(pending_msg(["hamilton"]))
+
+    def slow(qid, decision):  # O20 comes back while the decline is published
+        sr.on_applied("awcd/hamilton", 6, [_added("o20", "cone", xy=(7.4, 0.0))])
+        return 1
+
+    sr.decide = slow
+    sr.decline(_pending(sr)[0]["id"])
+    run()
+    (rec,) = _pending(sr)
+    assert "O20" in rec["reason"] and asked
+
+
+def test_suppression_matches_the_change_kind():
+    from adt4_console.scene_repair import _same_changes
+
+    q = json.loads(pending_msg(["hamilton"]))  # "o20 removed"
+    assert _same_changes([{"kind": "removed", "symbol": "O20"}], q)
+    assert not _same_changes([{"kind": "added", "symbol": "O20"}], q)
+    assert not _same_changes([{"kind": "removed", "symbol": "O21"}], q)
+
+
+def test_no_region_discovery_without_a_request_or_a_goal_region():
+    looked = []
+    goal = {"hamilton": _g("(visited-object o20)", t=1.0)}  # no request, no region
+    sr, _, _, _ = make_llm(lambda r, g, rep: NO_CHANGE, goals=goal, region_of=lambda s, xy: None,
+                           regions=lambda: looked.append(1) or [])  # fmt: skip
+    sr.on_applied("awcd/hamilton", 5, [_added("o77", "box")])
+    assert looked == []

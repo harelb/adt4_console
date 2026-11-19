@@ -1798,9 +1798,12 @@ them. On a held card:
   releases it and leaves every card as it was. Held cards are exempt from the history limit
   (with no question held, the limit works as before). Per-question records keep only the current
   id; a late LLM recheck is suppressed only for the question's robots and changes received
-  before the answer, and only when the card it would make is covered by the question (the same
+  before the answer (the time the operator answered), naming the same changes (symbol and
+  kind: "O58 added" after "o58 removed" is new), and only when the card it would make is
+  covered by the question (the same
   goal and constraints, about its objects; its change set is then not asked again). A send that
-  returns `ok: false` is rolled back like a failed one. "The same request" counts the goal's
+  returns `ok: false` is rolled back like a failed one, and a goal send whose question was
+  replaced while it waited for the map is not sent (409). "The same request" counts the goal's
   inherited use-robots, so the LLM keeping the goal answers confirm.
 
 | Method | Path | Body / notes |

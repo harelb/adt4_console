@@ -316,10 +316,10 @@ class SceneRepair:
         # question ids answered here (decision published), newest last: the
         # planner clears them; a late copy is not asked again
         self._held_done: collections.OrderedDict[str, str] = collections.OrderedDict()
-        # question id -> the answer being published / sent ("confirm",
-        # "decline", "goal"): one claim per question; the planner may clear the
-        # question before the cards it answers are marked
-        self._deciding: dict[str, str] = {}
+        # question id -> (the answer being published / sent: "confirm",
+        # "decline", "goal"; when the operator answered): one claim per
+        # question; the planner may clear it before the cards are marked
+        self._deciding: dict[str, tuple] = {}
         # (time, question) answered here: a recheck of changes seen before then
         # that the question covered makes no card for them again
         self._answered_qs: collections.deque = collections.deque(maxlen=20)
@@ -684,7 +684,9 @@ class SceneRepair:
             if _in_region(words, m.start())
         }
         try:  # the map's regions the request names ("inspect the kitchen")
-            known = list(self.regions() or []) if self.regions is not None else []
+            known = (
+                list(self.regions() or []) if self.regions is not None and words else []
+            )
         except Exception:  # noqa: BLE001
             known = []
         for reg in known:
@@ -817,7 +819,10 @@ class SceneRepair:
             else:
                 self._answered[robot] = key
                 rec = self._from_answer(robot, goal, batch, q, res)
-            if rec is not None and any(_covered(rec, aq) for aq in answered):
+            if rec is not None and any(
+                _covered(rec, aq) and _same_changes(batch["changes"], aq)
+                for aq in answered
+            ):
                 # the operator already answered the planner's question about
                 # exactly this (same goal, its objects): not asked again
                 self._recs[rec["id"]].update(status="superseded", t_done=self.clock(),
@@ -1148,6 +1153,22 @@ class SceneRepair:
         ]
         versions = [int(v) for v in versions if v is not None]
         waited, fresh = self._wait_for_planner(max(versions) if versions else None)
+        if was:
+            with self._lock:
+                if (self._held or {}).get(
+                    "id"
+                ) != was:  # replaced while waiting for the map
+                    self._deciding.pop(was, None)
+                    rec.update(status="pending", result={"ok": False, "variant": variant,
+                                                         "error": "the planner's question changed"})  # fmt: skip
+                    stale = True
+                else:
+                    stale = False
+            if stale:
+                self._publish()
+                raise NotPending(
+                    f"recommendation {rid}: the planner's question changed; look at the card again"
+                )
         try:
             # the operator's words go with the goal: a later change rechecks against them
             kw = {"request": goal["request"]} if goal.get("request") else {}
@@ -1273,15 +1294,15 @@ class SceneRepair:
         if done is not None and (done != kind or kind == "goal"):
             raise NotPending(f"the planner's question {q['id']} was answered "
                              f"{done}; only that can be sent again")  # fmt: skip
-        self._deciding[q["id"]] = kind
+        self._deciding[q["id"]] = (kind, self.clock())
         return q
 
     def _mark_answered(self, q: dict, rec: dict, rid: str, kind: str) -> None:
         """The answer ``kind`` to ``q`` went out (under the lock): the other
         cards that only asked it are answered with it."""
-        self._deciding.pop(q["id"], None)
+        _kind, t = self._deciding.pop(q["id"], (kind, self.clock()))
         self._held_done[q["id"]] = kind
-        self._answered_qs.append((self.clock(), q))
+        self._answered_qs.append((t, q))  # changes received after the answer are new
         done = {"confirm": "confirmed", "decline": "declined"}.get(kind)
         for r in self._recs.values():
             if (
@@ -1346,6 +1367,23 @@ def _is_use_robots(c) -> bool:
     return (
         isinstance(c, dict)
         and str(c.get("predicate") or "").strip().lower() == "use-robots"
+    )
+
+
+_REASON_CHANGE = re.compile(
+    r"(?<![A-Za-z0-9_-])([A-Za-z])\(?(\d+)\)?\s+(added|removed|moved)\b", re.I
+)
+
+
+def _same_changes(changes: list[dict], q: dict) -> bool:
+    """Every change is one the question's reasons name (same symbol and kind):
+    a restoration (O58 added) after "o58 removed" is a new change."""
+    asked = {
+        (f"{a.lower()}{n}", k.lower())
+        for a, n, k in _REASON_CHANGE.findall(" ".join(q.get("reasons") or []))
+    }
+    return bool(changes) and all(
+        (sym_key(c.get("symbol")), c.get("kind")) in asked for c in changes
     )
 
 
