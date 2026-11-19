@@ -514,6 +514,14 @@ class TrialService:
                     "ready": bool(r.get("ok"))
                     and not r.get("recording")
                     and topic_set(m) is not None,
+                    # a recorder is running here already (a trial this console
+                    # does not have): a start may stop it and record anew
+                    "recording": (r.get("trial") or r.get("dir") or True)
+                    if r.get("recording")
+                    else None,
+                    "replaceable": bool(r.get("ok"))
+                    and bool(r.get("recording"))
+                    and topic_set(m) is not None,
                     "error": None if r.get("ok") else r.get("error"),
                     "free_bytes": r.get("free_bytes"),
                     "total_bytes": r.get("total_bytes"),
@@ -533,7 +541,15 @@ class TrialService:
         }
 
     # -------------------------------------------------------------- start
-    def start(self, description: str, machines: list[str] | None = None) -> dict:
+    def start(
+        self,
+        description: str,
+        machines: list[str] | None = None,
+        replace: list[str] | None = None,
+    ) -> dict:
+        """``replace``: machines whose running recorder (another trial's, or
+        one no console knows about) is stopped first, then started for this
+        trial.  Without it such a machine is ``failed``: already recording."""
         description = (description or "").strip()
         if not description:
             raise TrialError(400, "a short mission description is required")
@@ -569,6 +585,7 @@ class TrialService:
                 "events": 0,
                 "flags": 0,
                 "log_error": None,
+                "replace": sorted(set(replace or [])),
                 "machines": {
                     m["name"]: _new_machine(m)
                     for m in sorted(chosen, key=lambda x: x["name"])
@@ -598,7 +615,15 @@ class TrialService:
             with self.lock:
                 states = [x["state"] for x in trial["machines"].values()]
                 n_rec = states.count(RECORDING)
-                trial["state"] = RECORDING if n_rec else FAILED
+                # Stop was pressed while the machines were still starting
+                stopped_early = trial["state"] == STOPPING
+                if not stopped_early:
+                    trial["state"] = RECORDING if n_rec else FAILED
+            if stopped_early:
+                self.event("trial_started", recording=n_rec, of=len(states),
+                           stopped_while_starting=True)  # fmt: skip
+                self._stop_started(trial)
+                return
             self.event("trial_started", recording=n_rec, of=len(states),
                        not_recording=sorted(n for n, x in trial["machines"].items() if x["state"] != RECORDING))  # fmt: skip
             if not n_rec:
@@ -611,6 +636,21 @@ class TrialService:
             self._check_topics(trial, machines)
         except Exception:  # noqa: BLE001
             log.exception("starting %s", trial["trial_id"])
+
+    def _stop_started(self, trial: dict, names: list[str] | None = None) -> None:
+        """The trial was stopped while machines were starting: the recorders
+        that came up after the stop are stopped now (they would go on
+        recording with no trial in the console)."""
+        with self.lock:
+            names = [
+                n
+                for n, x in trial["machines"].items()
+                if x["state"] == RECORDING and (names is None or n in names)
+            ]
+        for n in names:
+            self._set(trial, n, state=STOPPING, message="closing the bag")
+        self._publish()
+        self._stop_all(trial, self._by_name(names), False)
 
     def _start_machine(self, trial: dict, m: dict) -> None:
         name = m["name"]
@@ -625,8 +665,30 @@ class TrialService:
         if robots:
             args += ["--robots", ",".join(robots)]
         reply, t0, t1 = self._rec(m, args, START_TIMEOUT_S)
+        replaced = None
+        if (
+            not reply.get("ok")
+            and reply.get("recording")
+            and reply.get("trial") != trial["trial_id"]
+            and name in (trial.get("replace") or [])
+        ):
+            # the operator asked for it: close the bag that is being recorded
+            # (a clean stop, never a kill), then start this trial's
+            replaced = reply.get("trial") or reply.get("dir")
+            stop, _, _ = self._rec(
+                m, ["stop", "--base-time", f"{self.clock():.3f}"], STOP_TIMEOUT_S
+            )
+            self.event("recorder_replaced", trial, machine=name, was=replaced,
+                       stopped=bool(stop.get("ok")), error=stop.get("error"))  # fmt: skip
+            if stop.get("ok"):
+                reply, t0, t1 = self._rec(m, args, START_TIMEOUT_S)
+            else:
+                reply = {"ok": False, "error": f"could not stop {replaced}: "
+                         f"{stop.get('error') or 'stop failed'}"}  # fmt: skip
         if reply.get("ok") and reply.get("recording"):
             warnings = []
+            if replaced:
+                warnings.append(f"stopped the recording of {replaced} to start")
             if reply.get("other_recorders"):
                 warnings.append(
                     f"{len(reply['other_recorders'])} other recorder(s) also running on this machine"
@@ -646,12 +708,15 @@ class TrialService:
                 start=reply,
             )
 
-    def start_machine(self, name: str) -> dict:
-        """Retry (or add) one machine in the active trial."""
+    def start_machine(self, name: str, replace: bool = False) -> dict:
+        """Retry (or add) one machine in the active trial.  ``replace``: a
+        recorder already running there is stopped first."""
         with self.lock:
             trial = self.active
             if trial is None or trial["state"] not in (RECORDING, STARTING):
                 raise TrialError(409, "no trial is recording")
+            if replace and name not in trial.setdefault("replace", []):
+                trial["replace"].append(name)
             cur = trial["machines"].get(name)
             if cur and cur["state"] in LIVE:
                 raise TrialError(409, f"{name} is {cur['state']}")
@@ -669,10 +734,39 @@ class TrialService:
             self.event("machine_add", trial, machine=name)
         self._publish()
         self._start_machine(trial, m)
+        with self.lock:
+            stopped_early = trial["state"] == STOPPING
+        if stopped_early:  # the trial was stopped while this machine started
+            self._stop_started(trial, [name])
         self._save(trial)
         self._publish()
         self._ensure_poller()
         return self.payload()
+
+    def stop_recorder(self, name: str) -> dict:
+        """Stop whatever recorder runs on a machine that is not recording for
+        the active trial: one left behind by a trial this console no longer
+        has.  The bag is closed like any other (SIGINT, never a kill)."""
+        with self.lock:
+            trial = self.active
+            cur = trial["machines"].get(name) if trial else None
+            if cur and (cur["state"] in LIVE or cur["state"] == STARTING):
+                raise TrialError(
+                    409,
+                    f"{name} is {cur['state']} in {trial['trial_id']}: stop it there",
+                )
+        m = next(iter(self._machines([name])))
+        reply, _, _ = self._rec(
+            m, ["stop", "--base-time", f"{self.clock():.3f}"], STOP_TIMEOUT_S
+        )
+        self.event("recorder_stopped", trial, machine=name, ok=bool(reply.get("ok")),
+                   was_recording=reply.get("was_recording"), trial_stopped=reply.get("trial"),
+                   error=reply.get("error"))  # fmt: skip
+        if not reply.get("ok"):
+            raise TrialError(502, f"{name}: {reply.get('error') or 'stop failed'}")
+        return {"machine": name, "was_recording": reply.get("was_recording"),
+                "trial": reply.get("trial"), "metadata": reply.get("metadata"),
+                "size_bytes": reply.get("size_bytes")}  # fmt: skip
 
     def stop_machine(self, name: str) -> dict:
         """Take one machine out of the active trial: its bag is closed, the
@@ -1095,7 +1189,12 @@ class TrialService:
         with self.lock:
             if trial is not self.active or trial["state"] != STOPPING:
                 return
-            if any(x["state"] in LIVE for x in trial["machines"].values()):
+            # a machine that is still starting will have a recorder in a
+            # moment: the trial stays open until it has been stopped too
+            if any(
+                x["state"] in LIVE or x["state"] == STARTING
+                for x in trial["machines"].values()
+            ):
                 return
         self._finalize(trial, None)
 

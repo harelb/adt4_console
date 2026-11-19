@@ -33,7 +33,7 @@ function machineTitle(m: TrialMachine, now: number): string {
   ].filter(Boolean).join("\n");
 }
 
-function MachineChip({m, now, pollS, onRetry, onRemove}: {m: TrialMachine; now: number; pollS: number; onRetry?: () => void; onRemove?: () => void}) {
+function MachineChip({m, now, pollS, onRetry, onRemove}: {m: TrialMachine; now: number; pollS: number; onRetry?: (replace?: boolean) => void; onRemove?: () => void}) {
   const tone = machineTone(m, now, pollS);
   const age = answerAge(m, now);
   const stale = m.state === "recording" && (age === null || age > staleAfter(pollS));
@@ -68,10 +68,13 @@ function MachineChip({m, now, pollS, onRetry, onRemove}: {m: TrialMachine; now: 
       ))}
       {(m.state === "failed" || m.state === "lost") && m.message && <span className="trial-note">{m.message}</span>}
       {onRetry && (m.state === "failed" || m.state === "lost") && (
-        <button className="btn btn-sm" onClick={onRetry}>Retry</button>
+        <button className="btn btn-sm" onClick={() => onRetry()}>Retry</button>
+      )}
+      {onRetry && m.state === "failed" && (m.message ?? "").startsWith("already recording") && (
+        <button className="btn btn-sm btn-danger" onClick={() => onRetry(true)} title={`Close the bag ${m.name} is recording now, then record this trial`} data-testid={`trial-replace-${m.name}`}>Stop that and record</button>
       )}
       {onRetry && isRemoved(m) && (
-        <button className="btn btn-xs" onClick={onRetry} title={`Record on ${m.name} again, as a new part of this trial`} data-testid={`trial-add-back-${m.name}`}>Add back</button>
+        <button className="btn btn-xs" onClick={() => onRetry()} title={`Record on ${m.name} again, as a new part of this trial`} data-testid={`trial-add-back-${m.name}`}>Add back</button>
       )}
       {canRemove && !asking && (
         <button className="btn btn-xs" onClick={e => { e.stopPropagation(); setAsking(true); }} title={`Stop recording on ${m.name} only; the trial goes on`} data-testid={`trial-remove-${m.name}`}>Remove</button>
@@ -162,19 +165,37 @@ function StartDialog({onClose}: {onClose: () => void}) {
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  const live = useRef(true);
+  const [stopping, setStopping] = useState<string | null>(null);
+  const load = () => getJSON<{machines: PreflightMachine[]; base_note?: string | null}>("api/trials/preflight")
+    .then(r => {
+      if (!live.current) return;
+      setPre(r.machines);
+      setBaseNote(r.base_note ?? null);
+      // a machine that is recording something else is ticked too: its recorder is stopped and started for this trial
+      setPicked(Object.fromEntries(r.machines.map(m => [m.name, m.ready || !!m.replaceable])));
+    })
+    .catch(e => live.current && setPreError(e));
   useEffect(() => {
-    let live = true;
-    getJSON<{machines: PreflightMachine[]; base_note?: string | null}>("api/trials/preflight")
-      .then(r => {
-        if (!live) return;
-        setPre(r.machines);
-        setBaseNote(r.base_note ?? null);
-        setPicked(Object.fromEntries(r.machines.map(m => [m.name, m.ready])));
-      })
-      .catch(e => live && setPreError(e));
-    return () => { live = false; };
+    live.current = true;
+    void load();
+    return () => { live.current = false; };
   }, []);
   const names = pre?.filter(m => picked[m.name]).map(m => m.name) ?? [];
+  const replace = pre?.filter(m => picked[m.name] && m.replaceable).map(m => m.name) ?? [];
+  // stop a recorder left behind by an earlier trial, without starting anything
+  const stopRecorder = async (name: string) => {
+    setStopping(name);
+    setError(null);
+    try {
+      await postJSON(`api/trials/machines/${encodeURIComponent(name)}/stop-recorder`);
+      await load();
+    } catch (e) {
+      setError(e);
+    } finally {
+      setStopping(null);
+    }
+  };
   const start = async () => {
     setBusy(true);
     setError(null);
@@ -182,7 +203,7 @@ function StartDialog({onClose}: {onClose: () => void}) {
     // the browser only lets a click ask for the screen: ask first, then start
     const stream = video ? await acquireScreen() : null;
     try {
-      useTrial.getState().set(await postJSON<TrialPayload>("api/trials/start", {description: desc.trim(), machines: names}));
+      useTrial.getState().set(await postJSON<TrialPayload>("api/trials/start", {description: desc.trim(), machines: names, replace}));
       if (stream) startScreenRecording(stream);
       else if (video) screenNote(useScreenRec.getState().status, useScreenRec.getState().detail);
       else if (!canVideo) {
@@ -201,7 +222,7 @@ function StartDialog({onClose}: {onClose: () => void}) {
       footer={<>
         <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
         <button className="btn btn-danger" onClick={() => void start()} disabled={busy || !desc.trim() || names.length === 0} data-testid="trial-start-confirm">
-          {busy ? "Starting ..." : `Start recording on ${names.length} machine${names.length === 1 ? "" : "s"}`}
+          {busy ? "Starting ..." : `Start recording on ${names.length} machine${names.length === 1 ? "" : "s"}${replace.length ? ` (restarts ${replace.length})` : ""}`}
         </button>
       </>}>
       <label className="field">
@@ -215,14 +236,20 @@ function StartDialog({onClose}: {onClose: () => void}) {
           <thead><tr><th></th><th>Machine</th><th>Free disk</th><th>Lasts about</th><th></th></tr></thead>
           <tbody>
             {pre.map(m => (
-              <tr key={m.name} className={m.ready ? "" : "muted"}>
-                <td><input type="checkbox" checked={!!picked[m.name]} disabled={!m.ready} onChange={e => setPicked(p => ({...p, [m.name]: e.target.checked}))} aria-label={`Record on ${m.name}`} /></td>
+              <tr key={m.name} className={m.ready || m.replaceable ? "" : "muted"}>
+                <td><input type="checkbox" checked={!!picked[m.name]} disabled={!m.ready && !m.replaceable} onChange={e => setPicked(p => ({...p, [m.name]: e.target.checked}))} aria-label={`Record on ${m.name}`} /></td>
                 <td className="strong">{m.name}{m.local && <span className="muted small"> (this machine: base station)</span>}</td>
                 <td>{m.free_bytes != null ? fmtBytes(m.free_bytes) : "?"}</td>
                 <td title={m.rate_bps ? `at ${fmtRate(m.rate_bps)}, the rate of this machine's last trial` : "no trial recorded on this machine yet: the rate is not known"}>
                   {m.minutes != null ? fmtMinutes(m.minutes) : "unknown until its first trial"}
                 </td>
-                <td className={m.ready ? "muted small" : "tone-err small"}>{[m.error, ...m.notes].filter(Boolean).join("; ")}</td>
+                <td className={m.ready ? "muted small" : m.replaceable ? "tone-warn small" : "tone-err small"}>
+                  {[m.error, ...m.notes].filter(Boolean).join("; ")}
+                  {m.replaceable && <>
+                    {picked[m.name] ? ": that recording will be stopped (its bag closed) and this one started. " : ": not recorded in this trial. "}
+                    <button className="btn btn-xs" disabled={busy || !!stopping} onClick={() => void stopRecorder(m.name)} title={`Close the bag ${m.name} is recording now, without starting anything`} data-testid={`trial-stop-recorder-${m.name}`}>{stopping === m.name ? "Stopping ..." : "Stop it now"}</button>
+                  </>}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -252,11 +279,11 @@ function AddDialog({trial, onClose}: {trial: Trial; onClose: () => void}) {
   }, []);
   // every machine that is not recording (or starting, or being stopped) in this trial
   const free = pre?.filter(m => { const cur = trial.machines[m.name]; return !cur || !(LIVE.includes(cur.state) || cur.state === "starting"); }) ?? [];
-  const add = async (name: string) => {
+  const add = async (name: string, replace: boolean) => {
     setBusy(name);
     setError(null);
     try {
-      useTrial.getState().set(await postJSON<TrialPayload>(`api/trials/machines/${encodeURIComponent(name)}/start`));
+      useTrial.getState().set(await postJSON<TrialPayload>(`api/trials/machines/${encodeURIComponent(name)}/start`, replace ? {replace: true} : undefined));
       onClose();
     } catch (e) {
       setError(e);
@@ -274,7 +301,7 @@ function AddDialog({trial, onClose}: {trial: Trial; onClose: () => void}) {
                 <td className="strong">{m.name}{m.local && <span className="muted small"> (base station)</span>}</td>
                 <td>{m.free_bytes != null ? fmtBytes(m.free_bytes) : "?"}</td>
                 <td className={m.ready ? "muted small" : "tone-err small"}>{[m.error, ...m.notes].filter(Boolean).join("; ")}</td>
-                <td><button className="btn btn-sm btn-danger" disabled={!!busy || !m.ready} onClick={() => void add(m.name)} data-testid={`trial-add-${m.name}`}>{busy === m.name ? "Starting ..." : "Start recording"}</button></td>
+                <td><button className="btn btn-sm btn-danger" disabled={!!busy || !(m.ready || m.replaceable)} onClick={() => void add(m.name, !!m.replaceable)} data-testid={`trial-add-${m.name}`}>{busy === m.name ? "Starting ..." : m.replaceable ? "Stop that and record" : "Start recording"}</button></td>
               </tr>
             ))}
           </tbody>
@@ -299,7 +326,7 @@ function StopDialog({trial, onClose}: {trial: Trial; onClose: () => void}) {
       setBusy(false);
     }
   };
-  const n = Object.values(trial.machines).filter(m => LIVE.includes(m.state)).length;
+  const n = Object.values(trial.machines).filter(m => LIVE.includes(m.state) || m.state === "starting").length;
   return (
     <Modal title="Stop recording?" onClose={busy ? undefined : onClose}
       footer={<>
@@ -386,7 +413,7 @@ export function TrialBar() {
       </div>
       <div className="trial-machines">
         {Object.values(t.machines).map(m => (
-          <MachineChip key={m.name} m={m} now={now} pollS={payload.poll_s} onRetry={stopping ? undefined : () => void act(`api/trials/machines/${encodeURIComponent(m.name)}/start`)}
+          <MachineChip key={m.name} m={m} now={now} pollS={payload.poll_s} onRetry={stopping ? undefined : replace => void act(`api/trials/machines/${encodeURIComponent(m.name)}/start`, replace ? {replace: true} : undefined)}
             onRemove={t.state === "recording" ? () => void act(`api/trials/machines/${encodeURIComponent(m.name)}/stop`) : undefined} />
         ))}
         {t.state === "recording" && <button className="btn btn-xs" onClick={() => setDialog("add")} title="Start recording on another machine, in this trial" data-testid="trial-add">+ Add machine</button>}

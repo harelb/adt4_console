@@ -52,6 +52,10 @@ export interface PreflightMachine {
   name: string;
   role?: string | null;
   ready: boolean;
+  /** a recorder is already running there (the trial or bag it records), from a trial this console does not have */
+  recording?: string | boolean | null;
+  /** ... and a start may stop it and record anew */
+  replaceable?: boolean;
   /** this console's own machine: the base station */
   local?: boolean;
   error: string | null;

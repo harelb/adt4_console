@@ -47,11 +47,13 @@ def events(request: Request, n: int = 50, trial: str | None = None):
 class StartBody(BaseModel):
     description: str
     machines: list[str] | None = None  # None: every online robot and this machine
+    # machines whose running recorder is stopped first (see /preflight `replaceable`)
+    replace: list[str] | None = None
 
 
 @router.post("/start")
 def start(body: StartBody, request: Request):
-    return _call(_trials(request).start, body.description, body.machines)
+    return _call(_trials(request).start, body.description, body.machines, body.replace)
 
 
 class FlagBody(BaseModel):
@@ -119,10 +121,20 @@ def close(request: Request):
     return _call(_trials(request).close)
 
 
+class MachineStartBody(BaseModel):
+    replace: bool = False  # stop a recorder that is already running there first
+
+
 @router.post("/machines/{name}/start")
-def start_machine(name: str, request: Request):
+def start_machine(name: str, request: Request, body: MachineStartBody | None = None):
     """Retry one machine in the active trial, or add one to it."""
-    return _call(_trials(request).start_machine, name)
+    return _call(_trials(request).start_machine, name, bool(body and body.replace))
+
+
+@router.post("/machines/{name}/stop-recorder")
+def stop_recorder(name: str, request: Request):
+    """Stop a recorder left running on a machine outside the active trial."""
+    return _call(_trials(request).stop_recorder, name)
 
 
 @router.post("/machines/{name}/stop")

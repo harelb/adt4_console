@@ -1939,6 +1939,15 @@ Routes (`/api/trials`):
 - `POST /machines/{name}/start` retries one machine in the active trial.
   It also adds a machine that was not in the trial, or one that was removed
   (its new bag is `<machine>_part<n>`).
+- A recorder already running on a machine (a trial this console no longer
+  has): `/preflight` reports it as `recording` (the trial) and `replaceable`.
+  `POST /start {replace: [names]}` and `POST /machines/{name}/start
+  {replace: true}` stop it first (a clean stop: its bag is closed), then start;
+  without `replace` the machine is `failed`: already recording.
+  `POST /machines/{name}/stop-recorder` only stops it (409 for a machine that
+  records for the active trial).
+- A stop while machines are still `starting` keeps the trial `stopping` until
+  each has answered; a recorder that came up is stopped then.
 - `POST /machines/{name}/stop` takes one recording machine out of the active
   trial: its bag is closed (`stopped`, `removed: true`), the trial goes on.
   A stop that is not delivered is retried like the trial's own stop.

@@ -149,6 +149,41 @@ describe("TrialBar", () => {
     expect($("trial-add")).not.toBeNull();
   });
 
+  it("the start dialog restarts a machine that is already recording, or just stops it", async () => {
+    const pm = (name: string, over = {}) => ({name, role: "robot", ready: true, error: null, free_bytes: 100e9, total_bytes: 900e9, rate_bps: null, minutes: null, notes: [], recording: null, replaceable: false, ...over});
+    let stray = true;
+    const posts: {url: string; body: unknown}[] = [];
+    await mount(payload(null), (url, init) => {
+      if (init?.method === "POST") posts.push({url: url.replace(/^.*api\//, ""), body: JSON.parse(String(init.body ?? "{}"))});
+      if (url.endsWith("stop-recorder")) { stray = false; return json({machine: "gauss", was_recording: true}); }
+      if (url.endsWith("api/trials/preflight")) return json({machines: [pm("euclid"), stray ? pm("gauss", {ready: false, recording: "trial_old", replaceable: true, notes: ["already recording trial_old"]}) : pm("gauss")]});
+      return json(payload(null));
+    });
+    await act(async () => $("trial-start")!.click());
+    await flush();
+    const box = document.querySelector('input[aria-label="Record on gauss"]') as HTMLInputElement;
+    expect(box.disabled).toBe(false);
+    expect(box.checked).toBe(true); // ticked: nothing is left out without the operator seeing it
+    expect(document.body.textContent).toContain("already recording trial_old: that recording will be stopped");
+    expect($("trial-start-confirm")!.textContent).toBe("Start recording on 2 machines (restarts 1)");
+    const desc = $("trial-description") as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(desc, "door search");
+      desc.dispatchEvent(new Event("input", {bubbles: true}));
+    });
+    await act(async () => $("trial-start-confirm")!.click());
+    await flush();
+    expect(posts.find(p => p.url === "trials/start")).toEqual({url: "trials/start", body: {description: "door search", machines: ["euclid", "gauss"], replace: ["gauss"]}});
+    // "Stop it now" closes the stray bag and asks the machines again
+    await act(async () => $("trial-start")!.click());
+    await flush();
+    await act(async () => $("trial-stop-recorder-gauss")!.click());
+    await flush();
+    expect(posts.some(p => p.url === "trials/machines/gauss/stop-recorder")).toBe(true);
+    expect($("trial-stop-recorder-gauss")).toBeNull();
+    expect($("trial-start-confirm")!.textContent).toBe("Start recording on 2 machines");
+  });
+
   it("a flag is posted, confirmed, and kept in the box when saving fails", async () => {
     const posts: string[] = [];
     let fail = false;

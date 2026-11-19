@@ -869,6 +869,82 @@ def test_removing_a_machine_out_of_range_is_retried(rig):
     assert a["state"] == "recording" and a["machines"]["gauss"]["state"] == "stopped"
 
 
+def test_stop_pressed_while_the_machines_start_leaves_no_recorder_behind(rig):
+    real = rig.fake.ssh_cmd
+    pressed = []
+
+    def stop_during_first_start(user, addr, cmd, timeout=5):
+        if " start " in cmd and not pressed:
+            pressed.append(addr)
+            body = rig.c.post("/api/trials/stop").json()
+            # the trial stays open: machines are still starting
+            assert body["active"] is not None and body["active"]["state"] == "stopping"
+        return real(user, addr, cmd, timeout=timeout)
+
+    rig.fake.ssh_cmd = stop_during_first_start
+    body = start(rig).json()
+    assert pressed and rig.fake.rec == {}  # every recorder that came up was stopped
+    assert body["active"] is None
+    last = body["last"]
+    assert last["state"] == "stopped"
+    assert {m["state"] for m in last["machines"].values()} == {"stopped"}
+    for ip in rig.ip.values():
+        assert rig.fake.verbs(ip)[-1] == "stop"
+
+
+def test_start_replaces_a_recorder_left_running_only_when_asked(rig):
+    stray = {"trial": "trial_old", "bytes": 5}
+    rig.fake.rec[rig.ip["hamilton"]] = dict(stray)
+    rig.fake.rec[rig.ip["gauss"]] = dict(stray)
+    pre = {m["name"]: m for m in rig.c.get("/api/trials/preflight").json()["machines"]}
+    assert pre["hamilton"]["ready"] is False and pre["hamilton"]["replaceable"] is True
+    assert pre["hamilton"]["recording"] == "trial_old"
+    assert pre["euclid"]["replaceable"] is False and pre["euclid"]["recording"] is None
+    r = rig.c.post(
+        "/api/trials/start",
+        json={"description": "door", "machines": ROBOTS, "replace": ["hamilton"]},
+    )
+    a = r.json()["active"]
+    # hamilton: the old recording was closed and this trial started
+    h = a["machines"]["hamilton"]
+    assert h["state"] == "recording" and "trial_old" in h["warnings"][0]
+    assert rig.fake.verbs(rig.ip["hamilton"])[:4] == [
+        "status",
+        "start",
+        "stop",
+        "start",
+    ]
+    assert rig.fake.rec[rig.ip["hamilton"]]["trial"] == a["trial_id"]
+    # gauss was not named: its recorder is left alone
+    g = a["machines"]["gauss"]
+    assert g["state"] == "failed" and "already recording" in g["message"]
+    assert rig.fake.rec[rig.ip["gauss"]]["trial"] == "trial_old"
+    assert any(
+        e["type"] == "recorder_replaced" and e["machine"] == "hamilton"
+        for e in events(rig, a["trial_id"])
+    )
+    # the chip's "Stop that and record" for the one that failed
+    r = rig.c.post("/api/trials/machines/gauss/start", json={"replace": True})
+    assert r.json()["active"]["machines"]["gauss"]["state"] == "recording"
+    assert rig.fake.rec[rig.ip["gauss"]]["trial"] == a["trial_id"]
+
+
+def test_a_stray_recorder_is_stopped_from_the_console(rig):
+    rig.fake.rec[rig.ip["gauss"]] = {"trial": "trial_old", "bytes": 5}
+    r = rig.c.post("/api/trials/machines/gauss/stop-recorder")
+    assert r.status_code == 200 and r.json()["was_recording"] is True
+    assert rig.fake.rec.get(rig.ip["gauss"]) is None
+    assert rig.c.get("/api/trials/preflight").json()["machines"][1]["name"] == "gauss"
+    pre = {m["name"]: m for m in rig.c.get("/api/trials/preflight").json()["machines"]}
+    assert pre["gauss"]["ready"] is True
+    # never a machine that records for the active trial
+    start(rig)
+    r = rig.c.post("/api/trials/machines/gauss/stop-recorder")
+    assert r.status_code == 409 and rig.fake.rec.get(rig.ip["gauss"])
+    rig.fake.unreachable.add(rig.ip["euclid"])
+    rig.c.post("/api/trials/stop")
+
+
 def test_the_topic_check_is_repeated_and_follows_a_restarted_stack(rig):
     rig.fake.missing_topics = ["/x/lidar", "/x/fix"]
     a = start(rig, machines=["euclid"]).json()["active"]
