@@ -1153,22 +1153,23 @@ class SceneRepair:
         ]
         versions = [int(v) for v in versions if v is not None]
         waited, fresh = self._wait_for_planner(max(versions) if versions else None)
-        if was:
-            with self._lock:
-                if (self._held or {}).get(
-                    "id"
-                ) != was:  # replaced while waiting for the map
-                    self._deciding.pop(was, None)
-                    rec.update(status="pending", result={"ok": False, "variant": variant,
-                                                         "error": "the planner's question changed"})  # fmt: skip
-                    stale = True
-                else:
-                    stale = False
+        with self._lock:
+            self._sync_held()
+            now = (rec.get("held") or {}).get("id")
+            # replaced while waiting for the map, or a question came (not claimed)
+            stale = (was and (self._held or {}).get("id") != was) or (
+                not was and bool(now)
+            )
             if stale:
-                self._publish()
-                raise NotPending(
-                    f"recommendation {rid}: the planner's question changed; look at the card again"
-                )
+                if was:
+                    self._deciding.pop(was, None)
+                rec.update(status="pending", result={"ok": False, "variant": variant,
+                                                     "error": "the planner's question changed"})  # fmt: skip
+        if stale:
+            self._publish()
+            raise NotPending(
+                f"recommendation {rid}: the planner's question changed; look at the card again"
+            )
         try:
             # the operator's words go with the goal: a later change rechecks against them
             kw = {"request": goal["request"]} if goal.get("request") else {}
@@ -1301,7 +1302,8 @@ class SceneRepair:
         """The answer ``kind`` to ``q`` went out (under the lock): the other
         cards that only asked it are answered with it."""
         _kind, t = self._deciding.pop(q["id"], (kind, self.clock()))
-        self._held_done[q["id"]] = kind
+        if (self._held or {}).get("id") == q["id"]:  # gone meanwhile: nothing to keep
+            self._held_done[q["id"]] = kind
         self._answered_qs.append((t, q))  # changes received after the answer are new
         done = {"confirm": "confirmed", "decline": "declined"}.get(kind)
         for r in self._recs.values():
@@ -1315,9 +1317,8 @@ class SceneRepair:
                 r.update(status=done, t_done=self.clock(),
                          result={"ok": True, "planner": kind, "question": q["id"], "by": rid,
                                  "waiting": True, "why": f"answered on {rec['robot']}'s card"})  # fmt: skip
-            elif r["origin"] == "planner" or _covered(
-                r, q
-            ):  # it asks only about the question
+            elif r["origin"] == "planner" or (r["t"] <= t and _covered(r, q)):
+                # it asks only about the question, from before the answer
                 r.update(status="superseded", t_done=self.clock(),
                          result={"by": rid, "question": q["id"],
                                  "why": f"answered with the planner's question on {rec['robot']}'s card"})  # fmt: skip
@@ -1395,6 +1396,8 @@ def _covered(rec: dict, q: dict) -> bool:
     mine |= goal_symbols(" ".join(rec.get("reasons") or []))
     if "goal" in rec and not _same_request(rec):
         return False  # it proposes another goal or constraints: more than the question
+    if rec.get("changes") and not _same_changes(rec["changes"], q):
+        return False  # another change of the object (o58 added after "o58 removed")
     return bool(mine) and mine <= asked
 
 

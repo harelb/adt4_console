@@ -1803,7 +1803,9 @@ them. On a held card:
   covered by the question (the same
   goal and constraints, about its objects; its change set is then not asked again). A send that
   returns `ok: false` is rolled back like a failed one, and a goal send whose question was
-  replaced while it waited for the map is not sent (409). "The same request" counts the goal's
+  replaced while it waited for the map, or whose card got a question meanwhile, is not sent
+  (409). A card is retired with an answer only when it is from before the answer and its
+  changes are the question's (symbol and kind). "The same request" counts the goal's
   inherited use-robots, so the LLM keeping the goal answers confirm.
 
 | Method | Path | Body / notes |

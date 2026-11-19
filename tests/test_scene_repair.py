@@ -2173,3 +2173,59 @@ def test_no_region_discovery_without_a_request_or_a_goal_region():
                            regions=lambda: looked.append(1) or [])  # fmt: skip
     sr.on_applied("awcd/hamilton", 5, [_added("o77", "box")])
     assert looked == []
+
+
+# ---- final review of 7af760f ----
+
+
+def test_a_normal_card_whose_robot_gets_a_question_while_waiting_sends_nothing():
+    sr, sent, _, p = make_held(robot_at=(0.0, 0.0), planner=Planner(clears=False))
+    sr.on_applied("awcd/hamilton", 7, [added("o99", "cone", 3.0, 0.0)])
+    (rec,) = _pending(sr)
+    assert rec["held"] is None
+
+    def wait(needed):  # the planner holds a question for hamilton meanwhile
+        sr.on_replan_pending(pending_msg(["hamilton"]))
+        return 0.0, True
+
+    sr._wait_for_planner = wait
+    with pytest.raises(NotPending, match="question changed"):
+        sr.confirm(rec["id"], "proposed", held_id="")
+    after = sr.get(rec["id"])
+    assert sent == [] and after["status"] == "pending" and after["held"]["id"] == "q1"
+
+
+def test_a_change_arriving_during_a_decline_is_not_retired_with_it():
+    sr, _, _, p = make_held(planner=Planner(clears=False))
+    sr.on_replan_pending(pending_msg(["hamilton"]))
+    (planner_card,) = _pending(sr)
+
+    def slow(qid, decision):  # an operator edit puts O20 back meanwhile
+        sr.on_applied("console/op", 9, [added("o20", "cone", 7.4, 0.0)], local=True)
+        return 1
+
+    sr.decide = slow
+    sr.decline(planner_card["id"])
+    (left,) = _pending(sr)
+    assert left["origin"] == "edit" and "o20" in left["reason"].lower()
+
+
+def test_covered_needs_the_same_change_kind():
+    from adt4_console.scene_repair import _covered
+
+    q = json.loads(pending_msg(["hamilton"]))  # "o20 removed"
+    rec = {"goal": _g(CONES), "proposed_goal": CONES, "rewrites": [], "reasons": ["cone O20 added"],
+           "changes": [{"kind": "added", "symbol": "O20"}]}  # fmt: skip
+    assert not _covered(rec, q)
+    assert _covered(
+        {**rec, "changes": [{"kind": "removed", "symbol": "O20"}], "reasons": []}, q
+    )
+
+
+def test_an_answer_never_reinserts_a_question_the_planner_dropped():
+    sr, _, _, p = (
+        make_held()
+    )  # this planner clears the question while the decline is published
+    sr.on_replan_pending(pending_msg(["hamilton"]))
+    sr.decline(_pending(sr)[0]["id"])
+    assert p.decisions and not sr._held_done and not sr._deciding
