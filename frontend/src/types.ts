@@ -611,6 +611,8 @@ export interface SceneRecommendation {
   rewrites: {from: string; to: string}[];
   /** the chat's LLM redid the operator's request on the changed map and proposed this goal */
   llm?: boolean;
+  /** the constraints sent with the LLM's goal (null: the goal's own) */
+  proposed_constraints?: unknown[] | null;
   status: "pending" | "confirming" | "confirmed" | "declined" | "superseded";
   result: Record<string, unknown> | null;
 }

@@ -254,6 +254,12 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
             <code className="mono">{rec.proposed_goal}</code>
           </div>
         )}
+        {rec.llm && rec.proposed_constraints != null && JSON.stringify(rec.proposed_constraints) !== JSON.stringify(rec.goal.constraints ?? []) && (
+          <div>
+            <span className="muted">constraints </span>
+            <code className="mono">{JSON.stringify(rec.proposed_constraints)}</code>
+          </div>
+        )}
       </div>
       <div className="row gap-sm wrap">
         {rewritten && (

@@ -1696,24 +1696,29 @@ Perception rules (symbols compared case-insensitively: `o12` = `O12` = `O(12)`):
   pose or no position), it is still proposed at priority low;
 - (d) a removed / moved object within 1.5 m of the remaining FOLLOW route (normal).
 
-**LLM recheck** (when the chat has an LLM and budget left). A batch the rules above find
-related to a robot's goal -- an edit, a removed / moved goal or route object, or an **added**
-object of a goal object's class or of a class the operator's request names ("all the cones") --
-is not turned into a recommendation at once. It is collected for `recheck_settle_s` (3 s; changes
-arriving together are one question), then the chat's LLM redoes the operator's request on the
-changed map (`ChatService.recheck`, prompt `RECHECK_PROMPT`: "all X" adds a new X and drops a
-removed one; "the nearest X" recomputes; a removed goal object gets a substitute that fits the
-request). Then:
+**LLM recheck** (when the chat has an LLM and budget left). This is heracles_agents' scene
+change recheck (`SceneChangeListener` and the SCENE CHANGE REPORTS rules of `repair_chat.yaml`)
+brought into the console's chat. A batch related to a robot's running goal -- an edit, a rule
+finding above, or an **added or moved** object of a goal object's class or of a class the
+operator's request names ("all the cones") -- is not turned into a recommendation at once. It is
+collected for `recheck_settle_s` (3 s; changes arriving together are one question), then the
+chat's LLM redoes the operator's request on the changed map (`ChatService.recheck`, prompt
+`RECHECK_PROMPT`: "all X" adds a new X and drops a removed one; "the nearest X" recomputes; a
+removed goal object gets a substitute that fits the request). The recheck turn has only
+`run_cypher` / `find_objects` and `propose_goal`; its goal is held for the operator. Then:
 
 | LLM answer | Recommendation |
 |---|---|
-| a different goal | `llm: true`, `proposed_goal` = the LLM's goal, `proposed_constraints`; **Replan with new goal** / **Replan same goal** / **Dismiss** |
-| the same goal, and an added object relevant to the goal | `llm: false`, **Replan same goal** / **Dismiss** (a new object can change the plan of the same goal) |
-| the same goal, nothing added | none: the planner already replans when its plan needs a changed object; an event `recheck` says so |
-| no answer (no LLM, budget, error) | the rule-based recommendation above |
+| a different goal (or the same goal with different constraints) | `llm: true`, `proposed_goal`, `proposed_constraints` (shown when they differ); **Replan with new goal** / **Replan same goal** / **Dismiss** |
+| the same goal, and an edit, a removed / moved goal or plan object, or a relevant **added** object | as without the LLM, with its words in the reason: **Replan same goal** / **Dismiss** |
+| the same goal, otherwise (e.g. an object near the route) | none: the planner replans by itself when its plan needs the object; an event `recheck` says so, and an earlier LLM proposal for this goal is retired |
+| no usable answer (no LLM, budget, an error, nothing said, several goals, another robot's goal) | the rule-based recommendation above, exactly |
 
-A robot whose goal changed while the LLM was asked is skipped. Change detection's start / stop
-(§19) is the switch for perception rechecks: a stopped detector reports nothing.
+One question per robot at a time; changes arriving while the LLM answers are asked about next. The
+same change set for the same goal is asked once (change detection resends its whole set). An
+answer for a goal that was replaced meanwhile, or (perception) after the plan finished or a change
+detection reset, is dropped. Robots whose plan has finished are not rechecked. Change detection's
+start / stop (§19) is the switch for perception rechecks: a stopped detector reports nothing.
 
 The operator's words behind a chat goal travel with it: the chat's goal card carries `request`
 (this message after up to two earlier user messages of the thread), the UI sends it with the goal
