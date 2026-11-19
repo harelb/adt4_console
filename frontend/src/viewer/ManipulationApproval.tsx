@@ -295,16 +295,22 @@ export function ManipulationApprovalDialog({request, available = true, serviceEr
   }, [image?.url]);
 
   // Depth under the chosen point, so the operator knows how far it is before answering.
+  // Keyed on the query URL, not the request object: the host's 1 s poll hands
+  // us a new (equal) request every second, and clearing + re-fetching on each
+  // one blanked the Walk To label and selection line, re-flowing the dialog.
+  const selectionQuery = selection
+    ? request.images.find(item => item.index === selection.image_index)?.point_query_url : undefined;
+  const selectionQueryUrl = selection && selectionQuery
+    ? `${selectionQuery}?x=${selection.x}&y=${selection.y}` : null;
   useEffect(() => {
     setSelectionDepth(null);
-    const target = request.images.find(item => item.index === selection?.image_index);
-    if (!selection || !target?.point_query_url) return;
+    if (!selectionQueryUrl) return;
     const controller = new AbortController();
-    getJSON<PointReading>(`${target.point_query_url}?x=${selection.x}&y=${selection.y}`, controller.signal)
+    getJSON<PointReading>(selectionQueryUrl, controller.signal)
       .then(reading => { if (!controller.signal.aborted) setSelectionDepth(reading); })
       .catch(() => undefined);
     return () => controller.abort();
-  }, [request, selection]);
+  }, [selectionQueryUrl]);
 
   const hover = (event: MouseEvent<HTMLImageElement>) => {
     if (!image?.point_query_url || !loaded) return;
