@@ -993,11 +993,9 @@ class Planner:
         return self.matched
 
 
-def make_held(goals=None, platforms=None, planner=None, **kw):
+def make_held(goals=None, planner=None, **kw):
     p = planner or Planner()
-    platforms = platforms or {}
-    sr, hub, sent, resumed = make(goals=goals, decide=p,
-                                  platform_of=lambda r: platforms.get(r, "spot"), **kw)  # fmt: skip
+    sr, hub, sent, resumed = make(goals=goals, decide=p, **kw)
     p.sr = sr
     return sr, sent, resumed, p
 
@@ -1013,7 +1011,7 @@ def test_a_held_replan_makes_a_card_that_says_the_robot_waits():
     assert rec["robot"] == "hamilton" and rec["origin"] == "planner"
     assert "o20 removed" in rec["reason"] and rec["held"]["id"] == "q1"
     assert rec["held"]["robots"] == ["hamilton"] and rec["held"]["reasons"] == [R20]
-    assert rec["held"]["source"] == "awcd/hamilton" and rec["held"]["stopped"] == []
+    assert rec["held"]["source"] == "awcd/hamilton" and "stopped" not in rec["held"]
     assert rec["priority"] == "high" and sent == []
 
 
@@ -1051,8 +1049,8 @@ def test_the_bridge_publishes_the_decision_as_json(monkeypatch):
 
 
 def test_one_hold_for_two_robots_gives_each_a_card_answered_together():
-    """Probe C1: Dismiss on one robot's card answers for both; every held Spot
-    is resumed, not just the one whose card was clicked."""
+    """Probe C1: Dismiss on one robot's card answers for both (v3: and resumes
+    nobody, nothing was paused)."""
     sr, sent, resumed, p = make_held(goals={"euclid": _g(), "hamilton": _g()})
     sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))
     cards = _by_robot(sr)
@@ -1060,7 +1058,7 @@ def test_one_hold_for_two_robots_gives_each_a_card_answered_together():
     assert all(c["held"]["robots"] == ["euclid", "hamilton"] for c in cards.values())
     out = sr.decline(cards["euclid"]["id"], resume=True)
     assert p.decisions == [{"id": "q1", "decision": "decline"}]
-    assert sorted(resumed) == ["euclid", "hamilton"]
+    assert resumed == []
     assert out["status"] == "declined" and out["result"]["robots"] == [
         "euclid",
         "hamilton",
@@ -1096,23 +1094,21 @@ def test_a_held_robots_own_finding_stays_asked_after_the_answer():
     assert left["robot"] == "hamilton" and left["held"] is None and left["rewrites"]
 
 
-def test_a_held_husky_is_not_resumed_and_the_card_says_it_needs_a_goal():
-    sr, _, resumed, p = make_held(
-        goals={"gauss": _g(), "hamilton": _g()}, platforms={"gauss": "phoenix"}
+def test_a_held_decline_publishes_only_the_decision_and_resumes_nobody():
+    """v3: nothing was paused; Dismiss on a held card only declines, even
+    with resume ticked (an older UI)."""
+    sr, sent, resumed, p = make_held(
+        goals={"euclid": _g(), "hamilton": _g()}, planner=Planner(clears=False)
     )
-    sr.on_replan_pending(pending_msg(["gauss", "hamilton"]))
-    cards = _by_robot(sr)
-    assert cards["gauss"]["held"]["stopped"] == ["gauss"]
-    out = sr.decline(cards["gauss"]["id"], resume=True)
-    assert resumed == ["hamilton"] and out["result"]["stopped"] == ["gauss"]
-    assert out["result"]["resumed"] == {"hamilton": {"ok": True}}
-
-
-def test_decline_without_resume_resumes_nobody():
-    sr, _, resumed, p = make_held(goals={"euclid": _g(), "hamilton": _g()})
     sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))
-    sr.decline(_by_robot(sr)["euclid"]["id"], resume=False)
-    assert resumed == [] and p.decisions[0]["decision"] == "decline"
+    out = sr.decline(_by_robot(sr)["euclid"]["id"], resume=True)
+    sr.on_replan_pending("")
+    assert (
+        p.decisions == [{"id": "q1", "decision": "decline"}]
+        and resumed == []
+        and sent == []
+    )
+    assert "resume" not in out["result"] and "resumed" not in out["result"]
 
 
 def test_a_held_robot_without_a_recorded_goal_still_gets_a_card():
@@ -1128,12 +1124,14 @@ def test_a_held_robot_without_a_recorded_goal_still_gets_a_card():
     assert p.decisions == [{"id": "q1", "decision": "confirm"}] and sent == []
 
 
-def test_a_held_husky_alone_has_its_card():
-    """Probe C3: the held list is captured before the Husky's empty Path."""
-    sr, _, _, _ = make_held(goals={}, platforms={"gauss": "phoenix"})
-    sr.on_replan_pending(pending_msg(["gauss"]))
-    (rec,) = _pending(sr)
-    assert rec["robot"] == "gauss" and rec["held"]["stopped"] == ["gauss"]
+def test_a_question_with_an_empty_or_no_stopped_list_is_read_alike():
+    for extra in ({"stopped": []}, {}):
+        sr, _, _, _ = make_held(goals={})
+        sr.on_replan_pending(
+            json.dumps({**json.loads(pending_msg(["gauss"])), **extra})
+        )
+        (rec,) = _pending(sr)
+        assert rec["robot"] == "gauss" and rec["held"]["id"] == "q1"
 
 
 def test_a_latched_hold_before_scene_repair_is_wired_is_handed_over(client):
@@ -1182,7 +1180,7 @@ def test_the_llm_keeping_the_goal_never_leaves_a_held_robot_without_a_card():
             "results": []}  # fmt: skip
     p = Planner()
     sr, _, _, run = make_llm(lambda r, g, rep: next(answers), plan=plan, decide=p,
-                             platform_of=lambda r: "spot")  # fmt: skip
+                             )  # fmt: skip
     p.sr = sr
     sr.on_applied("awcd/hamilton", 5, [_added("o43", "cone")])
     run()
@@ -1305,7 +1303,7 @@ def test_a_constraint_only_proposal_on_a_held_card_is_sent_with_its_constraints(
     cons = [{"predicate": "forbidden-poi", "symbols": ["o44"]}]
     p = Planner()
     sr, sent, _, run = make_llm(lambda r, g, rep: {"goal": CONES, "constraints": cons, "text": "avoid O44"},
-                                decide=p, platform_of=lambda r: "spot")  # fmt: skip
+                                decide=p)  # fmt: skip
     p.sr = sr
     sr.on_applied("awcd/hamilton", 5, [_added("o44", "cone")])
     run()
@@ -1384,23 +1382,6 @@ def test_the_routes_pass_the_question_the_card_showed(client):
     assert r.status_code == 200 and sr.decide.decisions == [
         {"id": "q1", "decision": "confirm"}
     ]
-
-
-def test_a_decline_resumes_only_robots_the_planner_let_go():
-    sr, _, resumed, p = make_held(
-        goals={"euclid": _g(), "hamilton": _g()}, planner=Planner(clears=False)
-    )
-    sr.on_replan_pending(pending_msg(["euclid", "hamilton"], qid="q1"))
-    out = sr.decline(_by_robot(sr)["euclid"]["id"], resume=True)
-    assert (
-        resumed == [] and out["result"]["resumed"] == {}
-    )  # the planner still holds them
-    # a newer question holds hamilton again: only euclid is let go
-    sr.on_replan_pending(pending_msg(["hamilton"], qid="q2"))
-    assert resumed == ["euclid"]
-    sr.on_replan_pending("")
-    assert resumed == ["euclid"]  # hamilton belongs to q2 now
-    assert sr.get(out["id"])["result"]["resumed"] == {"euclid": {"ok": True}}
 
 
 def test_one_answer_per_question_while_it_is_in_flight():
@@ -1616,14 +1597,14 @@ def test_a_lost_decision_keeps_the_cards_until_the_planner_takes_it():
 def test_the_same_question_republished_after_an_answer_keeps_the_answer():
     """rv5 probe / final review 1: the decision was lost, or robots left the
     question: its cards stay shown, answered; only the same answer goes again
-    and a decline's pending resume is not undone by a confirm."""
+    and nothing is resumed."""
     sr, _, resumed, p = make_held(goals={"euclid": _g(), "hamilton": _g(), "gauss": _g()},
                                   planner=Planner(clears=False))  # fmt: skip
     sr.on_replan_pending(pending_msg(["euclid", "gauss", "hamilton"]))
     c = _by_robot(sr)
     sr.decline(c["hamilton"]["id"], resume=True)
     sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))  # gauss left: same id
-    assert resumed == ["gauss"]  # gauss left the question: let go
+    assert resumed == []
     shown = {r["robot"]: r for r in _shown(sr)}
     assert sorted(shown) == ["euclid", "hamilton"] and all(
         r["result"]["waiting"] for r in shown.values()
@@ -1635,17 +1616,23 @@ def test_the_same_question_republished_after_an_answer_keeps_the_answer():
     assert p.decisions == [{"id": "q1", "decision": "decline"}] * 2
 
 
-def test_a_confirm_drops_a_pending_resume_of_its_question():
-    sr, _, resumed, _ = make_held(planner=Planner(clears=False))
-    sr.on_replan_pending(pending_msg(["hamilton"]))
-    sr._to_resume.append({"id": "q1", "rec": {"result": {}}, "robots": ["hamilton"]})
-    sr._held_done.clear()
-    sr.confirm(_pending(sr)[0]["id"], "original")
-    sr.on_replan_pending("")
-    assert resumed == []
+def test_on_replan_pending_never_publishes_on_ros():
+    """It runs in the ROS callback: no goal, resume or decision from there."""
+
+    def boom(*a, **k):
+        raise AssertionError("ROS called from the replan_pending callback")
+
+    sr, _, _, _ = make_held(goals={"euclid": _g(), "hamilton": _g()}, robot_at=(0.0, 0.0),
+                            planner=Planner(clears=False))  # fmt: skip
+    sr.on_applied("awcd/hamilton", 7, [added("o99", "cone", 3.0, 0.0)])
+    sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))
+    sr.decline(_by_robot(sr)["euclid"]["id"], resume=True)
+    sr.send = sr.resume = sr.decide = boom
+    for msg in (pending_msg(["hamilton"]), pending_msg(["hamilton"], qid="q2"), ""):
+        sr.on_replan_pending(msg)
 
 
-def test_another_card_never_resumes_a_robot_the_planner_still_holds():
+def test_an_ordinary_cards_dismiss_resumes_as_on_main():
     sr, _, resumed, _ = make_held(goals={"euclid": _g(), "hamilton": _g()}, robot_at=(0.0, 0.0),
                                   planner=Planner(clears=False))  # fmt: skip
     sr.on_applied(
@@ -1657,8 +1644,6 @@ def test_another_card_never_resumes_a_robot_the_planner_still_holds():
     own = sr.get(c["hamilton"]["id"])
     assert own["status"] == "pending" and own["held"] is None
     sr.decline(own["id"], resume=True)
-    assert resumed == []  # still listed by the planner
-    sr.on_replan_pending("")
     assert resumed == ["hamilton"]
 
 
@@ -1687,7 +1672,7 @@ def test_the_goal_send_revalidates_the_question_before_sending():
     def take_then_hold(rid, **kw):  # a hold arrives between the two lock sections
         out = take(rid, **kw)
         if kw:  # the first section: it arrives right after
-            sr._held = json.loads(pending_msg(["hamilton"])) | {"stopped": []}
+            sr._held = json.loads(pending_msg(["hamilton"]))
         return out
 
     sr._take = take_then_hold
@@ -1718,32 +1703,6 @@ def test_the_bridge_waits_longer_for_the_planner_to_match(monkeypatch):
                         raising=False)  # fmt: skip
     rb.decide_replan("q7", "confirm")
     assert got == [3.0]
-
-
-def test_the_planners_stopped_list_tells_a_husky_from_a_spot():
-    sr, _, _, _ = make_held(
-        goals={}, platforms={"gauss": "spot"}
-    )  # topology says otherwise
-    msg = json.loads(pending_msg(["gauss", "hamilton"]))
-    sr.on_replan_pending(json.dumps({**msg, "stopped": ["gauss"]}))
-    assert _by_robot(sr)["gauss"]["held"]["stopped"] == ["gauss"]
-    sr, _, _, _ = make_held(goals={}, platforms={"gauss": "phoenix"})
-    sr.on_replan_pending(pending_msg(["gauss"]))  # no "stopped": an older planner
-    assert _by_robot(sr)["gauss"]["held"]["stopped"] == ["gauss"]
-
-
-def test_dismiss_for_a_held_husky_leaves_a_note_that_it_needs_a_goal():
-    sr, _, resumed, _ = make_held(goals={}, platforms={"gauss": "phoenix"})
-    sr.on_replan_pending(pending_msg(["gauss"]))
-    out = sr.decline(_by_robot(sr)["gauss"]["id"], resume=True)
-    assert (
-        "gauss stays stopped" in out["result"]["note"]
-        and "new goal" in out["result"]["note"]
-    )
-    assert (
-        any("gauss stays stopped" in e["text"] for e in sr.state()["events"])
-        and resumed == []
-    )
 
 
 def test_a_region_that_is_a_destination_is_not_rechecked():

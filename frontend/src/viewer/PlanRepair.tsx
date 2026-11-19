@@ -212,8 +212,7 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   // ticked while the card is held, unless the operator chose otherwise
-  const [resumeChoice, setResume] = useState<boolean | null>(null);
-  const resume = resumeChoice ?? !!rec.held;
+  const [resume, setResume] = useState(false);
   // the question this card shows: an answer is refused (409) when it changed
   const heldId = rec.held?.id ?? "";
   const base = `api/plan/scene_repair/${encodeURIComponent(rec.id)}`;
@@ -246,7 +245,6 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
       {waiting && (
         <div className="inline-msg tone-warn small scene-rec-waiting" role="status">
           Sent {String(rec.result?.planner)}: waiting for the planner to take it (send it again if it does not).
-          {rec.result?.note ? ` ${String(rec.result.note)}.` : ""}
         </div>
       )}
       {rec.changes.length > 0 && (
@@ -285,12 +283,14 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
         <button className={`btn btn-sm${rewritten ? "" : " btn-primary"}`} disabled={disabled || (waiting && rec.result?.planner !== "confirm")} onClick={() => act("original", `${base}/confirm`, {variant: "original", held_id: heldId})}>
           Replan same goal
         </button>
-        <button className="btn btn-sm" disabled={disabled || (waiting && rec.result?.planner !== "decline")} onClick={() => act("decline", `${base}/decline`, {resume, held_id: heldId})}>
+        <button className="btn btn-sm" disabled={disabled || (waiting && rec.result?.planner !== "decline")} onClick={() => act("decline", `${base}/decline`, {resume: !rec.held && resume, held_id: heldId})}>
           Dismiss
         </button>
-        <label className="small muted row gap-sm" title="goal_manager may have paused the robot for this change">
-          <input type="checkbox" checked={resume} onChange={e => setResume(e.target.checked)} aria-label="Resume robot on dismiss" /> resume robot
-        </label>
+        {!rec.held && (
+          <label className="small muted row gap-sm" title="goal_manager may have paused the robot for this change">
+            <input type="checkbox" checked={resume} onChange={e => setResume(e.target.checked)} aria-label="Resume robot on dismiss" /> resume robot
+          </label>
+        )}
       </div>
       {err && <div className="inline-msg tone-err small">{err}</div>}
     </div>
@@ -298,31 +298,17 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
 }
 
 function HeldNote({rec, held}: {rec: SceneRecommendation; held: HeldReplan}) {
-  const stopped = held.stopped.includes(rec.robot);
   const others = held.robots.filter(r => r !== rec.robot);
-  const stoppedOthers = held.stopped.filter(r => r !== rec.robot);
   return (
     <div className="small scene-rec-held" role="status">
-      {stopped ? (
-        <p>
-          Robot stopped: the planner replans only when you confirm. Dismiss drops the replan; {rec.robot} stays stopped
-          until it gets a new goal.
-        </p>
-      ) : (
-        <p>Robot paused: the planner replans only when you confirm. Dismiss drops the replan; with resume ticked the robot continues.</p>
-      )}
+      <p>The robots keep their current plan. Replan applies the repaired plan; Dismiss keeps the current plan.</p>
       <ul className="scene-rec-held-reasons">
         {held.reasons.map((r, i) => (
           <li key={i}>{r}</li>
         ))}
       </ul>
       {others.length === 0 && <p>Held: {rec.robot}.</p>}
-      {others.length > 0 && (
-        <p className="scene-rec-held-all">
-          This answer applies to all of {held.robots.join(", ")}: the planner holds them together.
-          {stoppedOthers.length > 0 && ` ${stoppedOthers.join(", ")} ${stoppedOthers.length > 1 ? "are" : "is"} stopped and need${stoppedOthers.length > 1 ? "" : "s"} a new goal on Dismiss.`}
-        </p>
-      )}
+      {others.length > 0 && <p className="scene-rec-held-all">This answer applies to all of {held.robots.join(", ")}: the planner holds them together.</p>}
     </div>
   );
 }

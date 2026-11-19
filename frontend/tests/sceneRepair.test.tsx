@@ -170,7 +170,7 @@ describe("SceneRepairPanel", () => {
 });
 
 const HELD = {id: "q1", robots: ["hamilton"], reasons: ["scene changed: o20 removed"], reason: "scene changed: o20 removed",
-              source: "awcd/hamilton", t: 1_700_000_000, stopped: [] as string[]};
+              source: "awcd/hamilton", t: 1_700_000_000};
 const heldRec = (over: Partial<SceneRecommendation> = {}): SceneRecommendation => ({
   ...REC, id: "sr2", origin: "planner", source: "awcd/hamilton", changes: [], rewrites: [],
   proposed_goal: REC.goal.pddl, reason: "scene changed: o20 removed", held: HELD, ...over,
@@ -178,36 +178,24 @@ const heldRec = (over: Partial<SceneRecommendation> = {}): SceneRecommendation =
 const resumeBox = () => host!.querySelector<HTMLInputElement>('input[aria-label="Resume robot on dismiss"]')!;
 
 describe("a replan the planner holds", () => {
-  it("says the robot is paused until confirmed, and Dismiss resumes it by default", async () => {
+  it("says the robots keep their plan, and Dismiss only declines", async () => {
     const calls = stubFetch(state({recommendations: [heldRec()], pending: {hamilton: "sr2"}}));
     render(<SceneRepairPanel robot="hamilton" />);
     await flush();
-    expect(host!.textContent).toContain("Robot paused: the planner replans only when you confirm");
+    expect(host!.textContent).toContain("The robots keep their current plan. Replan applies the repaired plan; Dismiss keeps the current plan.");
     expect(host!.textContent).not.toContain("applies to all");
-    expect(resumeBox().checked).toBe(true);
+    expect(host!.textContent).not.toContain("paused");
+    expect(host!.querySelector('input[aria-label="Resume robot on dismiss"]')).toBeNull();
     click(byText("Dismiss"));
     await flush();
-    expect(calls.find(([m, u]) => m === "POST" && u.includes("sr2/decline"))?.[2]).toEqual({resume: true, held_id: "q1"});
+    expect(calls.find(([m, u]) => m === "POST" && u.includes("sr2/decline"))?.[2]).toEqual({resume: false, held_id: "q1"});
   });
 
   it("an ordinary card leaves the robot as it is on Dismiss", async () => {
     stubFetch(state());
     render(<SceneRepairPanel robot="hamilton" />);
     await flush();
-    expect(host!.textContent).not.toContain("Robot paused");
-    expect(resumeBox().checked).toBe(false);
-  });
-
-  it("ticks resume when a card it shows becomes held, unless the operator chose", async () => {
-    stubFetch(state());
-    render(<SceneRepairPanel robot="hamilton" />);
-    await flush();
-    expect(resumeBox().checked).toBe(false);
-    act(() => handlers.get(SCENE_REPAIR_TOPIC)!(state({recommendations: [{...REC, held: HELD}]})));
-    expect(resumeBox().checked).toBe(true);
-    act(() => resumeBox().click());
-    expect(resumeBox().checked).toBe(false);
-    act(() => handlers.get(SCENE_REPAIR_TOPIC)!(state({recommendations: [{...REC, held: {...HELD, id: "q2"}}]})));
+    expect(host!.textContent).not.toContain("keep their current plan");
     expect(resumeBox().checked).toBe(false);
   });
 
@@ -234,19 +222,17 @@ describe("a replan the planner holds", () => {
   });
 
   it("an answered card stays, waiting for the planner, and can send its answer again", async () => {
-    const rec = heldRec({robot: "gauss", status: "declined", held: {...HELD, robots: ["gauss"], stopped: ["gauss"]},
-                         result: {ok: true, planner: "decline", question: "q1", waiting: true,
-                                  note: "gauss stays stopped (no plan to resume) and needs a new goal"}});
+    const rec = heldRec({robot: "gauss", status: "declined", held: {...HELD, robots: ["gauss"]},
+                         result: {ok: true, planner: "decline", question: "q1", waiting: true}});
     const calls = stubFetch(state({recommendations: [rec], pending: {}}));
     render(<SceneRepairPanel robot="gauss" />);
     await flush();
     expect(host!.textContent).toContain("Sent decline: waiting for the planner");
-    expect(host!.textContent).toContain("gauss stays stopped (no plan to resume) and needs a new goal");
     expect(byText("Dismiss").disabled).toBe(false);
     expect(byText("Replan same goal").disabled).toBe(true);  // only its own answer again
     click(byText("Dismiss"));
     await flush();
-    expect(calls.find(([m, u]) => m === "POST" && u.includes("sr2/decline"))?.[2]).toEqual({resume: true, held_id: "q1"});
+    expect(calls.find(([m, u]) => m === "POST" && u.includes("sr2/decline"))?.[2]).toEqual({resume: false, held_id: "q1"});
   });
 
   it("a card waiting after Replan same goal disables the other actions", async () => {
@@ -261,23 +247,11 @@ describe("a replan the planner holds", () => {
   });
 
   it("says the answer applies to every held robot", async () => {
-    const held = {...HELD, robots: ["euclid", "gauss", "hamilton"], stopped: ["gauss"]};
+    const held = {...HELD, robots: ["euclid", "gauss", "hamilton"]};
     stubFetch(state({recommendations: [heldRec({held})], pending: {hamilton: "sr2"}}));
     render(<SceneRepairPanel robot="hamilton" />);
     await flush();
     expect(host!.textContent).toContain("This answer applies to all of euclid, gauss, hamilton");
-    expect(host!.textContent).toContain("gauss is stopped and needs a new goal on Dismiss");
-  });
-
-  it("a held Husky is stopped and needs a new goal, not the current plan", async () => {
-    const held = {...HELD, robots: ["gauss"], stopped: ["gauss"]};
-    stubFetch(state({recommendations: [heldRec({robot: "gauss", held})], pending: {gauss: "sr2"}}));
-    render(<SceneRepairPanel robot="gauss" />);
-    await flush();
-    expect(host!.textContent).toContain("Robot stopped");
-    expect(host!.textContent).toContain("gauss stays stopped until it gets a new goal");
-    expect(host!.textContent).not.toContain("current plan");
-    expect(host!.textContent).not.toContain("continues");
   });
 
   it("a held robot whose goal the console did not send says so", async () => {

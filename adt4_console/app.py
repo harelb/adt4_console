@@ -469,7 +469,6 @@ def wire_scene_repair(svc) -> None:
         recheck=recheck,
         recheck_on=lambda: getattr(svc, "chat", None) is not None and svc.chat.recheck_available(),
         decide=lambda qid, decision: svc.ros.decide_replan(qid, decision),
-        platform_of=lambda robot: svc.ros.platform(robot),
         region_of=lambda sym, xy: _region_row(svc, sym, xy),
     )  # fmt: skip
     svc.scene_repair = sr

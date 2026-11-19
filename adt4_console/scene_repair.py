@@ -24,13 +24,12 @@ The scene graph changes under a running plan in two ways:
 
 omniplanner's repair node replans for (a)/(b) on its own. A replan that change
 detection caused is held for the operator (its ``confirm_replans``): the robots
-are paused (Spots) or stopped (Huskies) and ``replan_pending`` names the
-question (:meth:`on_replan_pending`, JSON ``{id, robots, reasons, reason,
-source, t}``). One question covers every robot it names: each of them has a
-card (one is made when it has none, ``origin: planner``) that says the answer
-applies to all of them; "Replan same goal" answers ``confirm`` and Dismiss
-``decline`` (``decide(id, decision)``; on decline the console resumes the held
-Spots). (c) is the gap -- a new symbol is nothing omniplanner's plan depends
+keep their current plans and ``replan_pending`` names the question
+(:meth:`on_replan_pending`, JSON ``{id, robots, reasons, reason, source, t}``).
+One question covers every robot it names: each of them has a card (one is made
+when it has none, ``origin: planner``) that says the answer applies to all of
+them; "Replan same goal" answers ``confirm`` (the repaired plans) and Dismiss
+``decline`` (the current plans go on; ``decide(id, decision)``). (c) is the gap -- a new symbol is nothing omniplanner's plan depends
 on -- so the console recommends it and the operator confirms.
 
 One pending recommendation per robot: a newer one supersedes it (and carries
@@ -75,11 +74,6 @@ class NotPending(Exception):
 class DecisionFailed(Exception):
     """The answer to the planner's held replan was not published (-> 502); the
     card stays pending."""
-
-
-# platforms whose held robot is stopped (an empty Path), not paused: Resume has
-# nothing to resume, the robot needs a new goal
-STOPPED_PLATFORMS = ("phoenix", "husky")
 
 
 def sym_key(sym) -> str:
@@ -293,7 +287,7 @@ class SceneRepair:
                  map_changed=None, clock=time.time, max_changes: int = 100, max_recs: int = 50,
                  planner_wait_s: float = 10.0, recheck=None, recheck_on=None,
                  recheck_settle_s: float = 3.0, run_later=None, decide=None,
-                 platform_of=None, region_of=None):  # fmt: skip
+                 region_of=None):  # fmt: skip
         self.hub = hub
         # (robot, goal record, report text) -> {"goal", "constraints", "text"} | None:
         # the chat's LLM redoes the operator's request on the changed map (see
@@ -315,10 +309,8 @@ class SceneRepair:
         # (question id, "confirm" | "decline") -> matched subscribers | None:
         # answers the planner's held replan (replan_decision)
         self.decide = decide
-        # robot -> platform ("spot", "phoenix", ...): a held Husky is stopped
-        self.platform_of = platform_of or (lambda robot: "spot")
         # the planner's held question as it last published it ({id, robots,
-        # reasons, reason, source, t, stopped}) or None. Kept apart from the
+        # reasons, reason, source, t}) or None. Kept apart from the
         # cards: every robot it holds gets a card whenever the state is read.
         self._held: dict | None = None
         # question ids answered here (decision published), newest last: the
@@ -327,8 +319,6 @@ class SceneRepair:
         # question ids whose decision is being published: the planner may clear
         # the question before the cards it answers are marked
         self._deciding: set[str] = set()
-        # declined questions whose held Spots resume once the planner lets them go
-        self._to_resume: list[dict] = []
         self.resume = resume  # (robot) -> result dict
         self.active_goals = active_goals or (lambda: {})  # () -> {robot: goal record}
         self.plan_of = plan_of or (
@@ -459,30 +449,17 @@ class SceneRepair:
                 str(r) for r in held.get("reasons") or [] if str(r or "").strip()
             ]
             reason = str(held.get("reason") or "").strip() or "; ".join(reasons)
-            stopped = []
-            for r in robots if "stopped" not in held else ():  # an older planner
-                try:
-                    if str(self.platform_of(r) or "").lower() in STOPPED_PLATFORMS:
-                        stopped.append(r)
-                except Exception:  # noqa: BLE001 — unknown platform: a Spot
-                    pass
-            if "stopped" in held:  # the planner says which it stopped (Huskies)
-                stopped = [
-                    str(r) for r in held.get("stopped") or [] if str(r) in robots
-                ]
             held = {"id": str(held["id"]), "robots": robots,
                     "reasons": reasons or ([reason] if reason else []),
                     "reason": reason or "the planner holds a replan",
-                    "source": str(held.get("source") or ""), "t": held.get("t"),
-                    "stopped": stopped}  # fmt: skip
+                    "source": str(held.get("source") or ""), "t": held.get("t")}  # fmt: skip
             if not robots:
                 log.warning("replan_pending %s names no robot", held["id"])
         with self._lock:
             # an answered id again (robots left it, or our answer was lost): its
             # cards stay answered and waiting; only the same answer can be re-sent
             self._held = held
-        self._resume_released()
-        self._publish()
+        self._publish()  # the hub only: nothing here publishes on ROS
 
     def _hold(self) -> dict | None:
         """The planner's question still waiting for an answer from here."""
@@ -494,8 +471,7 @@ class SceneRepair:
         h = self._hold()
         if h is None or robot not in h["robots"]:
             return None
-        return {**h, "robots": list(h["robots"]), "reasons": list(h["reasons"]),
-                "stopped": list(h["stopped"])}  # fmt: skip
+        return {**h, "robots": list(h["robots"]), "reasons": list(h["reasons"])}
 
     def _sync_held(self) -> None:
         """Cards follow the held question (under the lock): every robot it holds
@@ -1160,8 +1136,8 @@ class SceneRepair:
 
     def decline(self, rid: str, resume: bool = False, held_id=None) -> dict:
         """Dismiss; ``resume`` also resumes the robot (goal_manager may have paused
-        it). On a held card: declines the planner's question and resumes every
-        robot it holds that is a Spot (:meth:`_answer_held`)."""
+        it). On a held card it only declines the planner's question (nothing was
+        paused: the current plans go on; :meth:`_answer_held`)."""
         with self._lock:
             self._sync_held()
             rec = self._take(rid, waiting=True)
@@ -1170,17 +1146,8 @@ class SceneRepair:
             if not held:
                 rec.update(status="declined", t_done=self.clock(),
                            result={"resume": bool(resume)})  # fmt: skip
-            h = self._held
-            if not held and resume and h is not None and rec["robot"] in h["robots"]:
-                # the planner still holds it (another card answered for it): resume
-                # once it lets go, as a held decline does
-                rec["result"]["resumed"] = {}
-                self._to_resume.append(
-                    {"id": h["id"], "rec": rec, "robots": [rec["robot"]]}
-                )
-                resume = False
         if held:
-            return self._answer_held(rid, "decline", resume=resume, held_id=held_id)
+            return self._answer_held(rid, "decline", held_id=held_id)
         if resume:
             try:
                 rec["result"]["resumed"] = (
@@ -1192,13 +1159,12 @@ class SceneRepair:
         return dict(rec)
 
     def _answer_held(
-        self, rid: str, decision: str, *, variant=None, resume=False, held_id=None
+        self, rid: str, decision: str, *, variant=None, held_id=None
     ) -> dict:
         """Publish ``decision`` for the question ``rid``'s card shows. It answers
         for every robot the question holds: their cards the question alone made
-        are answered with it; on decline the held Spots are resumed (when
-        ``resume``) and a held Husky stays stopped until it gets a new goal.
-        The card is answered only once the decision is published."""
+        are answered with it. The card is answered only once the decision is
+        published."""
         with self._lock:
             self._sync_held()
             rec = self._take(rid, waiting=True)
@@ -1246,8 +1212,6 @@ class SceneRepair:
         done = "confirmed" if decision == "confirm" else "declined"
         robots = list(q["robots"])
         with self._lock:
-            if decision == "confirm":  # the planner replans them: nothing to resume
-                self._to_resume = [w for w in self._to_resume if w["id"] != q["id"]]
             self._held_done[q["id"]] = decision
             self._deciding.discard(q["id"])
             while len(self._held_done) > 20:
@@ -1261,13 +1225,6 @@ class SceneRepair:
             }
             if variant:
                 result["variant"] = variant
-            if decision == "decline":
-                result.update(resume=bool(resume), stopped=list(q["stopped"]))
-                if q["stopped"]:
-                    result["note"] = (f"{', '.join(q['stopped'])} stays stopped (no plan to resume) "
-                                      "and needs a new goal")  # fmt: skip
-                    self._events.append({"t": self.clock(), "kind": "replan_declined",
-                                         "text": f"held replan declined: {result['note']}"})  # fmt: skip
             rec.update(status=done, t_done=self.clock(), result=result)
             for r in self._recs.values():
                 if (
@@ -1282,44 +1239,8 @@ class SceneRepair:
                                      "waiting": True, "why": f"answered on {rec['robot']}'s card"})  # fmt: skip
                 else:
                     r["held"] = None  # its own finding is still asked
-            if (
-                decision == "decline"
-                and resume
-                and not any(w["id"] == q["id"] for w in self._to_resume)
-            ):
-                # resumed once the planner lets them go (its next replan_pending
-                # no longer holds them): it ignores a decision it does not expect
-                result["resumed"] = {}
-                self._to_resume.append({"id": q["id"], "rec": rec,
-                                        "robots": [r for r in robots if r not in q["stopped"]]})  # fmt: skip
-        self._resume_released()
         self._publish()
         return self.get(rid)
-
-    def _resume_released(self) -> None:
-        """Resume the robots of declined questions the planner no longer holds;
-        a robot a newer question holds is that question's (not resumed)."""
-        go = []
-        with self._lock:
-            h = self._held
-            for w in list(self._to_resume):
-                for robot in list(w["robots"]):
-                    if h is not None and robot in h["robots"]:
-                        if h["id"] == w["id"]:
-                            continue  # not let go yet
-                    else:
-                        go.append((w["rec"], robot))
-                    w["robots"].remove(robot)
-                if not w["robots"]:
-                    self._to_resume.remove(w)
-        for rec, robot in go:
-            try:
-                out = self.resume(robot) if self.resume is not None else None
-                with self._lock:
-                    rec["result"].setdefault("resumed", {})[robot] = out
-            except Exception as e:  # noqa: BLE001
-                with self._lock:
-                    rec["result"].setdefault("resume_error", {})[robot] = str(e)
 
     # --------------------------------------------------------------- output
     def state(self) -> dict:

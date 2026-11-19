@@ -1658,17 +1658,18 @@ and latches `/<planner_ns>/omniplanner_node/map_version` (Int64).
 **Held replans** (omniplanner's `confirm_replans`, default on). Only a replan that **change
 detection** caused (a batch from `awcd/...` that removes or moves a goal or plan object) is held
 for the operator; map edits (`console/...`, `sget/...`), map reloads, cut routes and failed-pick
-retries replan at once, as before. The robots are paused (Spots) or stopped with an empty Path
-(Huskies) when the change is detected. The question is latched on
+retries replan at once, as before. Nothing is paused or stopped: the robots keep executing their
+current plans while the question is open; only confirm (or a new goal) replans them. The
+question is latched on
 `/<planner_ns>/omniplanner_node/replan_pending` (String, TRANSIENT_LOCAL): `""` when none waits,
-else JSON `{id, robots[], reasons[], reason, source, t, stopped[]}` (`stopped`: the held robots
-it stopped, Huskies; without the key the console asks the fleet topology). `id` is stable for one question (a new
+else JSON `{id, robots[], reasons[], reason, source, t}` (a `stopped` key, `[]` or missing, is
+ignored). `id` is stable for one question (a new
 question gets a new id); `robots` are the robots it still holds (it shrinks as robots get a new
 plan or their plan ends; a further change makes a new id); `reasons` has one entry per held
 change. A message without `id` is ignored. The console answers on
 `/<planner_ns>/omniplanner_node/replan_decision` (String JSON `{id, decision: confirm|decline}`):
-confirm makes the planner replan (each reason as its own `replan_request`), decline drops the
-replan and the planner sends nothing. Either way the planner then publishes `""`. A console whose
+confirm makes the planner replan (one `replan_request` with every held reason), decline drops
+the replan and the planner sends nothing (the current plans go on). Either way the planner then publishes `""`. A console whose
 planner never publishes `replan_pending` behaves exactly as without held replans.
 
 An **added** object is a new symbol, which no plan depends on, so omniplanner ignores it ("go
@@ -1755,8 +1756,8 @@ priority (high|normal|low), changes[], goal (active goal), proposed_goal, rewrit
 status (pending|confirming|confirmed|declined|superseded), result, held}`.
 
 `held` is the planner's held question when it holds this robot (else null):
-`{id, robots[], reasons[], reason, source, t, stopped[]}`, where `stopped` lists the held robots
-that were stopped (Huskies). The console keeps the question apart from the cards: **every robot
+`{id, robots[], reasons[], reason, source, t}`. The card says the robots keep their current
+plan, Replan applies the repaired plan and Dismiss keeps the current plan. The console keeps the question apart from the cards: **every robot
 it holds always has a pending card**. One is made with `origin: planner` (the question's reasons,
 priority high) when the robot has none -- also when the console has no recorded goal for it (a
 team goal sent through another robot, a goal sent elsewhere, a console restart: then
@@ -1771,10 +1772,9 @@ them. On a held card:
   publishes `{id, decision: "confirm"}`; no goal is sent.
 - A proposal that differs in the goal **or only in its constraints** is sent as a goal (with those
   constraints); no decision is published, and its new plan takes the robot out of the question.
-- **Dismiss** publishes `{id, decision: "decline"}`; with `resume` (ticked by default on a held
-  card) the console resumes **every held Spot** (`result.resumed` per robot) once the planner's
-  next `replan_pending` no longer holds it (a robot a newer question holds is not resumed). A held Husky is not
-  resumed: it was stopped and needs a new goal (`result.stopped`).
+- **Dismiss** only publishes `{id, decision: "decline"}`: nothing was paused, so nothing is
+  resumed (a held card has no resume box; `resume` is ignored). Other cards keep the Dismiss of
+  before (resume unticked by default).
 - The card is marked `confirmed` / `declined` only once the decision is published (`result:
   {ok, planner, question, robots, ...}`); the other held robots' `origin: planner` cards are
   answered with it (`result.by`), and their other cards just lose `held`. When publishing fails
@@ -1783,11 +1783,8 @@ them. On a held card:
 - An answered card stays shown with `result.waiting: true` until the planner publishes `""`, a
   new id or a list without its robot; only the same answer can be sent again from it (any other
   action is a 409, also after the planner republishes that id: robots left it, or the answer was
-  lost). A confirm drops a pending resume of that question. The decision waits up to 3 s for the
-  planner's subscription. Another card's Dismiss with resume for a robot the planner still lists
-  resumes it only once the planner lets it go. Answered waiting cards are exempt from the
-  history limit too. A declined
-  Husky gets `result.note` and an event `replan_declined`: it stays stopped and needs a new goal.
+  lost). The decision waits up to 3 s for the planner's subscription. Answered waiting cards are
+  exempt from the history limit too. Nothing in the `replan_pending` callback publishes on ROS.
 - The UI sends `held_id`, the question id the card showed (`""` none), with confirm and decline;
   a different question now (or none) is a 409, as is a second answer to one question (in flight
   or done) or a question the planner dropped meanwhile. Held cards are exempt from the history
@@ -1797,7 +1794,7 @@ them. On a held card:
 |---|---|---|
 | GET | `/plan/scene_repair` | `{map_version, changes: [{id, source, origin, map_version, t, summary, changes: [{kind added\|removed\|moved, symbol, label, old, new, confidence?}]}], events: [{t, kind: replan_request, text}], recommendations: [...], pending: {robot: id}}` |
 | POST | `/plan/scene_repair/{id}/confirm` | `{variant: "proposed" (default) \| "original", held_id?}`: `send_pddl_goal(robot, goal, engine=...)`. The bridge resends the persistent constraints. A GRSTAPS-X goal's `before` facts go with it, rewritten like the goal. → the record (`status: confirmed`, `result {ok, variant, pddl, send}`). 404 unknown id, 409 not pending, 400 no planner, 503 ROS down. A failed send leaves it pending with `result.error`. On a held card the same request answers `confirm` instead (above); 502 when that decision was not published |
-| POST | `/plan/scene_repair/{id}/decline` | `{resume: false, held_id?}`. `resume: true` also resumes the robot (as the Resume route does), since goal_manager may have paused it. On a held card: publishes `decline` and resumes every held Spot; 502 when the decision was not published (nothing resumed). 404 / 409 as above |
+| POST | `/plan/scene_repair/{id}/decline` | `{resume: false, held_id?}`. `resume: true` also resumes the robot (as the Resume route does), since goal_manager may have paused it. On a held card it only publishes `decline` (`resume` ignored); 502 when the decision was not published. 404 / 409 as above |
 
 Hub topic `plan/scene_repair` carries the full state on every change. **UI:** the Plan panel's
 current plan section (under the plan repair alerts) shows the robot's pending recommendation.

@@ -606,8 +606,6 @@ export interface HeldReplan {
   /** the last source that caused it (awcd/..., sget/..., console/...) */
   source: string;
   t: number | null;
-  /** held robots that were stopped (Huskies): Resume does nothing, they need a new goal */
-  stopped: string[];
 }
 
 export interface SceneRecommendation {
@@ -630,8 +628,8 @@ export interface SceneRecommendation {
   llm?: boolean;
   /** the constraints sent with the LLM's goal (null: the goal's own) */
   proposed_constraints?: unknown[] | null;
-  /** omniplanner paused (Spot) / stopped (Husky) the robot and holds this replan
-   *  question until the operator answers; one answer covers all its robots */
+  /** omniplanner holds this replan question until the operator answers (the robots
+   *  keep their current plans meanwhile); one answer covers all its robots */
   held?: HeldReplan | null;
   status: "pending" | "confirming" | "confirmed" | "declined" | "superseded";
   result: Record<string, unknown> | null;
