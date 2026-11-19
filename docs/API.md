@@ -1664,9 +1664,9 @@ question is latched on
 `/<planner_ns>/omniplanner_node/replan_pending` (String, TRANSIENT_LOCAL): `""` when none waits,
 else JSON `{id, robots[], reasons[], reason, source, t}` (a `stopped` key, `[]` or missing, is
 ignored). `id` is stable for one question (a new
-question gets a new id); `robots` are the robots it still holds (it shrinks as robots get a new
-plan or their plan ends; a further change makes a new id); `reasons` has one entry per held
-change. A message without `id` is ignored. The console answers on
+question gets a new id: a further held change, or a new plan whose goal still names a held
+object); `robots` are for display (the robots whose running plans it affects) and never change
+under an id; `reasons` has one entry per held change. A message without `id` is ignored. The console answers on
 `/<planner_ns>/omniplanner_node/replan_decision` (String JSON `{id, decision: confirm|decline}`):
 confirm makes the planner replan (one `replan_request` with every held reason), decline drops
 the replan and the planner sends nothing (the current plans go on). Either way the planner then publishes `""`. A console whose
@@ -1719,8 +1719,10 @@ brought into the console's chat. A batch related to a robot's running goal -- an
 finding above, or an **added or moved** object of a goal object's class or of a class the
 operator's request names ("all the cones"), or an added or moved object of **any class inside a
 region** the goal names in a visit / explore / inspect predicate (`(visited-place r5)`) or the
-request names as a place to look in ("in region 5", "objects of the kitchen", "explore the
-kitchen"; not a destination: "retrieve the cones to basecamp";
+request names as a place to look in ("in region 5", "explore the kitchen", "search the objects
+of basecamp"; not a destination: "retrieve the cones to basecamp"; the map is asked only when
+the goal names a region or the request has "region N" or one of in / inside / within / around /
+across / throughout / explore / search / patrol / survey / scan;
 the object's Room by the MeshPlace that contains it in the live map, else by the place nearest
 the change's position; names match as words, punctuation ignored) -- is not turned into a recommendation at once. It is
 collected for `recheck_settle_s` (3 s; changes arriving together are one question), then the
@@ -1785,20 +1787,23 @@ them. On a held card:
   included) that the question covers makes no card when it finishes later. When publishing fails
   (ROS down, or no subscriber matched) the card stays pending with `result.error` and the route
   answers 502.
-- An answered card stays shown with `result.waiting: true` until the planner publishes `""`, a
-  new id or a list without its robot; only the same answer can be sent again from it (any other
-  action is a 409, also after the planner republishes that id: robots left it, or the answer was
-  lost). The decision waits up to 3 s for the planner's subscription. Answered waiting cards are
+- An answered card stays shown with `result.waiting: true` until the planner publishes `""` or a
+  new id; only the same answer can be sent again from it (any other action is a 409, also when
+  the planner republishes that id because the answer was lost). The decision waits up to 3 s for the planner's subscription. Answered waiting cards are
   exempt from the history limit too. Nothing in the `replan_pending` callback publishes on ROS.
 - The UI sends `held_id`, the question id the card showed (`""` none), with confirm and decline;
   a different question now (or none) is a 409, as is a second answer to one question (in flight
-  or done) or a question the planner dropped meanwhile. Held cards are exempt from the history
-  limit.
+  or done) or a question the planner dropped meanwhile. Every answer (confirm, decline, a goal
+  sent from a held card) first claims the question id under one lock; a failed publish / send
+  releases it and leaves every card as it was. Held cards are exempt from the history limit
+  (with no question held, the limit works as before). Per-question records keep only the current
+  id; a late LLM recheck is suppressed only for the question's robots and changes received
+  before the answer (its change set is then not asked again).
 
 | Method | Path | Body / notes |
 |---|---|---|
 | GET | `/plan/scene_repair` | `{map_version, changes: [{id, source, origin, map_version, t, summary, changes: [{kind added\|removed\|moved, symbol, label, old, new, confidence?}]}], events: [{t, kind: replan_request, text}], recommendations: [...], pending: {robot: id}}` |
-| POST | `/plan/scene_repair/{id}/confirm` | `{variant: "proposed" (default) \| "original", held_id?}`: `send_pddl_goal(robot, goal, engine=...)`. The bridge resends the persistent constraints. A GRSTAPS-X goal's `before` facts go with it, rewritten like the goal. → the record (`status: confirmed`, `result {ok, variant, pddl, send}`). 404 unknown id, 409 not pending, 400 no planner, 503 ROS down. A failed send leaves it pending with `result.error`. On a held card the same request answers `confirm` instead (above); 502 when that decision was not published |
+| POST | `/plan/scene_repair/{id}/confirm` | `{variant: "proposed" (default) \| "original", held_id?}`: `send_pddl_goal(robot, goal, engine=...)`. The bridge resends the persistent constraints. The goal's per-goal facts go with it, rewritten like the goal: `before` (GRSTAPS-X) and `use-robots`, so the goal manager replans only that goal's robots; an LLM goal without use-robots keeps the goal's. → the record (`status: confirmed`, `result {ok, variant, pddl, send}`). 404 unknown id, 409 not pending, 400 no planner, 503 ROS down. A failed send leaves it pending with `result.error`. On a held card the same request answers `confirm` instead (above); 502 when that decision was not published |
 | POST | `/plan/scene_repair/{id}/decline` | `{resume: false, held_id?}`. `resume: true` also resumes the robot (as the Resume route does), since goal_manager may have paused it. On a held card it only publishes `decline` (`resume` ignored); 502 when the decision was not published. 404 / 409 as above |
 
 Hub topic `plan/scene_repair` carries the full state on every change. **UI:** the Plan panel's

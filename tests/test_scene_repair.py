@@ -1220,14 +1220,6 @@ def test_a_new_goal_sent_meanwhile_keeps_a_card_while_the_robot_is_still_held():
     assert _pending(sr) == []
 
 
-def test_a_question_that_shrinks_drops_only_the_robot_it_no_longer_holds():
-    sr, _, _, _ = make_held(goals={"euclid": _g(), "hamilton": _g()})
-    sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))
-    sr.on_replan_pending(pending_msg(["hamilton"]))  # euclid got a new plan
-    (rec,) = _pending(sr)
-    assert rec["robot"] == "hamilton" and rec["held"]["robots"] == ["hamilton"]
-
-
 def test_a_new_question_replaces_the_old_one_on_the_cards():
     sr, _, _, p = make_held(planner=Planner(clears=False))
     sr.on_replan_pending(pending_msg(["hamilton"], qid="q1"))
@@ -1502,7 +1494,7 @@ def test_a_new_box_elsewhere_is_not_rechecked():
 
 
 def test_a_region_the_goal_names_or_the_request_names_by_name_counts():
-    for pddl, request in (("(visited-place r5)", "Inspect it"), ("(visited-place p3)", "check the loading dock"),
+    for pddl, request in (("(visited-place r5)", "Inspect it"), ("(visited-place p3)", "explore the loading dock"),
                           ("(visited-place p3)", "visit everything in region5")):  # fmt: skip
         goal = {"hamilton": _g(pddl, request=request, t=1.0)}
         sr, _, asked, run = make_llm(
@@ -1603,10 +1595,12 @@ def test_the_same_question_republished_after_an_answer_keeps_the_answer():
     sr.on_replan_pending(pending_msg(["euclid", "gauss", "hamilton"]))
     c = _by_robot(sr)
     sr.decline(c["hamilton"]["id"], resume=True)
-    sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))  # gauss left: same id
+    sr.on_replan_pending(
+        pending_msg(["euclid", "gauss", "hamilton"])
+    )  # v4: a duplicate keeps the id
     assert resumed == []
     shown = {r["robot"]: r for r in _shown(sr)}
-    assert sorted(shown) == ["euclid", "hamilton"] and all(
+    assert sorted(shown) == ["euclid", "gauss", "hamilton"] and all(
         r["result"]["waiting"] for r in shown.values()
     )
     assert _pending(sr) == []  # not reopened as a fresh question
@@ -1863,3 +1857,184 @@ def test_a_later_change_of_the_same_object_is_asked_again():
     run()
     (rec,) = _pending(sr)
     assert "O20 removed" in rec["reason"]
+
+
+# ---- v4 (Codex review of 5f02af2) ----
+
+UR = [{"predicate": "use-robots", "symbols": ["euclid", "hamilton"]}]
+
+
+def _llm_held(answer, goals=None, planner=None):
+    p = planner or Planner(clears=False)
+    goals = goals or {
+        "hamilton": _g(CONES, request="Visit all the cones", t=1.0),
+        "euclid": _g(CONES, t=1.0),
+    }
+    sr, sent, asked, run = make_llm(answer, goals=goals, decide=p)
+    p.sr = sr
+    sr.on_applied("awcd/hamilton", 5, [REMOVED_O20])
+    run()
+    sr.on_replan_pending(pending_msg(list(goals)))
+    return sr, sent, asked, run, p, _by_robot(sr)
+
+
+NEW_GOAL = {
+    "goal": "(and (visited-object o21) (visited-object o43))",
+    "constraints": [],
+    "text": "O43 for O20",
+}
+
+
+def test_one_claim_per_question_a_goal_send_and_a_confirm_cannot_race():
+    sr, sent, _, _, p, c = _llm_held(lambda r, g, rep: NEW_GOAL)
+    raced = []
+
+    def send(robot, pddl, constraints, engine, **kw):  # while the goal is being sent
+        for other in ("confirm", "decline"):
+            try:
+                (sr.confirm if other == "confirm" else sr.decline)(
+                    c["euclid"]["id"],
+                    **({"variant": "original"} if other == "confirm" else {}),
+                )
+            except NotPending as e:
+                raced.append(str(e))
+        sent.append((robot, pddl))
+        return {"ok": True}
+
+    sr.send = send
+    sr.confirm(c["hamilton"]["id"], "proposed", held_id="q1")
+    assert (
+        len(raced) == 2
+        and all("being answered" in e for e in raced)
+        and p.decisions == []
+    )
+    # after it the question takes no answer: euclid's own card (another object)
+    # is an ordinary card now, its Dismiss publishes nothing
+    assert sr.get(c["euclid"]["id"])["held"] is None
+    sr.decline(c["euclid"]["id"])
+    assert p.decisions == []
+
+
+def test_a_goal_send_waits_for_a_decision_in_flight():
+    sr, sent, _, _, p, c = _llm_held(lambda r, g, rep: NEW_GOAL)
+    raced = []
+
+    def decide(qid, decision):
+        try:
+            sr.confirm(c["hamilton"]["id"], "proposed")
+        except NotPending as e:
+            raced.append(str(e))
+        return 1
+
+    sr.decide = decide
+    sr.confirm(c["euclid"]["id"], "original")
+    assert raced and sent == []
+
+
+def test_a_failed_goal_send_restores_the_cards_and_the_question():
+    sr, sent, _, _, p, c = _llm_held(lambda r, g, rep: NEW_GOAL)
+
+    def fail(*a, **k):
+        raise RuntimeError("no route")
+
+    sr.send = fail
+    with pytest.raises(RuntimeError):
+        sr.confirm(c["hamilton"]["id"], "proposed")
+    after = _by_robot(sr)
+    assert {r: x["id"] for r, x in after.items()} == {r: x["id"] for r, x in c.items()}
+    assert all(x["held"]["id"] == "q1" for x in after.values()) and not sr._answered_qs
+    sr.decline(c["euclid"]["id"])  # the question takes an answer again
+    assert p.decisions == [{"id": "q1", "decision": "decline"}]
+
+
+def test_recheck_suppression_is_for_the_questions_robots_and_records_the_change():
+    p = Planner()
+    goals = {
+        "hamilton": _g(CONES, request="Visit all the cones", t=1.0),
+        "euclid": _g(CONES, t=1.0),
+    }
+    sr, sent, asked, run = make_llm(lambda r, g, rep: NO_CHANGE, goals=goals, decide=p)
+    p.sr = sr
+    sr.on_applied("awcd/hamilton", 5, [REMOVED_O20])  # queued for both robots
+    sr.on_replan_pending(pending_msg(["hamilton"]))
+    sr.decline(_pending(sr)[0]["id"])
+    run()
+    (left,) = _pending(sr)
+    assert left["robot"] == "euclid"  # not in the question: still asked
+    n = len(asked)
+    sr.on_applied("awcd/hamilton", 6, [REMOVED_O20])  # change detection resends its set
+    run()
+    assert asked[n:] == []  # hamilton (suppressed) is not asked about it again either
+
+
+def test_a_card_proposing_another_object_is_not_retired_with_the_question():
+    sr, sent, _, _, p, c = _llm_held(lambda r, g, rep: NEW_GOAL)
+    assert c["hamilton"]["llm"] and "o43" in c["hamilton"]["proposed_goal"]
+    planner_card = next(
+        x
+        for x in c.values()
+        if x["origin"] == "planner" or x["id"] != c["hamilton"]["id"]
+    )
+    sr.decline(planner_card["id"])
+    left = sr.get(c["hamilton"]["id"])
+    assert left["status"] == "pending" and left["held"] is None
+
+
+def test_per_question_records_are_bounded():
+    sr, _, _, p = make_held(planner=Planner(clears=False))
+    for i in range(30):
+        sr.on_replan_pending(pending_msg(["hamilton"], qid=f"q{i}"))
+        sr.decline(_pending(sr)[0]["id"])
+    assert list(sr._held_done) == ["q29"] and len(sr._answered_qs) <= 20
+    sr.on_replan_pending("")
+    assert not sr._held_done and not sr._deciding
+
+
+def test_no_region_lookup_unless_a_region_is_named():
+    calls = []
+
+    def region_of(sym, xy):
+        calls.append(sym)
+        return None
+
+    for request, n in (("Visit all the cones", 0), ("Retrieve all cones to basecamp", 0),
+                       ("Visit all objects in the kitchen", 1), ("visit region 5", 1)):  # fmt: skip
+        calls.clear()
+        goal = {"hamilton": _g("(visited-place p3)", request=request, t=1.0)}
+        sr, _, _, run = make_llm(
+            lambda r, g, rep: NO_CHANGE, goals=goal, region_of=region_of
+        )
+        sr.on_applied("awcd/hamilton", 5, [_added("o77", "box")])
+        assert len(calls) == n, request
+
+
+def test_max_recs_zero_keeps_no_card_as_main():
+    sr, *_ = make(max_recs=0)
+    sr.on_applied("console/op", 8, [added("o98", "chair", 50.0, 50.0)], local=True)
+    assert sr.state()["recommendations"] == []
+
+
+def test_a_cards_goal_keeps_its_use_robots_and_never_touches_another_robots_goal():
+    """The held change affects euclid/hamilton's retrieve goal; gauss runs its
+    own visit goal. Replanning from a card sends the team goal with its
+    use-robots (robot-scoped), and gauss gets no goal."""
+    goals = {
+        "euclid": _g(CONES, constraints=UR, t=1.0),
+        "gauss": _g("(visited-place p3)", t=2.0),
+    }
+    sr, sent, _, _ = make_held(goals=goals, robot_at=(0.0, 0.0))
+    sr.on_applied(
+        "awcd/hamilton", 7, [added("o99", "cone", 3.0, 0.0)]
+    )  # rules: rewrite to the closer cone
+    sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))
+    card = _by_robot(sr)["euclid"]
+    sr.confirm(card["id"], "proposed")
+    assert [s[0] for s in sent] == ["euclid"] and sent[-1][2] == UR
+    assert "gauss" not in _by_robot(sr) or _by_robot(sr)["gauss"]["origin"] != "planner"
+
+
+def test_the_llms_goal_keeps_the_goals_use_robots():
+    goals = {"euclid": _g(CONES, constraints=UR, request="Visit all the cones", t=1.0)}
+    sr, sent, _, _, p, c = _llm_held(lambda r, g, rep: NEW_GOAL, goals=goals)
+    sr.confirm(c["euclid"]["id"], "proposed")
+    assert sent[-1][0] == "euclid" and sent[-1][2] == UR and p.decisions == []
