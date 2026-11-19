@@ -327,6 +327,8 @@ class SceneRepair:
         # question ids whose decision is being published: the planner may clear
         # the question before the cards it answers are marked
         self._deciding: set[str] = set()
+        # declined questions whose held Spots resume once the planner lets them go
+        self._to_resume: list[dict] = []
         self.resume = resume  # (robot) -> result dict
         self.active_goals = active_goals or (lambda: {})  # () -> {robot: goal record}
         self.plan_of = plan_of or (
@@ -473,6 +475,7 @@ class SceneRepair:
                 log.warning("replan_pending %s names no robot", held["id"])
         with self._lock:
             self._held = held
+        self._resume_released()
         self._publish()
 
     def _hold(self) -> dict | None:
@@ -669,7 +672,8 @@ class SceneRepair:
         names ("visit all objects in region 5")."""
         regions = {s for s in goal_symbols(goal.get("pddl") or "") if s.startswith("r")}
         regions |= {f"r{n}" for n in _REGION_WORD.findall(request)}
-        if not regions and not request:
+        words = _words(request)  # "the kitchen." -> "the kitchen"
+        if not regions and not words:
             return []
         out = []
         for c in changes:
@@ -683,10 +687,10 @@ class SceneRepair:
                 reg = {"symbol": reg}
             sym, name = (
                 sym_key(reg.get("symbol") or ""),
-                _norm_label(reg.get("name") or ""),
+                _words(reg.get("name") or ""),
             )
             if (sym and sym in regions) or (
-                len(name) > 2 and f" {name} " in f" {request} "
+                len(name) > 2 and f" {name} " in f" {words} "
             ):
                 out.append(c)
         return out
@@ -1002,13 +1006,13 @@ class SceneRepair:
             self._supersede(robot, rid, "a newer recommendation")
             self._recs[rid] = rec
             while len(self._recs) > self._max_recs:
-                # the oldest card, but not one that asks the held question
-                old = next((k for k, r in self._recs.items()
-                            if not (r.get("held") and r["status"] in ("pending", "confirming"))), None)  # fmt: skip
+                # the oldest card, but never this one or one that asks the held
+                # question (those may exceed the limit)
+                old = next((k for k, r in self._recs.items() if k != rid
+                            and not (r.get("held") and r["status"] in ("pending", "confirming"))), None)  # fmt: skip
                 if old is None:
-                    self._recs.popitem(last=False)
-                else:
-                    del self._recs[old]
+                    break
+                del self._recs[old]
             return dict(rec)
 
     def _supersede(self, robot, by, why) -> bool:
@@ -1038,12 +1042,22 @@ class SceneRepair:
             raise NotPending(f"recommendation {rid} is {rec['status']}")
         return rec
 
-    def confirm(self, rid: str, variant: str = "proposed") -> dict:
+    def _check_held_id(self, rec: dict, held_id) -> None:
+        """``held_id``: the question the operator saw on the card ("" none; None
+        not said). Another question now: the answer would be for it (-> 409)."""
+        now = (rec.get("held") or {}).get("id") or ""
+        if held_id is not None and held_id != now:
+            raise NotPending(f"recommendation {rec['id']}: the planner's question changed "
+                             f"({held_id or 'none'} -> {now or 'none'}); look at the card again")  # fmt: skip
+
+    def confirm(self, rid: str, variant: str = "proposed", held_id=None) -> dict:
         """Replan: send the proposed (rewritten) or the original goal again."""
         if variant not in ("proposed", "original"):
             raise ValueError(f"unknown variant {variant!r} (proposed / original)")
         with self._lock:
+            self._sync_held()
             rec = self._take(rid)
+            self._check_held_id(rec, held_id)
             # the planner's own replan, which it holds for this answer: the
             # same goal with the same constraints (else the new request is sent
             # as a goal, and its plan takes the robot out of the question)
@@ -1053,7 +1067,7 @@ class SceneRepair:
                 and (variant == "original" or _same_request(rec))
             )
         if planner:
-            return self._answer_held(rid, "confirm", variant=variant)
+            return self._answer_held(rid, "confirm", variant=variant, held_id=held_id)
         if self.send is None:
             raise RuntimeError("no goal sender (ROS unavailable)")
         if not rec["goal"].get("pddl"):
@@ -1103,18 +1117,20 @@ class SceneRepair:
         self._publish()
         return out
 
-    def decline(self, rid: str, resume: bool = False) -> dict:
+    def decline(self, rid: str, resume: bool = False, held_id=None) -> dict:
         """Dismiss; ``resume`` also resumes the robot (goal_manager may have paused
         it). On a held card: declines the planner's question and resumes every
         robot it holds that is a Spot (:meth:`_answer_held`)."""
         with self._lock:
+            self._sync_held()
             rec = self._take(rid)
+            self._check_held_id(rec, held_id)
             held = bool(rec.get("held")) and self.decide is not None
             if not held:
                 rec.update(status="declined", t_done=self.clock(),
                            result={"resume": bool(resume)})  # fmt: skip
         if held:
-            return self._answer_held(rid, "decline", resume=resume)
+            return self._answer_held(rid, "decline", resume=resume, held_id=held_id)
         if resume:
             try:
                 rec["result"]["resumed"] = (
@@ -1126,7 +1142,7 @@ class SceneRepair:
         return dict(rec)
 
     def _answer_held(
-        self, rid: str, decision: str, *, variant=None, resume=False
+        self, rid: str, decision: str, *, variant=None, resume=False, held_id=None
     ) -> dict:
         """Publish ``decision`` for the question ``rid``'s card shows. It answers
         for every robot the question holds: their cards the question alone made
@@ -1134,8 +1150,18 @@ class SceneRepair:
         ``resume``) and a held Husky stays stopped until it gets a new goal.
         The card is answered only once the decision is published."""
         with self._lock:
+            self._sync_held()
             rec = self._take(rid)
-            q = rec["held"]
+            self._check_held_id(rec, held_id)
+            q = rec.get("held")
+            if q is None or (self._hold() or {}).get("id") != q["id"]:
+                raise NotPending(
+                    f"recommendation {rid}: the planner no longer holds that question"
+                )
+            if q["id"] in self._deciding:
+                raise NotPending(
+                    f"the planner's question {q['id']} is being answered on another card"
+                )
             rec["status"] = "confirming"
             self._deciding.add(q["id"])
         self._publish()
@@ -1183,23 +1209,40 @@ class SceneRepair:
                                      "why": f"answered on {rec['robot']}'s card"})  # fmt: skip
                 else:
                     r["held"] = None  # its own finding is still asked
-        if decision == "decline" and resume:
-            resumed, errors = {}, {}
-            for robot in robots:
-                if robot in q["stopped"]:
-                    continue  # stopped, not paused: needs a new goal
-                try:
-                    resumed[robot] = (
-                        self.resume(robot) if self.resume is not None else None
-                    )
-                except Exception as e:  # noqa: BLE001
-                    errors[robot] = str(e)
-            with self._lock:
-                result["resumed"] = resumed
-                if errors:
-                    result["resume_error"] = errors
+            if decision == "decline" and resume:
+                # resumed once the planner lets them go (its next replan_pending
+                # no longer holds them): it ignores a decision it does not expect
+                result["resumed"] = {}
+                self._to_resume.append({"id": q["id"], "rec": rec,
+                                        "robots": [r for r in robots if r not in q["stopped"]]})  # fmt: skip
+        self._resume_released()
         self._publish()
         return self.get(rid)
+
+    def _resume_released(self) -> None:
+        """Resume the robots of declined questions the planner no longer holds;
+        a robot a newer question holds is that question's (not resumed)."""
+        go = []
+        with self._lock:
+            h = self._held
+            for w in list(self._to_resume):
+                for robot in list(w["robots"]):
+                    if h is not None and robot in h["robots"]:
+                        if h["id"] == w["id"]:
+                            continue  # not let go yet
+                    else:
+                        go.append((w["rec"], robot))
+                    w["robots"].remove(robot)
+                if not w["robots"]:
+                    self._to_resume.remove(w)
+        for rec, robot in go:
+            try:
+                out = self.resume(robot) if self.resume is not None else None
+                with self._lock:
+                    rec["result"].setdefault("resumed", {})[robot] = out
+            except Exception as e:  # noqa: BLE001
+                with self._lock:
+                    rec["result"].setdefault("resume_error", {})[robot] = str(e)
 
     # --------------------------------------------------------------- output
     def state(self) -> dict:
@@ -1340,6 +1383,11 @@ def _one_line(x) -> str:
 
 # "region 5", "region5", "region_5" in the operator's request -> r5
 _REGION_WORD = re.compile(r"\bregion[\s_-]*(\d+)\b", re.I)
+
+
+def _words(s) -> str:
+    """Lower-case words, punctuation as spaces."""
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).split())
 
 
 def _norm_label(s) -> str:

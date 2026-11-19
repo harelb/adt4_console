@@ -1718,7 +1718,7 @@ finding above, or an **added or moved** object of a goal object's class or of a 
 operator's request names ("all the cones"), or an added or moved object of **any class inside a
 region** the goal names (`r5`) or the request names ("region 5", "region5", the region's name;
 the object's Room by the MeshPlace that contains it in the live map, else by the place nearest
-the change's position) -- is not turned into a recommendation at once. It is
+the change's position; names match as words, punctuation ignored) -- is not turned into a recommendation at once. It is
 collected for `recheck_settle_s` (3 s; changes arriving together are one question), then the
 chat's LLM redoes the operator's request on the changed map (`ChatService.recheck`, prompt
 `RECHECK_PROMPT`: "all X" adds a new X and drops a removed one; "the nearest X" recomputes; a
@@ -1769,19 +1769,24 @@ them. On a held card:
 - A proposal that differs in the goal **or only in its constraints** is sent as a goal (with those
   constraints); no decision is published, and its new plan takes the robot out of the question.
 - **Dismiss** publishes `{id, decision: "decline"}`; with `resume` (ticked by default on a held
-  card) the console resumes **every held Spot** (`result.resumed` per robot). A held Husky is not
+  card) the console resumes **every held Spot** (`result.resumed` per robot) once the planner's
+  next `replan_pending` no longer holds it (a robot a newer question holds is not resumed). A held Husky is not
   resumed: it was stopped and needs a new goal (`result.stopped`).
 - The card is marked `confirmed` / `declined` only once the decision is published (`result:
   {ok, planner, question, robots, ...}`); the other held robots' `origin: planner` cards are
   answered with it (`result.by`), and their other cards just lose `held`. When publishing fails
   (ROS down, or no subscriber matched) the card stays pending with `result.error` and the route
   answers 502.
+- The UI sends `held_id`, the question id the card showed (`""` none), with confirm and decline;
+  a different question now (or none) is a 409, as is a second answer to one question (in flight
+  or done) or a question the planner dropped meanwhile. Held cards are exempt from the history
+  limit.
 
 | Method | Path | Body / notes |
 |---|---|---|
 | GET | `/plan/scene_repair` | `{map_version, changes: [{id, source, origin, map_version, t, summary, changes: [{kind added\|removed\|moved, symbol, label, old, new, confidence?}]}], events: [{t, kind: replan_request, text}], recommendations: [...], pending: {robot: id}}` |
-| POST | `/plan/scene_repair/{id}/confirm` | `{variant: "proposed" (default) \| "original"}`: `send_pddl_goal(robot, goal, engine=...)`. The bridge resends the persistent constraints. A GRSTAPS-X goal's `before` facts go with it, rewritten like the goal. → the record (`status: confirmed`, `result {ok, variant, pddl, send}`). 404 unknown id, 409 not pending, 400 no planner, 503 ROS down. A failed send leaves it pending with `result.error`. On a held card the same request answers `confirm` instead (above); 502 when that decision was not published |
-| POST | `/plan/scene_repair/{id}/decline` | `{resume: false}`. `resume: true` also resumes the robot (as the Resume route does), since goal_manager may have paused it. On a held card: publishes `decline` and resumes every held Spot; 502 when the decision was not published (nothing resumed). 404 / 409 as above |
+| POST | `/plan/scene_repair/{id}/confirm` | `{variant: "proposed" (default) \| "original", held_id?}`: `send_pddl_goal(robot, goal, engine=...)`. The bridge resends the persistent constraints. A GRSTAPS-X goal's `before` facts go with it, rewritten like the goal. → the record (`status: confirmed`, `result {ok, variant, pddl, send}`). 404 unknown id, 409 not pending, 400 no planner, 503 ROS down. A failed send leaves it pending with `result.error`. On a held card the same request answers `confirm` instead (above); 502 when that decision was not published |
+| POST | `/plan/scene_repair/{id}/decline` | `{resume: false, held_id?}`. `resume: true` also resumes the robot (as the Resume route does), since goal_manager may have paused it. On a held card: publishes `decline` and resumes every held Spot; 502 when the decision was not published (nothing resumed). 404 / 409 as above |
 
 Hub topic `plan/scene_repair` carries the full state on every change. **UI:** the Plan panel's
 current plan section (under the plan repair alerts) shows the robot's pending recommendation.

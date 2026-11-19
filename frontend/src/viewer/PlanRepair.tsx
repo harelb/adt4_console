@@ -213,6 +213,8 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
   // ticked while the card is held, unless the operator chose otherwise
   const [resumeChoice, setResume] = useState<boolean | null>(null);
   const resume = resumeChoice ?? !!rec.held;
+  // the question this card shows: an answer is refused (409) when it changed
+  const heldId = rec.held?.id ?? "";
   const base = `api/plan/scene_repair/${encodeURIComponent(rec.id)}`;
   const act = async (label: string, path: string, body: unknown) => {
     setBusy(label);
@@ -267,14 +269,14 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
       </div>
       <div className="row gap-sm wrap">
         {rewritten && (
-          <button className="btn btn-sm btn-primary" disabled={disabled} onClick={() => act("proposed", `${base}/confirm`, {variant: "proposed"})}>
+          <button className="btn btn-sm btn-primary" disabled={disabled} onClick={() => act("proposed", `${base}/confirm`, {variant: "proposed", held_id: heldId})}>
             {proposedLabel}
           </button>
         )}
-        <button className={`btn btn-sm${rewritten ? "" : " btn-primary"}`} disabled={disabled} onClick={() => act("original", `${base}/confirm`, {variant: "original"})}>
+        <button className={`btn btn-sm${rewritten ? "" : " btn-primary"}`} disabled={disabled} onClick={() => act("original", `${base}/confirm`, {variant: "original", held_id: heldId})}>
           Replan same goal
         </button>
-        <button className="btn btn-sm" disabled={disabled} onClick={() => act("decline", `${base}/decline`, {resume})}>
+        <button className="btn btn-sm" disabled={disabled} onClick={() => act("decline", `${base}/decline`, {resume, held_id: heldId})}>
           Dismiss
         </button>
         <label className="small muted row gap-sm" title="goal_manager may have paused the robot for this change">
@@ -300,6 +302,12 @@ function HeldNote({rec, held}: {rec: SceneRecommendation; held: HeldReplan}) {
       ) : (
         <p>Robot paused: the planner replans only when you confirm. Dismiss drops the replan; with resume ticked the robot continues.</p>
       )}
+      <ul className="scene-rec-held-reasons">
+        {held.reasons.map((r, i) => (
+          <li key={i}>{r}</li>
+        ))}
+      </ul>
+      {others.length === 0 && <p>Held: {rec.robot}.</p>}
       {others.length > 0 && (
         <p className="scene-rec-held-all">
           This answer applies to all of {held.robots.join(", ")}: the planner holds them together.

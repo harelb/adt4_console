@@ -18,10 +18,13 @@ class ConfirmBody(BaseModel):
     # "proposed": the goal rewritten to the new object (same as the original when
     # nothing was rewritten); "original": replan the goal as it was
     variant: Literal["proposed", "original"] = "proposed"
+    # the planner's held question the card showed ("" none): another one -> 409
+    held_id: str | None = None
 
 
 class DeclineBody(BaseModel):
     resume: bool = False  # also resume the robot (goal_manager may have paused it)
+    held_id: str | None = None  # as ConfirmBody
 
 
 def _sr(request: Request):
@@ -40,7 +43,8 @@ def scene_repair_state(request: Request):
 def scene_repair_confirm(rid: str, request: Request, body: ConfirmBody | None = None):
     sr = _sr(request)
     try:
-        return sr.confirm(rid, (body or ConfirmBody()).variant)
+        body = body or ConfirmBody()
+        return sr.confirm(rid, body.variant, held_id=body.held_id)
     except KeyError:
         raise HTTPException(404, f"unknown recommendation {rid}") from None
     except NotPending as e:
@@ -56,7 +60,8 @@ def scene_repair_confirm(rid: str, request: Request, body: ConfirmBody | None = 
 @router.post("/plan/scene_repair/{rid}/decline")
 def scene_repair_decline(rid: str, request: Request, body: DeclineBody | None = None):
     try:
-        return _sr(request).decline(rid, (body or DeclineBody()).resume)
+        body = body or DeclineBody()
+        return _sr(request).decline(rid, body.resume, held_id=body.held_id)
     except KeyError:
         raise HTTPException(404, f"unknown recommendation {rid}") from None
     except NotPending as e:

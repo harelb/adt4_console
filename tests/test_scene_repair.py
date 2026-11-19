@@ -1149,8 +1149,10 @@ def test_a_latched_hold_before_scene_repair_is_wired_is_handed_over(client):
 
 
 def test_the_bridge_keeps_the_last_pending_message():
+    import threading
+
     rb = RosBridge.__new__(RosBridge)
-    rb.scene_repair = None
+    rb.scene_repair, rb._replan_pending_lock = None, threading.Lock()
     rb._on_replan_pending(types.SimpleNamespace(data=pending_msg(["hamilton"])))
     assert json.loads(rb.replan_pending)["id"] == "q1"
 
@@ -1347,6 +1349,135 @@ def test_without_replan_pending_the_console_behaves_as_before():
     )
 
 
+# ---- review of 867c453 ----
+
+
+def test_an_answer_for_the_question_the_card_showed_is_refused_after_a_new_one():
+    sr, _, _, p = make_held(planner=Planner(clears=False))
+    sr.on_replan_pending(pending_msg(["hamilton"], qid="q1"))
+    (rec,) = _pending(sr)
+    sr.on_replan_pending(pending_msg(["hamilton"], qid="q2"))
+    with pytest.raises(NotPending, match="question changed"):
+        sr.decline(rec["id"], resume=True, held_id="q1")
+    with pytest.raises(NotPending, match="question changed"):
+        sr.confirm(rec["id"], "original", held_id="")  # shown without a hold
+    assert p.decisions == [] and sr.get(rec["id"])["status"] == "pending"
+    sr.confirm(rec["id"], "original", held_id="q2")
+    assert p.decisions == [{"id": "q2", "decision": "confirm"}]
+
+
+def test_the_routes_pass_the_question_the_card_showed(client):
+    sr = client.app.state.services.scene_repair
+    sr.decide = Planner(clears=False)
+    sr.decide.sr = sr
+    sr.on_replan_pending(pending_msg(["hamilton"], qid="q1"))
+    (rid,) = client.get("/api/plan/scene_repair").json()["pending"].values()
+    r = client.post(
+        f"/api/plan/scene_repair/{rid}/confirm",
+        json={"variant": "original", "held_id": "q0"},
+    )
+    assert r.status_code == 409
+    r = client.post(
+        f"/api/plan/scene_repair/{rid}/confirm",
+        json={"variant": "original", "held_id": "q1"},
+    )
+    assert r.status_code == 200 and sr.decide.decisions == [
+        {"id": "q1", "decision": "confirm"}
+    ]
+
+
+def test_a_decline_resumes_only_robots_the_planner_let_go():
+    sr, _, resumed, p = make_held(
+        goals={"euclid": _g(), "hamilton": _g()}, planner=Planner(clears=False)
+    )
+    sr.on_replan_pending(pending_msg(["euclid", "hamilton"], qid="q1"))
+    out = sr.decline(_by_robot(sr)["euclid"]["id"], resume=True)
+    assert (
+        resumed == [] and out["result"]["resumed"] == {}
+    )  # the planner still holds them
+    # a newer question holds hamilton again: only euclid is let go
+    sr.on_replan_pending(pending_msg(["hamilton"], qid="q2"))
+    assert resumed == ["euclid"]
+    sr.on_replan_pending("")
+    assert resumed == ["euclid"]  # hamilton belongs to q2 now
+    assert sr.get(out["id"])["result"]["resumed"] == {"euclid": {"ok": True}}
+
+
+def test_one_answer_per_question_while_it_is_in_flight():
+    sr, _, _, _ = make_held(goals={"euclid": _g(), "hamilton": _g()})
+    second = []
+
+    def decide(qid, decision):
+        try:
+            sr.confirm(cards["hamilton"]["id"], "original")
+        except NotPending as e:
+            second.append(str(e))
+        return 1
+
+    sr.decide = decide
+    sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))
+    cards = _by_robot(sr)
+    sr.decline(cards["euclid"]["id"])
+    assert second and "being answered" in second[0]
+    with pytest.raises(NotPending):  # and after it succeeded
+        sr.confirm(cards["hamilton"]["id"], "original")
+
+
+def test_a_hold_cleared_before_the_answer_gives_409_not_a_stuck_card():
+    sr, _, _, p = make_held(
+        goals={"hamilton": _g()}, robot_at=(0.0, 0.0), planner=Planner(clears=False)
+    )
+    sr.on_applied("awcd/hamilton", 7, [added("o99", "cone", 3.0, 0.0)])
+    sr.on_replan_pending(pending_msg(["hamilton"]))
+    (rec,) = _pending(sr)
+    take = sr._take
+
+    def take_then_clear(rid):  # the planner clears between the two lock sections
+        out = take(rid)
+        if sr._take is take_then_clear:
+            sr._take = take
+            sr._held = None
+        return out
+
+    sr.confirm(rec["id"], "original")  # warm path: nothing odd
+    sr.on_applied("awcd/hamilton", 8, [added("o97", "cone", 2.0, 0.0)])
+    sr.on_replan_pending(pending_msg(["hamilton"], qid="q3"))
+    (rec,) = _pending(sr)
+    sr._take = take_then_clear
+    with pytest.raises(NotPending, match="no longer holds"):
+        sr.decline(rec["id"])
+    assert sr.get(rec["id"])["status"] != "confirming"
+
+
+def test_eviction_never_drops_held_cards_or_the_new_one():
+    goals = {f"r{i}": _g() for i in range(4)}
+    sr, _, _, _ = make_held(goals=goals, max_recs=2)
+    sr.on_replan_pending(pending_msg(sorted(goals)))
+    assert sorted(_by_robot(sr)) == sorted(goals)  # 4 held cards over a limit of 2
+    assert all(r["held"] for r in _pending(sr))
+
+
+def test_the_bridge_replays_the_cached_question_once_attached():
+    import threading
+
+    rb = RosBridge.__new__(RosBridge)
+    rb.scene_repair, rb.replan_pending, rb._replan_pending_lock = (
+        None,
+        None,
+        threading.Lock(),
+    )
+    rb._on_replan_pending(
+        types.SimpleNamespace(data=pending_msg(["hamilton"], qid="old"))
+    )
+    got = []
+    sr = types.SimpleNamespace(on_replan_pending=got.append)
+    rb.attach_scene_repair(sr)
+    rb._on_replan_pending(
+        types.SimpleNamespace(data=pending_msg(["hamilton"], qid="new"))
+    )
+    assert [json.loads(g)["id"] for g in got] == ["old", "new"]
+
+
 # ---- 2026-11-19: a new object in a region the goal or the request names is rechecked ----
 
 REGIONS = {
@@ -1437,3 +1568,17 @@ def test_the_live_map_region_lookup(monkeypatch):
         "name": "loading dock",
     }
     assert "o:Object" in queries[0][0] and queries[1][1] == {"x": 3.0, "y": 4.0}
+
+
+def test_a_region_name_with_punctuation_counts():
+    regions = {"o77": {"symbol": "R7", "name": "kitchen"}}
+    goal = {
+        "hamilton": _g(
+            "(visited-place p3)", request="Visit all objects in the kitchen.", t=1.0
+        )
+    }
+    sr, _, asked, run = make_llm(lambda r, g, rep: NO_CHANGE, goals=goal,
+                                 region_of=lambda s, xy: regions.get(sym_key(s)))  # fmt: skip
+    sr.on_applied("awcd/hamilton", 5, [_added("o77", "box")])
+    run()
+    assert len(asked) == 1

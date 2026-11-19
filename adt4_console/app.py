@@ -473,10 +473,7 @@ def wire_scene_repair(svc) -> None:
         region_of=lambda sym, xy: _region_row(svc, sym, xy),
     )  # fmt: skip
     svc.scene_repair = sr
-    svc.ros.scene_repair = sr
-    held = getattr(svc.ros, "replan_pending", None)
-    if held is not None:  # latched before scene repair was wired
-        sr.on_replan_pending(held)
+    svc.ros.attach_scene_repair(sr)  # with replan_pending latched before
 
     def on_commit(src_id, out, prov):
         t = _live_target(svc)

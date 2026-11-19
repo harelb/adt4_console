@@ -641,6 +641,7 @@ class RosBridge:
         self.scene_repair = None
         # omniplanner's latched replan_pending, last received ("" / JSON / None)
         self.replan_pending: str | None = None
+        self._replan_pending_lock = threading.Lock()
         # what the planner says it believes (planner_state): goal_manager's
         # robot_plan_states, omniplanner's plan_robots / map_version / map_epoch
         self._planner: dict = {}
@@ -945,10 +946,19 @@ class RosBridge:
 
     def _on_replan_pending(self, msg) -> None:
         # kept: a latched question that arrives before scene repair is wired is
-        # handed to it then (app.wire_scene_repair)
-        self.replan_pending = msg.data
-        if self.scene_repair is not None:
-            self.scene_repair.on_replan_pending(msg.data)
+        # handed to it then (attach_scene_repair); one lock orders the two
+        with self._replan_pending_lock:
+            self.replan_pending = msg.data
+            if self.scene_repair is not None:
+                self.scene_repair.on_replan_pending(msg.data)
+
+    def attach_scene_repair(self, sr) -> None:
+        """Bind scene repair and hand it the last replan_pending received, so a
+        newer message is never overwritten by the replayed one."""
+        with self._replan_pending_lock:
+            self.scene_repair = sr
+            if self.replan_pending is not None:
+                sr.on_replan_pending(self.replan_pending)
 
     def _on_planner_map_version(self, msg) -> None:
         self._planner_set(map_version=int(msg.data))
