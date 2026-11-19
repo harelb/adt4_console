@@ -223,8 +223,9 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
       setBusy(null);
     }
   };
-  const rewritten = rec.rewrites.length > 0 && rec.proposed_goal !== rec.goal.pddl;
+  const rewritten = (rec.rewrites.length > 0 || !!rec.llm) && rec.proposed_goal !== rec.goal.pddl;
   const newSyms = rec.rewrites.map(w => w.to.toUpperCase()).join(", ");
+  const proposedLabel = rec.llm ? "Replan with new goal" : `Replan with ${newSyms}`;
   const disabled = !!busy || rec.status !== "pending";
   return (
     <div className={`scene-rec prio-${rec.priority}`} role="alert" aria-label={`Replan recommendation for ${rec.robot}`}>
@@ -257,7 +258,7 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
       <div className="row gap-sm wrap">
         {rewritten && (
           <button className="btn btn-sm btn-primary" disabled={disabled} onClick={() => act("proposed", `${base}/confirm`, {variant: "proposed"})}>
-            Replan with {newSyms}
+            {proposedLabel}
           </button>
         )}
         <button className={`btn btn-sm${rewritten ? "" : " btn-primary"}`} disabled={disabled} onClick={() => act("original", `${base}/confirm`, {variant: "original"})}>

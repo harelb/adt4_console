@@ -88,6 +88,9 @@ class PddlGoal(BaseModel):
     route: Literal["auto", "planner", "goal_manager"] = "auto"
     # omniplanner engine: None / "fast_downward" (goal_manager's default) or "grstaps"
     engine: Literal["fast_downward", "grstaps"] | None = None
+    # the operator's words the goal was made from (a chat card's ``request``): a
+    # later scene change is rechecked against them (scene_repair)
+    request: str | None = None
 
 
 class DirectPathBody(BaseModel):
@@ -169,6 +172,7 @@ def goal_pddl(robot: str, body: PddlGoal, request: Request):
             body.constraints,
             body.route,
             engine=body.engine,
+            request=body.request,
         )
     except ValueError as e:  # bad constraint
         raise HTTPException(400, str(e)) from None

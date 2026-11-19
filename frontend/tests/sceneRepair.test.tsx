@@ -144,6 +144,21 @@ describe("SceneRepairPanel", () => {
     expect([...host!.querySelectorAll("button")].map(b => b.textContent)).toEqual(["Replan same goal", "Dismiss"]);
   });
 
+  it("offers the goal the LLM proposed, next to the same goal", async () => {
+    const llm: SceneRecommendation = {...REC, id: "sr3", llm: true, rewrites: [],
+      goal: {pddl: "(and (visited-object o20) (visited-object o21))", constraints: [], engine: null},
+      proposed_goal: "(and (visited-object o20) (visited-object o21) (visited-object o43))",
+      reason: "New cone O43: added to all the cones."};
+    const calls = stubFetch(state({recommendations: [llm], pending: {hamilton: "sr3"}}));
+    render(<SceneRepairPanel robot="hamilton" />);
+    await flush();
+    expect(host!.textContent).toContain("(visited-object o43))");
+    expect([...host!.querySelectorAll("button")].map(b => b.textContent)).toEqual(["Replan with new goal", "Replan same goal", "Dismiss"]);
+    click(byText("Replan with new goal"));
+    await flush();
+    expect(calls.filter(c => c[0] === "POST")[0][2]).toEqual({variant: "proposed"});
+  });
+
   it("says staged edits must be published before anything replans", async () => {
     stubFetch(state({recommendations: [], changes: [], pending: {}, staged: {src: "live", count: 2, summary: "delete O20", t: 1}}));
     render(<SceneRepairPanel robot="hamilton" />);

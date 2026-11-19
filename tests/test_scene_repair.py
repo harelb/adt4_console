@@ -45,7 +45,7 @@ def make(goals=None, plan=None, robot_at=(0.0, 0.0), **kw):
         else goals
     )
 
-    def send(robot, pddl, constraints, engine):
+    def send(robot, pddl, constraints, engine, **kw):
         sent.append((robot, pddl, constraints, engine))
         goals[robot] = {**goals[robot], "pddl": pddl}
         return {"ok": True, "via": "goal_manager"}
@@ -573,3 +573,183 @@ def test_console_plugins_follow_the_session_config(monkeypatch):
     assert any(x["kind"] == "grstaps" for x in ros_bridge.load_plugins(p))
     monkeypatch.setenv("config", "no_such_config")
     assert ros_bridge.plugins_yaml_path().parts[-2] == "default"
+
+
+# ---------- the chat's LLM rechecks the operator's request on the changed map ----------
+
+CONES = "(and (visited-object o20) (visited-object o21))"
+MAP.setdefault("o21", ("cone", 9.0, 1.0))
+MAP.setdefault("o43", ("cone", 30.0, 3.0))
+MAP.setdefault("o44", ("cone", 31.0, 3.0))
+MAP.setdefault("o99", ("chair", 4.0, 4.0))
+
+
+def make_llm(answer, goals=None, request="Visit all the cones", **kw):
+    """A SceneRepair with an LLM recheck: ``answer(robot, goal, report)`` is the
+    LLM; queued rechecks run when ``run()`` is called (the settle timer)."""
+    goals = goals or {"hamilton": {"pddl": CONES, "constraints": [], "engine": None,
+                                   "route": "auto", "request": request}}  # fmt: skip
+    asked, queued = [], []
+
+    def recheck(robot, goal, report):
+        asked.append((robot, goal["pddl"], report))
+        return answer(robot, goal, report)
+
+    sr, hub, sent, resumed = make(goals=goals, recheck=recheck,
+                                  run_later=lambda d, fn: queued.append(fn), **kw)  # fmt: skip
+
+    def run():
+        while queued:
+            queued.pop(0)()
+
+    return sr, sent, asked, run
+
+
+def _added(sym, cls, xy=(30.0, 3.0)):
+    return {"kind": ADDED, "symbol": sym.upper(), "label": cls, "old": [0, 0, 0],
+            "new": [xy[0], xy[1], 0.0]}  # fmt: skip
+
+
+def _pending(sr):
+    return [r for r in sr.state()["recommendations"] if r["status"] == "pending"]
+
+
+def test_a_new_cone_for_all_the_cones_proposes_the_goal_with_it():
+    goal = "(and (visited-object o20) (visited-object o21) (visited-object o43))"
+    sr, sent, asked, run = make_llm(
+        lambda r, g, rep: {
+            "goal": goal,
+            "constraints": [],
+            "text": "New cone O43: added to all the cones.",
+        }
+    )
+    sr.on_applied("awcd/euclid", 5, [_added("o43", "cone")])
+    assert _pending(sr) == []  # not before the LLM has answered
+    run()
+    (rec,) = _pending(sr)
+    assert rec["llm"] and rec["proposed_goal"] == goal
+    assert "'Visit all the cones'" in asked[0][2] and "O43 (cone)" in asked[0][2]
+    sr.confirm(rec["id"], "proposed")
+    assert sent[-1][1] == goal
+
+
+def test_a_relevant_new_object_keeps_replan_same_goal_when_the_llm_keeps_the_goal():
+    sr, _, _, run = make_llm(
+        lambda r, g, rep: {"goal": None, "constraints": None, "text": "No change."}
+    )
+    sr.on_applied("awcd/euclid", 5, [_added("o43", "cone")])
+    run()
+    (rec,) = _pending(sr)
+    assert not rec["llm"] and rec["proposed_goal"] == CONES
+    assert "new cone O43" in rec["reason"]
+
+
+def test_a_removal_the_llm_finds_harmless_asks_nothing():
+    """The planner itself replans when its plan needs the object."""
+    sr, _, asked, run = make_llm(
+        lambda r, g, rep: {"goal": None, "constraints": None, "text": "No change."}
+    )
+    sr.on_applied(
+        "awcd/euclid",
+        5,
+        [{"kind": REMOVED, "symbol": "O20", "label": "cone", "old": [7.4, 0.0, 0.0]}],
+    )
+    run()
+    assert len(asked) == 1 and _pending(sr) == []
+    assert any(
+        e["kind"] == "recheck" and "No change" in e["text"]
+        for e in sr.state()["events"]
+    )
+
+
+def test_an_unrelated_object_is_not_sent_to_the_llm():
+    sr, _, asked, run = make_llm(lambda r, g, rep: pytest.fail("asked the LLM"))
+    sr.on_applied("awcd/euclid", 5, [_added("o99", "chair", (40.0, 40.0))])
+    run()
+    assert asked == [] and _pending(sr) == []
+
+
+def test_the_class_the_operator_asked_for_counts_even_with_no_such_object_in_the_goal():
+    """ "All the cones" when the map had none yet: the goal names no cone."""
+    goals = {"hamilton": {"pddl": "(visited-object o5)", "constraints": [], "engine": None,
+                          "route": "auto", "request": "go to o5, then visit all the cones"}}  # fmt: skip
+    sr, _, asked, run = make_llm(
+        lambda r, g, rep: {"goal": None, "constraints": None, "text": ""}, goals=goals
+    )
+    sr.on_applied("awcd/euclid", 5, [_added("o43", "cone")])
+    run()
+    assert len(asked) == 1
+
+
+def test_an_operator_edit_is_rechecked_too():
+    goal = "(and (visited-object o21) (visited-object o44))"
+    sr, _, asked, run = make_llm(
+        lambda r, g, rep: {
+            "goal": goal,
+            "constraints": [],
+            "text": "O20 is gone; O44 is a cone.",
+        }
+    )
+    sr.on_applied("console/alice", 6, [{"kind": REMOVED, "symbol": "O20", "label": "cone", "old": [7.4, 0.0, 0.0]}],
+                  summary="deleted O20", local=True)  # fmt: skip
+    run()
+    (rec,) = _pending(sr)
+    assert rec["origin"] == "edit" and rec["proposed_goal"] == goal
+
+
+def test_changes_arriving_together_are_one_question():
+    sr, _, asked, run = make_llm(
+        lambda r, g, rep: {"goal": None, "constraints": None, "text": ""}
+    )
+    sr.on_applied("awcd/euclid", 5, [_added("o43", "cone")])
+    sr.on_applied("awcd/hilbert", 6, [_added("o44", "cone", (31.0, 3.0))])
+    run()
+    assert len(asked) == 1 and "O43" in asked[0][2] and "O44" in asked[0][2]
+    (rec,) = _pending(sr)
+    assert "O43" in rec["reason"] and "O44" in rec["reason"]
+
+
+def test_no_llm_answer_falls_back_to_the_rules():
+    sr, _, _, run = make_llm(lambda r, g, rep: None)
+    sr.on_applied(
+        "awcd/euclid",
+        5,
+        [{"kind": REMOVED, "symbol": "O20", "label": "cone", "old": [7.4, 0.0, 0.0]}],
+    )
+    run()
+    (rec,) = _pending(sr)
+    assert "O20" in rec["reason"] and not rec["llm"]
+
+
+def test_a_goal_changed_before_the_llm_answers_is_not_rechecked():
+    sr, _, asked, run = make_llm(lambda r, g, rep: pytest.fail("asked the LLM"))
+    sr.on_applied("awcd/euclid", 5, [_added("o43", "cone")])
+    sr.active_goals()["hamilton"]["pddl"] = "(visited-object o5)"
+    run()
+    assert asked == [] and _pending(sr) == []
+
+
+def test_without_an_llm_the_rules_decide_at_once():
+    sr, _, asked, run = make_llm(
+        lambda r, g, rep: pytest.fail("asked"), recheck_on=lambda: False
+    )
+    sr.on_applied(
+        "awcd/euclid",
+        5,
+        [{"kind": REMOVED, "symbol": "O20", "label": "cone", "old": [7.4, 0.0, 0.0]}],
+    )
+    assert len(_pending(sr)) == 1 and asked == []
+
+
+def test_confirming_keeps_the_operators_words_with_the_goal():
+    sent = []
+    goals = {"hamilton": {"pddl": CONES, "constraints": [], "engine": None, "route": "auto",
+                          "request": "Visit all the cones"}}  # fmt: skip
+    sr = SceneRepair(None, send=lambda *a, **k: sent.append((a, k)) or {"ok": True},
+                     active_goals=lambda: goals, class_of=lambda s: (MAP.get(sym_key(s)) or (None,))[0],
+                     recheck=lambda r, g, rep: {"goal": None, "constraints": None, "text": ""},
+                     run_later=lambda d, fn: fn())  # fmt: skip
+    sr.on_applied("awcd/euclid", 5, [_added("o43", "cone")])
+    (rec,) = _pending(sr)
+    sr.confirm(rec["id"], "original")
+    assert sent[-1][1] == {"request": "Visit all the cones"}

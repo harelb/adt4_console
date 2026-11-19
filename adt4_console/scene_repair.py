@@ -275,8 +275,19 @@ class SceneRepair:
     def __init__(self, hub=None, *, send=None, resume=None, active_goals=None, plan_of=None,
                  class_of=None, position_of=None, robot_xy=None, invalidate=None,
                  map_changed=None, clock=time.time, max_changes: int = 100, max_recs: int = 50,
-                 planner_wait_s: float = 10.0):  # fmt: skip
+                 planner_wait_s: float = 10.0, recheck=None, recheck_on=None,
+                 recheck_settle_s: float = 3.0, run_later=None):  # fmt: skip
         self.hub = hub
+        # (robot, goal record, report text) -> {"goal", "constraints", "text"} | None:
+        # the chat's LLM redoes the operator's request on the changed map (see
+        # _run_recheck). None: the rules alone decide, as before.
+        self.recheck = recheck
+        # () -> bool: an LLM is configured now (without one the rules decide at once)
+        self.recheck_on = recheck_on or (lambda: True)
+        self.recheck_settle_s = recheck_settle_s
+        # (delay_s, fn) -> None: runs fn later on another thread (tests run it now)
+        self.run_later = run_later or _timer
+        self._rechecks: dict[str, dict] = {}
         self.send = send  # (robot, pddl, constraints, engine) -> result dict
         self.resume = resume  # (robot) -> result dict
         self.active_goals = active_goals or (lambda: {})  # () -> {robot: goal record}
@@ -447,9 +458,116 @@ class SceneRepair:
                 findings = [(f"map edited ({batch['source']}): {what}", None, "high")]
             else:
                 findings = self._related(robot, goal, plan_state, batch["changes"])
+            if self.recheck is not None and self._recheck_now():
+                added = self._added_relevant(goal, batch["changes"])
+                if origin == "edit" or findings or added:
+                    self._queue_recheck(robot, goal, batch, findings, added)
+                continue
             if findings:
                 made.append(self._recommend(robot, goal, batch, findings))
         return made
+
+    # ------------------------------------------------------------ LLM re-check
+    def _recheck_now(self) -> bool:
+        try:
+            return bool(self.recheck_on())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _added_relevant(self, goal: dict, changes: list[dict]) -> list[dict]:
+        """Added objects of a class the goal is about: the class of an object the
+        goal names, or a class the operator's request names ("all the cones")."""
+        added = [c for c in changes if c["kind"] == "added" and c.get("symbol")]
+        if not added:
+            return []
+        classes = set()
+        for s in goal_symbols(goal.get("pddl") or ""):
+            if s.startswith("o"):
+                try:
+                    cls = self.class_of(s)
+                except Exception:  # noqa: BLE001
+                    cls = None
+                if cls:
+                    classes.add(str(cls).strip().lower())
+        words = set(re.findall(r"[a-z]+", str(goal.get("request") or "").lower()))
+        words |= {w[:-1] for w in words if w.endswith("s")}
+        return [
+            c
+            for c in added
+            if (lab := str(c.get("label") or "").strip().lower())
+            and (lab in classes or lab in words)
+        ]
+
+    def _queue_recheck(self, robot, goal, batch, findings, added) -> None:
+        """Changes that may matter to the robot's goal: collect them for a few
+        seconds (several objects found at once are one question), then ask the
+        LLM once."""
+        with self._lock:
+            q = self._rechecks.get(robot)
+            if q is not None and q["goal"]["pddl"] != goal["pddl"]:
+                q = None  # a new goal since: start over
+            start = q is None
+            if start:
+                q = self._rechecks[robot] = {"goal": dict(goal), "batches": [],
+                                             "findings": [], "added": []}  # fmt: skip
+            q["batches"].append(batch)
+            q["findings"].extend(findings)
+            q["added"].extend(added)
+        self._event("recheck", f"{robot}: checking the goal against the changed map")
+        if start:
+            self.run_later(self.recheck_settle_s, lambda: self._run_recheck(robot))
+
+    def _run_recheck(self, robot) -> dict | None:
+        with self._lock:
+            q = self._rechecks.pop(robot, None)
+        if q is None:
+            return None
+        goal = q["goal"]
+        try:
+            now = (self.active_goals() or {}).get(robot) or {}
+        except Exception:  # noqa: BLE001
+            now = {}
+        if now.get("pddl") != goal["pddl"]:
+            return None  # the robot has another goal now: nothing to recheck
+        batch = _merge_batches(q["batches"])
+        report = recheck_report(robot, goal, batch["changes"], q["findings"])
+        try:
+            res = self.recheck(robot, goal, report)
+        except Exception:  # noqa: BLE001
+            log.exception("LLM recheck of %s", robot)
+            res = None
+        if res is None:
+            # no LLM answer: the rules decide, as without the re-check
+            findings = q["findings"] or [
+                (f"new {c['label']} {c['symbol'].upper()} added", None, "normal") for c in q["added"]
+            ]  # fmt: skip
+            rec = self._recommend(robot, goal, batch, findings) if findings else None
+            self._publish()
+            return rec
+        text = " ".join(str(res.get("text") or "").split())
+        proposed = " ".join(str(res.get("goal") or "").split())
+        same = not proposed or _same_goal(proposed, goal["pddl"])
+        if not same:
+            rec = self._recommend(
+                robot, goal, batch, [(text or "the goal changes with the map", None, "high")],
+                proposed=proposed, proposed_constraints=res.get("constraints"),
+            )  # fmt: skip
+        elif q["added"]:
+            news = ", ".join(
+                sorted({f"{c['label']} {c['symbol'].upper()}" for c in q["added"]})
+            )
+            why = f"new {news} relevant to the goal; the goal stays the same" + (
+                f" ({text})" if text else ""
+            )
+            rec = self._recommend(robot, goal, batch, [(why, None, "normal")])
+        else:
+            rec = None
+            self._event(
+                "recheck",
+                f"{robot}: {text or 'the goal is unchanged; no replan needed'}",
+            )
+        self._publish()
+        return rec
 
     def _related(self, robot, goal, plan_state, changes) -> list[tuple]:
         """[(reason, rewrite (old, new) | None, priority)] for the changes that
@@ -566,7 +684,8 @@ class SceneRepair:
                             (g, c["symbol"]), "high"))  # fmt: skip
         return out
 
-    def _recommend(self, robot, goal, batch, findings) -> dict:
+    def _recommend(self, robot, goal, batch, findings, proposed=None,
+                   proposed_constraints=None) -> dict:  # fmt: skip
         rank = {"low": 0, "normal": 1, "high": 2}
         with self._lock:
             prev = next((r for r in reversed(self._recs.values())
@@ -581,9 +700,13 @@ class SceneRepair:
                     rewrites[sym_key(rw[0])] = sym_key(rw[1])
             changes.extend({**c, "source": batch["source"], "map_version": batch["map_version"]}
                            for c in batch["changes"])  # fmt: skip
-            proposed = goal["pddl"]
-            for old, new in rewrites.items():
-                proposed = rewrite_goal(proposed, old, new)
+            llm = proposed is not None
+            if llm:
+                rewrites = {}
+            else:
+                proposed = goal["pddl"]
+                for old, new in rewrites.items():
+                    proposed = rewrite_goal(proposed, old, new)
             prio = max((p for _r, _w, p in findings), key=rank.get)
             if prev is not None and prev["goal"]["pddl"] == goal["pddl"]:
                 prio = max(prio, prev["priority"], key=rank.get)
@@ -594,6 +717,7 @@ class SceneRepair:
                    "reasons": reasons, "priority": prio, "changes": changes[-30:],
                    "goal": dict(goal), "proposed_goal": proposed,
                    "rewrites": [{"from": k, "to": v} for k, v in rewrites.items()],
+                   "llm": llm, "proposed_constraints": proposed_constraints if llm else None,
                    "status": "pending", "result": None}  # fmt: skip
             self._supersede(robot, rid, "a newer recommendation")
             self._recs[rid] = rec
@@ -639,9 +763,16 @@ class SceneRepair:
             rec["status"] = "confirming"
             goal = rec["goal"]
             pddl = rec["proposed_goal"] if variant == "proposed" else goal["pddl"]
-            constraints = _per_goal_constraints(
-                goal, rec["rewrites"] if variant == "proposed" else []
-            )
+            if (
+                variant == "proposed"
+                and rec.get("llm")
+                and rec.get("proposed_constraints") is not None
+            ):
+                constraints = list(rec["proposed_constraints"]) or None
+            else:
+                constraints = _per_goal_constraints(
+                    goal, rec["rewrites"] if variant == "proposed" else []
+                )
         self._publish()
         versions = [rec.get("map_version")] + [
             c.get("map_version") for c in rec.get("changes") or []
@@ -649,7 +780,9 @@ class SceneRepair:
         versions = [int(v) for v in versions if v is not None]
         waited, fresh = self._wait_for_planner(max(versions) if versions else None)
         try:
-            res = self.send(rec["robot"], pddl, constraints, goal.get("engine"))
+            # the operator's words go with the goal: a later change rechecks against them
+            kw = {"request": goal["request"]} if goal.get("request") else {}
+            res = self.send(rec["robot"], pddl, constraints, goal.get("engine"), **kw)
         except Exception as e:  # noqa: BLE001 — leave it pending: the operator may retry
             with self._lock:
                 rec.update(
@@ -733,3 +866,58 @@ def _plan_done(plan_state) -> bool:
     plan = (plan_state or {}).get("plan") or {}
     n = len(plan.get("actions") or [])
     return n > 0 and _remaining_from(plan_state) >= n
+
+
+def _timer(delay_s, fn) -> None:
+    t = threading.Timer(delay_s, fn)
+    t.daemon = True
+    t.start()
+
+
+def _same_goal(a: str, b: str) -> bool:
+    """The same goal, written in another order or case."""
+
+    def parts(g):
+        g = " ".join(g.lower().split())
+        m = re.match(r"^\(and (.*)\)$", g)
+        body = m.group(1) if m else g
+        out, depth, start = [], 0, 0
+        for i, ch in enumerate(body):
+            if ch == "(":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    out.append(body[start : i + 1])
+        return sorted(out) or [g]
+
+    return parts(a) == parts(b)
+
+
+def _merge_batches(batches: list[dict]) -> dict:
+    last = batches[-1]
+    return {**last, "changes": [c for b in batches for c in b["changes"]],
+            "summary": "; ".join(b["summary"] for b in batches if b.get("summary")) or None}  # fmt: skip
+
+
+def recheck_report(robot: str, goal: dict, changes: list[dict], findings: list) -> str:
+    """The scene change report the LLM is asked to judge."""
+    lines = []
+    for c in changes:
+        pos = c.get("new") or c.get("old")
+        at = f" at ({pos[0]:.1f}, {pos[1]:.1f})" if pos else ""
+        lines.append(
+            f"- {c['kind'].upper()} {str(c.get('symbol') or '').upper()} ({c.get('label') or 'unknown class'}){at}"
+        )
+    notes = [f"- {r}" for r, _w, _p in findings]
+    return "\n".join(
+        [f"Robot: {robot}",
+         f"The operator asked: {goal.get('request')!r}" if goal.get("request") else
+         "The operator's own words for this goal are not known; judge from the goal.",
+         f"Current goal: {goal['pddl']}",
+         f"Current constraints: {goal.get('constraints') or []}",
+         "Changes now in the map:", *lines]
+        + (["Rule-based notes:", *notes] if notes else [])
+    )  # fmt: skip

@@ -201,6 +201,41 @@ CONSOLE_GOAL_NOTES_FD_ONLY = re.sub(
 # A message that starts with this is a scene graph edit request (heracles_agents'
 # plan-repair chat uses the same prefix): the turn offers no goal tool.
 SGET_PREFIX = re.compile(r"\s*sget\s*:", re.I)
+RECHECK_PROMPT = """[Scene change report] This message comes from the console, not from the operator: the map changed while a robot works on a goal. The scene graph already reflects the change (added objects are in the database, removed ones are gone).
+
+{report}
+
+Recheck the operator's request on the updated map:
+1. Is a changed object related to the request? It is if it is an object in the goal, or its class matches what the operator asked for by class ("the nearest cone", "all the cones", "a chair"). An unrelated change needs no action.
+2. If related, redo the request's reasoning on the updated map with run_cypher_query, the way it was first answered:
+   - "the nearest X" or "an X": a new X may now be closer, or the chosen X may be gone. Recompute which X fits best.
+   - "all X" / "every X": a new X must be added to the goal; a removed X is dropped from it.
+   - An object the goal uses was removed: find another that still does what the operator asked (same class, same role). If there is none, say the request can no longer be done.
+3. If the goal that does what the operator asked differs from the current goal, propose it with the goal tool (it is held for the operator to confirm, never sent) and say in one sentence why. Keep the robot assignment and every constraint still active.
+4. If it is the same goal, do not propose anything; answer in one line, e.g. "O99 (chair) added: not related to the request; no change."
+"""
+
+
+def operator_request(message: str, turn=None, limit: int = 3) -> str:
+    """The operator's words behind a goal: this turn's message, after the user
+    messages of the thread before it (the request may have been made earlier and
+    only confirmed now), at most ``limit`` of them."""
+    said = []
+    for it in (getattr(turn, "history", None) or [])[::-1]:
+        if (
+            isinstance(it, dict)
+            and it.get("role") == "user"
+            and isinstance(it.get("text"), str)
+        ):
+            t = it["text"].strip()
+            if t and not t.startswith("[Scene change report]"):
+                said.append(t)
+            if len(said) >= limit - 1:
+                break
+    said = said[::-1] + ([message.strip()] if (message or "").strip() else [])
+    return " / ".join(said[-limit:])[:600]
+
+
 SGET_TURN_NOTE = (
     'THIS MESSAGE STARTS WITH "SGET:": it asks you to EDIT THE SCENE GRAPH, not to move a '
     "robot. Do not treat it as a goal: propose_goal is not available in this turn. Make the "
@@ -627,6 +662,41 @@ class ChatService:
             log.exception("chat failed")
             yield {"type": "error", "text": f"{type(e).__name__}: {e}"}
         yield {"type": "done"}
+
+    def recheck_available(self) -> bool:
+        """An LLM can recheck goals against scene changes (a key, budget left)."""
+        try:
+            return self.llm_client() is not None and self.ledger.remaining() > 0
+        except Exception:  # noqa: BLE001
+            return False
+
+    def recheck(self, robot: str, goal: dict, report: str) -> dict | None:
+        """The LLM redoes the operator's request on the changed map (scene_repair).
+
+        Returns ``{"goal", "constraints", "text"}`` -- ``goal`` None when it
+        proposed nothing (the goal stays) -- or None when no LLM is available or
+        it failed, so the rule-based recommendation is used instead."""
+        if self.llm_client() is None or self.ledger.remaining() <= 0:
+            return None
+        cards, says, errors = [], [], []
+        for ev in self.stream(RECHECK_PROMPT.format(report=report), robot=robot,
+                              engine=goal.get("engine")):  # fmt: skip
+            ty = ev.get("type")
+            if ty == "goal" and ev.get("kind", "pddl") == "pddl":
+                cards.append(ev)
+            elif ty in ("text", "answer", "message") and (ev.get("text") or "").strip():
+                says.append(ev["text"].strip())
+            elif ty == "error":
+                errors.append(str(ev.get("text") or ev))
+        if errors and not cards and not says:
+            log.warning("LLM recheck of %s failed: %s", robot, "; ".join(errors))
+            return None
+        text = " ".join(says[-1].split()) if says else ""
+        if not cards:
+            return {"goal": None, "constraints": None, "text": text}
+        body = cards[-1].get("body") or {}
+        return {"goal": body.get("goal"), "constraints": body.get("constraints"),
+                "text": text}  # fmt: skip
 
     # --------------------------------------------------------------- fallback
     def _fallback(self, message, robot, src):
@@ -1503,7 +1573,12 @@ class ChatService:
             target = (allowed or named or team)[0]
             if target in offline:
                 target = team[0]
+        # the operator's words go with the goal: a later scene change is rechecked
+        # against what they asked for ("all the cones"), not only the symbols chosen
+        request = operator_request(message, turn)
         card = {"type": "goal", "kind": "pddl", "body": body, "robot": target}
+        if request:
+            card["request"] = request  # sent with the goal (POST .../goal/pddl request)
         if is_team_goal(goal, body.get("constraints")):
             card["team"] = team
         if warned:

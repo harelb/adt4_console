@@ -1696,6 +1696,30 @@ Perception rules (symbols compared case-insensitively: `o12` = `O12` = `O(12)`):
   pose or no position), it is still proposed at priority low;
 - (d) a removed / moved object within 1.5 m of the remaining FOLLOW route (normal).
 
+**LLM recheck** (when the chat has an LLM and budget left). A batch the rules above find
+related to a robot's goal -- an edit, a removed / moved goal or route object, or an **added**
+object of a goal object's class or of a class the operator's request names ("all the cones") --
+is not turned into a recommendation at once. It is collected for `recheck_settle_s` (3 s; changes
+arriving together are one question), then the chat's LLM redoes the operator's request on the
+changed map (`ChatService.recheck`, prompt `RECHECK_PROMPT`: "all X" adds a new X and drops a
+removed one; "the nearest X" recomputes; a removed goal object gets a substitute that fits the
+request). Then:
+
+| LLM answer | Recommendation |
+|---|---|
+| a different goal | `llm: true`, `proposed_goal` = the LLM's goal, `proposed_constraints`; **Replan with new goal** / **Replan same goal** / **Dismiss** |
+| the same goal, and an added object relevant to the goal | `llm: false`, **Replan same goal** / **Dismiss** (a new object can change the plan of the same goal) |
+| the same goal, nothing added | none: the planner already replans when its plan needs a changed object; an event `recheck` says so |
+| no answer (no LLM, budget, error) | the rule-based recommendation above |
+
+A robot whose goal changed while the LLM was asked is skipped. Change detection's start / stop
+(§19) is the switch for perception rechecks: a stopped detector reports nothing.
+
+The operator's words behind a chat goal travel with it: the chat's goal card carries `request`
+(this message after up to two earlier user messages of the thread), the UI sends it with the goal
+(`POST /robots/{r}/goal/pddl` `request`), and it is kept in the robot's active goal and re-sent by
+**Replan**.
+
 One pending recommendation per robot. A newer one supersedes it (`status: superseded`,
 `result.by`). While the goal is the same, the new one carries the older one's reasons, changes
 and rewrites forward.

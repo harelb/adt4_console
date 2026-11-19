@@ -44,7 +44,7 @@ export type ChatItem =
   | {type: "user"; text: string; note?: boolean}
   | {type: "text"; text: string}
   | {type: "tool"; name: string; args: unknown; result: unknown}
-  | {type: "goal"; kind: string; body: Record<string, unknown>; robot?: string | null; team?: string[] | null; warning?: string | null; replaces?: boolean; superseded?: boolean; sent?: {tone: SendTone; text: string}; track?: string}
+  | {type: "goal"; kind: string; body: Record<string, unknown>; robot?: string | null; team?: string[] | null; request?: string | null; warning?: string | null; replaces?: boolean; superseded?: boolean; sent?: {tone: SendTone; text: string}; track?: string}
   | {type: "error"; text: string}
   | MissionCardItem
   | CypherWrite
@@ -176,6 +176,9 @@ export function toChatItem(o: Record<string, unknown>): ChatItem | null {
         body: (o.body as Record<string, unknown>) ?? {},
         robot: typeof o.robot === "string" ? o.robot : null,
         team: Array.isArray(o.team) ? o.team.map(String) : null,
+        // the operator's words behind the goal: sent with it, so a later scene change is
+        // rechecked against them (API.md §20)
+        request: typeof o.request === "string" ? o.request : null,
         warning: typeof o.warning === "string" ? o.warning : null,
         replaces: o.replaces === true,
       };
@@ -681,6 +684,8 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
       // always the engine: in a GRSTAPS-X plan repair session goal_manager plans a goal
       // with no engine with GRSTAPS-X, so a Fast Downward goal must say so
       body.engine = q.engine ?? useEngines.getState().engine;
+      const request = q.card?.type === "goal" ? q.card.request : null;
+      if (request) body.request = request;
       const r = await sendGoal(plan.via, "pddl", body);
       result = goalSendMessage(`Sent through ${plan.via}`, r);
       track = r?.track;
@@ -705,7 +710,9 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
     try {
       // a PDDL goal goes to the engine the card shows (GRSTAPS-X: its plugin or goal_manager)
       const engine = it.kind === "pddl" ? ((it.body as {engine?: string}).engine ?? useEngines.getState().engine) : undefined;
-      const r = await sendGoal(robot, it.kind, engine === "grstaps" ? {...it.body, engine} : it.body);
+      const body: Record<string, unknown> = engine === "grstaps" ? {...it.body, engine} : {...it.body};
+      if (it.kind === "pddl" && it.request) body.request = it.request;
+      const r = await sendGoal(robot, it.kind, body);
       const to = it.team ? `Sent once to ${sendLabel(robot, it.team)} through ${robot}` : `Sent to ${robot}`;
       patch(idx, c => ({...(c as typeof it), sent: goalSendMessage(to, r), track: r?.track ?? (c as typeof it).track}));
     } catch (e) {
