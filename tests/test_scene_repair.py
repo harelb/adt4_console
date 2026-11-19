@@ -1613,16 +1613,101 @@ def test_a_lost_decision_keeps_the_cards_until_the_planner_takes_it():
     assert _shown(sr) == []
 
 
-def test_the_same_question_republished_after_an_answer_is_asked_again():
-    """rv5 probe: the decision was lost; the planner re-latches the question."""
-    sr, _, _, p = make_held(
-        goals={"euclid": _g(), "hamilton": _g()}, planner=Planner(clears=False)
+def test_the_same_question_republished_after_an_answer_keeps_the_answer():
+    """rv5 probe / final review 1: the decision was lost, or robots left the
+    question: its cards stay shown, answered; only the same answer goes again
+    and a decline's pending resume is not undone by a confirm."""
+    sr, _, resumed, p = make_held(goals={"euclid": _g(), "hamilton": _g(), "gauss": _g()},
+                                  planner=Planner(clears=False))  # fmt: skip
+    sr.on_replan_pending(pending_msg(["euclid", "gauss", "hamilton"]))
+    c = _by_robot(sr)
+    sr.decline(c["hamilton"]["id"], resume=True)
+    sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))  # gauss left: same id
+    assert resumed == ["gauss"]  # gauss left the question: let go
+    shown = {r["robot"]: r for r in _shown(sr)}
+    assert sorted(shown) == ["euclid", "hamilton"] and all(
+        r["result"]["waiting"] for r in shown.values()
     )
+    assert _pending(sr) == []  # not reopened as a fresh question
+    with pytest.raises(NotPending):
+        sr.confirm(c["euclid"]["id"], "original")
+    sr.decline(c["euclid"]["id"], resume=True)  # a retry of the same answer
+    assert p.decisions == [{"id": "q1", "decision": "decline"}] * 2
+
+
+def test_a_confirm_drops_a_pending_resume_of_its_question():
+    sr, _, resumed, _ = make_held(planner=Planner(clears=False))
+    sr.on_replan_pending(pending_msg(["hamilton"]))
+    sr._to_resume.append({"id": "q1", "rec": {"result": {}}, "robots": ["hamilton"]})
+    sr._held_done.clear()
+    sr.confirm(_pending(sr)[0]["id"], "original")
+    sr.on_replan_pending("")
+    assert resumed == []
+
+
+def test_another_card_never_resumes_a_robot_the_planner_still_holds():
+    sr, _, resumed, _ = make_held(goals={"euclid": _g(), "hamilton": _g()}, robot_at=(0.0, 0.0),
+                                  planner=Planner(clears=False))  # fmt: skip
+    sr.on_applied(
+        "awcd/hamilton", 7, [added("o99", "cone", 3.0, 0.0)]
+    )  # own cards for both
     sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))
-    sr.decline(_by_robot(sr)["hamilton"]["id"], resume=False)
-    sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))
-    assert sorted(_by_robot(sr)) == ["euclid", "hamilton"]
-    assert all(r["held"]["id"] == "q1" for r in _pending(sr))
+    c = _by_robot(sr)
+    sr.confirm(c["euclid"]["id"], "original")
+    own = sr.get(c["hamilton"]["id"])
+    assert own["status"] == "pending" and own["held"] is None
+    sr.decline(own["id"], resume=True)
+    assert resumed == []  # still listed by the planner
+    sr.on_replan_pending("")
+    assert resumed == ["hamilton"]
+
+
+def test_answered_cards_waiting_for_the_planner_are_not_evicted():
+    sr, _, _, _ = make_held(
+        goals={"hamilton": _g(), "euclid": _g()},
+        max_recs=2,
+        planner=Planner(clears=False),
+    )
+    sr.on_replan_pending(pending_msg(["hamilton"]))
+    rid = _pending(sr)[0]["id"]
+    sr.decline(rid)
+    for i in range(4):
+        sr.on_applied(
+            "console/op", 30 + i, [added(f"o{80 + i}", "chair", 50.0, 50.0)], local=True
+        )
+    assert sr.get(rid)["result"]["waiting"]
+
+
+def test_the_goal_send_revalidates_the_question_before_sending():
+    sr, sent, _, _ = make_held(robot_at=(0.0, 0.0))
+    sr.on_applied("awcd/hamilton", 7, [added("o99", "cone", 3.0, 0.0)])
+    (rec,) = _pending(sr)
+    take = sr._take
+
+    def take_then_hold(rid, **kw):  # a hold arrives between the two lock sections
+        out = take(rid, **kw)
+        if kw:  # the first section: it arrives right after
+            sr._held = json.loads(pending_msg(["hamilton"])) | {"stopped": []}
+        return out
+
+    sr._take = take_then_hold
+    with pytest.raises(NotPending, match="question changed"):
+        sr.confirm(rec["id"], "proposed")
+    sr._take = take
+    assert sent == [] and sr.get(rec["id"])["status"] == "pending"
+
+
+def test_a_waiting_card_refuses_a_different_action():
+    sr, sent, _, p = make_held(robot_at=(0.0, 0.0), planner=Planner(clears=False))
+    sr.on_applied("awcd/hamilton", 7, [added("o99", "cone", 3.0, 0.0)])
+    sr.on_replan_pending(pending_msg(["hamilton"]))
+    (rec,) = _pending(sr)
+    sr.confirm(rec["id"], "original")  # Replan same goal: confirm
+    with pytest.raises(NotPending, match="only that can be sent again"):
+        sr.confirm(rec["id"], "proposed")  # the rewritten goal: a different action
+    sr.confirm(rec["id"], "original")
+    assert sent == [] and p.decisions == [{"id": "q1", "decision": "confirm"}] * 2
+    assert sr.get(rec["id"])["result"]["variant"] == "original"
 
 
 def test_the_bridge_waits_longer_for_the_planner_to_match(monkeypatch):
@@ -1678,3 +1763,19 @@ def test_a_region_that_is_a_destination_is_not_rechecked():
         sr.on_applied("awcd/hamilton", 5, [_added("o77", "box")])
         run()
         assert len(asked) == n, (pddl, request)
+
+
+def test_every_occurrence_of_a_region_name_counts():
+    regions = {"o77": {"symbol": "R1", "name": "basecamp"}}
+    goal = {
+        "hamilton": _g(
+            "(visited-place p3)",
+            request="bring cones to basecamp, then search basecamp",
+            t=1.0,
+        )
+    }
+    sr, _, asked, run = make_llm(lambda r, g, rep: NO_CHANGE, goals=goal,
+                                 region_of=lambda s, xy: regions.get(sym_key(s)))  # fmt: skip
+    sr.on_applied("awcd/hamilton", 5, [_added("o77", "box")])
+    run()
+    assert len(asked) == 1

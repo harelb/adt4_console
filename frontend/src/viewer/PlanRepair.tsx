@@ -233,6 +233,7 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
   const newSyms = rec.rewrites.map(w => w.to.toUpperCase()).join(", ");
   const proposedLabel = rec.llm ? "Replan with new goal" : `Replan with ${newSyms}`;
   const waiting = !!rec.result?.waiting;
+  // a waiting card can only send its answer again
   const disabled = !!busy || (rec.status !== "pending" && !waiting);
   return (
     <div className={`scene-rec prio-${rec.priority}`} role="alert" aria-label={`Replan recommendation for ${rec.robot}`}>
@@ -277,14 +278,14 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
       </div>
       <div className="row gap-sm wrap">
         {rewritten && (
-          <button className="btn btn-sm btn-primary" disabled={disabled} onClick={() => act("proposed", `${base}/confirm`, {variant: "proposed", held_id: heldId})}>
+          <button className="btn btn-sm btn-primary" disabled={disabled || waiting} onClick={() => act("proposed", `${base}/confirm`, {variant: "proposed", held_id: heldId})}>
             {proposedLabel}
           </button>
         )}
-        <button className={`btn btn-sm${rewritten ? "" : " btn-primary"}`} disabled={disabled} onClick={() => act("original", `${base}/confirm`, {variant: "original", held_id: heldId})}>
+        <button className={`btn btn-sm${rewritten ? "" : " btn-primary"}`} disabled={disabled || (waiting && rec.result?.planner !== "confirm")} onClick={() => act("original", `${base}/confirm`, {variant: "original", held_id: heldId})}>
           Replan same goal
         </button>
-        <button className="btn btn-sm" disabled={disabled} onClick={() => act("decline", `${base}/decline`, {resume, held_id: heldId})}>
+        <button className="btn btn-sm" disabled={disabled || (waiting && rec.result?.planner !== "decline")} onClick={() => act("decline", `${base}/decline`, {resume, held_id: heldId})}>
           Dismiss
         </button>
         <label className="small muted row gap-sm" title="goal_manager may have paused the robot for this change">

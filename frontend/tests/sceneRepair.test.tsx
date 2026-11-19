@@ -243,9 +243,21 @@ describe("a replan the planner holds", () => {
     expect(host!.textContent).toContain("Sent decline: waiting for the planner");
     expect(host!.textContent).toContain("gauss stays stopped (no plan to resume) and needs a new goal");
     expect(byText("Dismiss").disabled).toBe(false);
+    expect(byText("Replan same goal").disabled).toBe(true);  // only its own answer again
     click(byText("Dismiss"));
     await flush();
     expect(calls.find(([m, u]) => m === "POST" && u.includes("sr2/decline"))?.[2]).toEqual({resume: true, held_id: "q1"});
+  });
+
+  it("a card waiting after Replan same goal disables the other actions", async () => {
+    const rec = {...REC, status: "confirmed" as const, held: HELD,
+                 result: {ok: true, planner: "confirm", question: "q1", waiting: true, variant: "original"}};
+    stubFetch(state({recommendations: [rec], pending: {}}));
+    render(<SceneRepairPanel robot="hamilton" />);
+    await flush();
+    expect(byText("Replan with O43").disabled).toBe(true);
+    expect(byText("Dismiss").disabled).toBe(true);
+    expect(byText("Replan same goal").disabled).toBe(false);
   });
 
   it("says the answer applies to every held robot", async () => {

@@ -478,11 +478,8 @@ class SceneRepair:
             if not robots:
                 log.warning("replan_pending %s names no robot", held["id"])
         with self._lock:
-            if held is not None and self._held_done.pop(held["id"], None):
-                # the planner still asks after our answer (it was lost): ask again
-                log.warning(
-                    "replan question %s republished after it was answered", held["id"]
-                )
+            # an answered id again (robots left it, or our answer was lost): its
+            # cards stay answered and waiting; only the same answer can be re-sent
             self._held = held
         self._resume_released()
         self._publish()
@@ -708,8 +705,19 @@ class SceneRepair:
                 sym_key(reg.get("symbol") or ""),
                 _words(reg.get("name") or ""),
             )
-            at = f" {words} ".find(f" {name} ") if len(name) > 2 else -1
-            if (sym and sym in regions) or (at >= 0 and _in_region(words, at)):
+            hits = (
+                [
+                    m.start()
+                    for m in re.finditer(
+                        rf"(?<=\s){re.escape(name)}(?=\s)", f" {words} "
+                    )
+                ]
+                if len(name) > 2
+                else []
+            )
+            if (sym and sym in regions) or any(
+                _in_region(words, at - 1) for at in hits
+            ):
                 out.append(c)
         return out
 
@@ -1027,7 +1035,8 @@ class SceneRepair:
                 # the oldest card, but never this one or one that asks the held
                 # question (those may exceed the limit)
                 old = next((k for k, r in self._recs.items() if k != rid
-                            and not (r.get("held") and r["status"] in ("pending", "confirming"))), None)  # fmt: skip
+                            and not (r.get("held") and r["status"] in ("pending", "confirming"))
+                            and not (r.get("result") or {}).get("waiting")), None)  # fmt: skip
                 if old is None:
                     break
                 del self._recs[old]
@@ -1088,7 +1097,11 @@ class SceneRepair:
                 and self.decide is not None
                 and (variant == "original" or _same_request(rec))
             )
-        if planner or (rec.get("result") or {}).get("waiting"):
+            if (rec.get("result") or {}).get("waiting") and not planner:
+                raise NotPending(f"recommendation {rid} was answered "
+                                 f"{rec['result'].get('planner')}; only that can be sent again")  # fmt: skip
+            was = (rec.get("held") or {}).get("id")
+        if planner:
             return self._answer_held(rid, "confirm", variant=variant, held_id=held_id)
         if self.send is None:
             raise RuntimeError("no goal sender (ROS unavailable)")
@@ -1097,7 +1110,13 @@ class SceneRepair:
                 f"the console does not know {rec['robot']}'s goal: nothing to send"
             )
         with self._lock:
+            self._sync_held()
             rec = self._take(rid)
+            self._check_held_id(rec, held_id)
+            if (rec.get("held") or {}).get("id") != was:  # held or released meanwhile
+                raise NotPending(
+                    f"recommendation {rid}: the planner's question changed; look at the card again"
+                )
             rec["status"] = "confirming"
             goal = rec["goal"]
             pddl = rec["proposed_goal"] if variant == "proposed" else goal["pddl"]
@@ -1151,6 +1170,15 @@ class SceneRepair:
             if not held:
                 rec.update(status="declined", t_done=self.clock(),
                            result={"resume": bool(resume)})  # fmt: skip
+            h = self._held
+            if not held and resume and h is not None and rec["robot"] in h["robots"]:
+                # the planner still holds it (another card answered for it): resume
+                # once it lets go, as a held decline does
+                rec["result"]["resumed"] = {}
+                self._to_resume.append(
+                    {"id": h["id"], "rec": rec, "robots": [rec["robot"]]}
+                )
+                resume = False
         if held:
             return self._answer_held(rid, "decline", resume=resume, held_id=held_id)
         if resume:
@@ -1218,6 +1246,8 @@ class SceneRepair:
         done = "confirmed" if decision == "confirm" else "declined"
         robots = list(q["robots"])
         with self._lock:
+            if decision == "confirm":  # the planner replans them: nothing to resume
+                self._to_resume = [w for w in self._to_resume if w["id"] != q["id"]]
             self._held_done[q["id"]] = decision
             self._deciding.discard(q["id"])
             while len(self._held_done) > 20:

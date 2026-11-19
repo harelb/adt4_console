@@ -1781,9 +1781,12 @@ them. On a held card:
   (ROS down, or no subscriber matched) the card stays pending with `result.error` and the route
   answers 502.
 - An answered card stays shown with `result.waiting: true` until the planner publishes `""`, a
-  new id or a list without its robot; the same answer can be sent again from it (a different
-  one is a 409). The decision waits up to 3 s for the planner's subscription. When the planner
-  republishes an answered id (the decision was lost), its robots are asked again. A declined
+  new id or a list without its robot; only the same answer can be sent again from it (any other
+  action is a 409, also after the planner republishes that id: robots left it, or the answer was
+  lost). A confirm drops a pending resume of that question. The decision waits up to 3 s for the
+  planner's subscription. Another card's Dismiss with resume for a robot the planner still lists
+  resumes it only once the planner lets it go. Answered waiting cards are exempt from the
+  history limit too. A declined
   Husky gets `result.note` and an event `replan_declined`: it stays stopped and needs a new goal.
 - The UI sends `held_id`, the question id the card showed (`""` none), with confirm and decline;
   a different question now (or none) is a 409, as is a second answer to one question (in flight
