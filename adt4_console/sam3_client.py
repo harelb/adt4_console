@@ -174,6 +174,26 @@ def rank(
     return _post(base_url, "/rank", payload, timeout_s)
 
 
+def segment(
+    jpeg: bytes, prompt: str, base_url: str, conf: float | None = None,
+    max_detections: int = 10, timeout_s: float = 60.0,
+) -> dict:  # fmt: skip
+    """SAM3 on one uploaded image (openset_query ``POST /segment``):
+    ``{detections: [{label, score, box_xyxy, center_px, area_px, mask_rle}],
+    width, height, overlay_jpeg_b64}``."""
+    import base64
+
+    payload = {
+        "image_b64": base64.b64encode(jpeg).decode(),
+        "prompt": prompt,
+        "max_detections": int(max_detections),
+        "overlay": True,
+    }
+    if conf is not None:
+        payload["conf"] = float(conf)
+    return _post(base_url, "/segment", payload, timeout_s)
+
+
 def health(base_url: str, timeout_s: float = 3.0) -> dict:
     return _post(base_url, "/health", None, timeout_s)
 

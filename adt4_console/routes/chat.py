@@ -28,6 +28,8 @@ class ChatBody(BaseModel):
     reasoning: str | None = None
     # the chat's planner toggle: the engine of the PDDL goals it proposes
     engine: Literal["fast_downward", "grstaps"] | None = None
+    # images shown to the model with this message: {"quad_capture": "<capture id>"}
+    attach: dict | None = None
 
 
 @router.post("/chat")
@@ -44,6 +46,7 @@ def chat(body: ChatBody, request: Request):
             body.mission_ctx,
             reasoning=body.reasoning,
             engine=body.engine,
+            attach=body.attach,
         ):
             yield json.dumps(item, default=str) + "\n"
 

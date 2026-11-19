@@ -114,11 +114,25 @@ class Settings:
     # "auto": stage edits while a launch is active, apply immediately otherwise;
     # "staged" / "immediate" force one behaviour
     map_edit_mode: str = "auto"
-    # Penn quad (heracles_agents penn_integration_tool): PUSH-bind waypoints, REQ images
-    quad_cmd_uri: str | None = None
-    quad_image_uri: str | None = None
+    # Penn quad (API.md §16): JSON over ZMQ PUSH -> PULL, replies to a PULL we bind
+    quad_cmd_uri: str | None = field(  # quad_api, e.g. tcp://10.10.10.107:6555
+        default_factory=lambda: os.environ.get("ADT4_QUAD_CMD_URI") or None
+    )
+    quad_image_uri: str | None = field(  # camera_geo_api, e.g. tcp://10.10.10.107:5555
+        default_factory=lambda: os.environ.get("ADT4_QUAD_IMAGE_URI") or None
+    )
+    # our address the quad connects back to (None: the local address on the route)
+    quad_reply_host: str | None = field(
+        default_factory=lambda: os.environ.get("ADT4_QUAD_REPLY_HOST") or None
+    )
+    # takeoff point (lat, lon); None: calibrated from the quad's GPS on first contact
+    quad_takeoff: tuple[float, float] | None = None
     quad_utm_origin: tuple[float, float] = (0.0, 0.0)  # UtmToMapInfo.local_utm_origin
     quad_map_offset: tuple[float, float] = (0.0, 0.0)  # UtmToMapInfo.map_offset
+    quad_hfov_deg: float = 70.0  # camera horizontal field of view (projection only)
+    quad_arrive_m: float = 3.0  # arrival radius when no "arrived" event comes
+    quad_goal_timeout_s: float = 600.0
+    quad_poll_s: float = 1.0  # status poll (map glyph, arrival fallback)
 
     @property
     def output_root_path(self) -> pathlib.Path:

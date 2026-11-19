@@ -1337,37 +1337,62 @@ sub-keyframes taken nearest to that end point, ranked by ground distance plus he
 `{frames: [{image, kind, dist_m, yaw_deg, frame_id, anchor}]}`, each `image` =
 `/api/graph/{src}/near/image?…&i=k(&w=)`.
 
-## 16. Penn quadrotor link (`quad/`)
+## 16. Penn quadrotor (`quad/`)
 
-**Waypoints.** This is exactly heracles_agents `tools/penn_integration_tool.py`
-(`origin/feature/penn_tool`):
-* a `PennQuadCommand` dict `{x, y, timestamp: 0, query}`, `send_pyobj`, on a ZMQ **PUSH** socket
-  that **binds** `--quad-cmd-uri` (the quad connects);
-* `x, y` = `utm − local_utm_origin + map_offset` (`--quad-utm-origin`, `--quad-map-offset`, the
-  `UtmToMapInfo` values), with UTM from the map's GPS anchor.
+Penn's two APIs are JSON over ZMQ, **PUSH → PULL**: the console PUSHes a request with
+`reply_to` (a PULL socket it binds once on `--quad-reply-host`, by default the local address on
+the route to the quad) and Penn's server connects back to it. Replies are routed by `req_id`;
+anything that answers no pending request goes to listeners. Wire formats: `quad/protocol.py`.
 
-The console binds at startup. A send waits up to 1 s for the quad to be connected, otherwise it
-reports "not connected".
+* **quad_api** (`--quad-cmd-uri`, e.g. `tcp://10.10.10.107:6555`): `{op: "task", x, y}` → ack
+  `{accepted, state, navigator_state, target, position, destination, distance_m, waiting_arrival}`,
+  then an **`arrived`** event later, pushed to the same `reply_to`; `{op: "status"}` → the same
+  fields. `x, y` = metres east / north of the **takeoff point**.
+* **camera_geo_api** (`--quad-image-uri`, e.g. `tcp://10.10.10.107:5555`): `{op: "capture"}` →
+  `[meta, jpeg]`, meta `{image {stamp_ns, age_s, ...}, gps {latitude, longitude, altitude_msl,
+  position_covariance}, heading_deg (unreliable), rel_alt_m}`.
 
-**Stamped images. This is a MOCK schema.** Penn's image server spec does not exist yet; the
-schema lives only in `quad/protocol.py`.
-* REQ/REP on `--quad-image-uri`, two frames each way (no pickle):
-  * request: `{"op": "get_image", "version": 1, "stamp_ns": null|int}`
-  * reply: `[json header, jpeg]`, header
-    `{version, ok, stamp_ns, frame: "quad", pose {x, y, z (AGL), yaw} in the quad frame, K [fx, fy, cx, cy], width, height, nadir}`
-* Lazy-pirate retries: 3 s timeout, 2 retries.
+**Frame.** Map ↔ quad goes through UTM (the map's geo anchor, looked up on every use, so it
+follows the map loaded now): quad = UTM − takeoff. The takeoff point is `--quad-takeoff LAT LON` (or `$ADT4_QUAD_TAKEOFF="LAT,LON"`; the flag wins),
+else calibrated from GPS: status position and a capture's GPS taken together, takeoff =
+UTM(GPS) − position, rejected while moving (> 1 m), with a stale image (> 1 s) or a poor fix
+(covariance > 25 m²); retried every 10 s until it works (`POST /api/quad/calibrate` forces it).
+A capture's `pose_map` is its GPS in the map frame, `z` = `rel_alt_m`, `yaw` from `heading_deg`
+(flagged unreliable); `K` from the image size and `--quad-hfov` (70°).
+
+**Service** (`quad/service.py`): polls status every second (`quad/state` on the hub: pose, goal,
+link error), watches the active goal (the `arrived` event; fallback: within `quad_arrive_m`;
+`quad_goal_timeout_s` fails it), captures on arrival (and runs SAM3 with the goal's `query`), keeps
+the last 200 captures (JPEGs also under `~/.adt4_console/quad_images/captures/`) and publishes
+`quad_event {kind: sent | arrived | captured | capture_failed | failed | preempted | calibrated}`.
+
+**SAM3** on a capture: openset_query `POST /segment {image_b64, prompt}` (`--sam3-url`). Each
+detection gets `map_xy_approx` (its box centre projected to the ground: approximate, the heading
+is unreliable) and the overlay is kept with the capture.
 
 | Route | |
 |---|---|
-| `GET /api/quad` | `{configured, cmd_uri, image_uri, local_utm_origin, map_offset, last_command, pose}` (`pose` in the map frame, from the newest image) |
-| `POST /api/quad/waypoint {x, y, query}` | map frame |
-| `POST /api/quad/image` | header + `pose_map` + `jpeg` data URI |
+| `GET /api/quad` | `{configured, pose, goal, last_status, last_capture, local_utm_origin, origin_source, anchored, error, ...}` |
+| `POST /api/quad/goal {x, y, capture, query, label, chat}` | fly to a map point; `chat {client, follow_up}`: the chat tab that runs the follow-up |
+| `POST /api/quad/waypoint {x, y}` | fly, no capture |
+| `POST /api/quad/image {query?}` | capture now: the capture + a `jpeg` data URI |
+| `POST /api/quad/calibrate` | takeoff point from GPS now |
+| `GET /api/quad/captures` | newest first |
+| `GET /api/quad/captures/{id}.jpg`, `/overlay.jpg` | the image, the SAM3 overlay |
+| `POST /api/quad/captures/{id}/segment {query, conf?}` | SAM3 on a capture |
 
-**Mock quad** (`python -m adt4_console.quad.mock_server`):
-* connects the PULL and flies kinematically;
-* binds the image REP and renders nadir images from the tile cache, with `--plant LABEL:X,Y`
-  objects painted in;
-* use it for rehearsals and the live-execution test.
+**Chat** (when the quad is configured, never in the mission planner's sim-only chat):
+`propose_quad_goal {target | x, y, capture_on_arrival, query, reason}` streams a `quad_goal` card
+(the operator sends it; auto-send sends it); `quad_capture {query?}`, `segment_quad_image
+{capture_id, query}` and `quad_status`. A capture's image (or its SAM3 overlay) is shown to the
+model with the tool result. When a goal with a capture arrives, the tab that sent it posts a
+follow-up turn with `attach: {quad_capture: id}` (`POST /api/chat`), so the model sees the picture.
+Images go to the model once: the transcript the client keeps has none.
+
+**Mock quad** (`python -m adt4_console.quad.mock_server --anchor <geo_anchor.json> --quad
+tcp://127.0.0.1:6555 --camera tcp://127.0.0.1:5555`): Penn's API, takeoff at `--start`, flies
+kinematically, sends `arrived`, renders nadir images from the tile cache with `--plant LABEL:X,Y`
+objects and GPS from the anchor.
 
 
 

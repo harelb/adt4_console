@@ -2,9 +2,13 @@
 // page: a robot reaching its goal is news wherever the operator is looking.
 import {useEffect} from "react";
 import {dismissGoalEvent, eventLine, listenGoalEvents, useGoalEvents} from "../lib/goalEvents";
+import {listenQuad} from "../lib/quad";
 
 export function GoalEventToasts() {
-  useEffect(() => listenGoalEvents(), []);
+  useEffect(() => {
+    listenGoalEvents();
+    listenQuad(); // Penn's quad: its arrivals are goal events too
+  }, []);
   const toasts = useGoalEvents(s => s.toasts);
   if (!toasts.length) return null;
   return (

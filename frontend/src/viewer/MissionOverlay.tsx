@@ -16,6 +16,7 @@ import {Html, Line} from "@react-three/drei";
 import {agentModelFor} from "../lib/robotModel";
 import {PoseTrack} from "../lib/gait";
 import {moveStart, useMission, type Agent, type Carrying, type Mission, type Preview, type RunState} from "../stores/mission";
+import {useQuad} from "../lib/quad";
 import {dragTo, grab, nearestPlace, release, startLockReason, type PlacePoint, type StartDrag} from "../lib/agentStart";
 import {fmtLonLat, mapToLonLat} from "../lib/geo";
 import {pickRadius, TAP_SLOP_PX} from "../lib/tap";
@@ -254,6 +255,20 @@ function EndMarker({pos, z, color, scale, label}: {pos: number[]; z: number; col
       </Html>
     </group>
   );
+}
+
+const LIVE_QUAD: Agent = {id: "penn quad", kind: "quad", altitude: 20};
+
+/** Penn's quad where it is now (``quad/state``), with its camera footprint. */
+export function LiveQuadGlyph({groundZ}: {groundZ: number}) {
+  const invalidate = useThree(s => s.invalidate);
+  const st = useQuad(s => s.state);
+  const pose = st?.pose;
+  useEffect(() => invalidate(), [pose, invalidate]);
+  if (!st?.configured || !pose || typeof pose.x !== "number") return null;
+  const status = st.goal?.status;
+  const agent = {...LIVE_QUAD, altitude: typeof pose.z === "number" && pose.z > 1 ? pose.z : 20};
+  return <AgentGlyph agent={agent} pos={[pose.x, pose.y]} yaw={pose.yaw ?? 0} color="#ff9f1c" z={groundZ + 0.3} status={status} stamp={null} />;
 }
 
 export function MissionOverlay({groundZ}: {groundZ: number}) {

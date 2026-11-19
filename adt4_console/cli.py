@@ -19,6 +19,21 @@ def _pairs(values, flag) -> dict[str, str]:
     return out
 
 
+def quad_takeoff_env(environ=None) -> tuple[float, float] | None:
+    """``$ADT4_QUAD_TAKEOFF`` as (lat, lon): "LAT,LON" or "LAT LON"; unset/empty -> None."""
+    raw = ((os.environ if environ is None else environ).get("ADT4_QUAD_TAKEOFF") or "").strip()
+    if not raw:
+        return None
+    parts = raw.replace(",", " ").split()
+    try:
+        lat, lon = (float(v) for v in parts)
+    except ValueError:
+        raise SystemExit(f"ADT4_QUAD_TAKEOFF expects 'LAT,LON', got {raw!r}") from None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise SystemExit(f"ADT4_QUAD_TAKEOFF out of range (LAT,LON): {raw!r}")
+    return lat, lon
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
         prog="adt4-console", description="ADT4 web console (base-station server)"
@@ -126,14 +141,21 @@ def parse_args(argv=None):
                    help="satellite tile cache (scripts/geo/fetch_tiles.py)")  # fmt: skip
     g.add_argument("--tiles-live", action="store_true",
                    help="fetch missing satellite tiles from the internet (cached for offline use)")  # fmt: skip
-    g.add_argument(
-        "--quad-cmd-uri",
-        help="PUSH (bound) URI for Penn quad waypoints, e.g. tcp://*:6555",
-    )
-    g.add_argument(
-        "--quad-image-uri",
-        help="Penn quad stamped-image server, e.g. tcp://203.0.113.30:6556",
-    )
+    g.add_argument("--quad-cmd-uri", default=os.environ.get("ADT4_QUAD_CMD_URI"),
+                   help="Penn quad_api (tasking) endpoint, e.g. tcp://10.10.10.107:6555 "
+                   "[$ADT4_QUAD_CMD_URI]")  # fmt: skip
+    g.add_argument("--quad-image-uri", default=os.environ.get("ADT4_QUAD_IMAGE_URI"),
+                   help="Penn camera_geo_api endpoint, e.g. tcp://10.10.10.107:5555 "
+                   "[$ADT4_QUAD_IMAGE_URI]")  # fmt: skip
+    g.add_argument("--quad-reply-host", default=os.environ.get("ADT4_QUAD_REPLY_HOST"),
+                   help="this machine's address the quad connects back to, e.g. 10.10.10.240 "
+                   "(default: the local address on the route to the quad) [$ADT4_QUAD_REPLY_HOST]")  # fmt: skip
+    g.add_argument("--quad-takeoff", type=float, nargs=2, metavar=("LAT", "LON"),
+                   default=quad_takeoff_env(),
+                   help="the quad's takeoff point; goals go to the quad as metres east / north of it "
+                   "(default: calibrated from its GPS) [$ADT4_QUAD_TAKEOFF='LAT,LON']")  # fmt: skip
+    g.add_argument("--quad-hfov", type=float, default=70.0,
+                   help="quad camera horizontal field of view, degrees (detection positions)")  # fmt: skip
     g.add_argument("--quad-utm-origin", type=float, nargs=2, default=(0.0, 0.0), metavar=("E", "N"),
                    help="UtmToMapInfo.local_utm_origin of the quad frame")  # fmt: skip
     g.add_argument("--quad-map-offset", type=float, nargs=2, default=(0.0, 0.0), metavar=("X", "Y"),
@@ -222,6 +244,9 @@ def settings_from_args(args):
         quad_image_uri=args.quad_image_uri,
         quad_utm_origin=tuple(args.quad_utm_origin),
         quad_map_offset=tuple(args.quad_map_offset),
+        quad_reply_host=args.quad_reply_host,
+        quad_takeoff=tuple(args.quad_takeoff) if args.quad_takeoff else None,
+        quad_hfov_deg=args.quad_hfov,
     )
 
 
