@@ -1661,7 +1661,8 @@ for the operator; map edits (`console/...`, `sget/...`), map reloads, cut routes
 retries replan at once, as before. The robots are paused (Spots) or stopped with an empty Path
 (Huskies) when the change is detected. The question is latched on
 `/<planner_ns>/omniplanner_node/replan_pending` (String, TRANSIENT_LOCAL): `""` when none waits,
-else JSON `{id, robots[], reasons[], reason, source, t}`. `id` is stable for one question (a new
+else JSON `{id, robots[], reasons[], reason, source, t, stopped[]}` (`stopped`: the held robots
+it stopped, Huskies; without the key the console asks the fleet topology). `id` is stable for one question (a new
 question gets a new id); `robots` are the robots it still holds (it shrinks as robots get a new
 plan or their plan ends; a further change makes a new id); `reasons` has one entry per held
 change. A message without `id` is ignored. The console answers on
@@ -1716,7 +1717,9 @@ change recheck (`SceneChangeListener` and the SCENE CHANGE REPORTS rules of `rep
 brought into the console's chat. A batch related to a robot's running goal -- an edit, a rule
 finding above, or an **added or moved** object of a goal object's class or of a class the
 operator's request names ("all the cones"), or an added or moved object of **any class inside a
-region** the goal names (`r5`) or the request names ("region 5", "region5", the region's name;
+region** the goal names in a visit / explore / inspect predicate (`(visited-place r5)`) or the
+request names as a place to look in ("in region 5", "objects of the kitchen", "explore the
+kitchen"; not a destination: "retrieve the cones to basecamp";
 the object's Room by the MeshPlace that contains it in the live map, else by the place nearest
 the change's position; names match as words, punctuation ignored) -- is not turned into a recommendation at once. It is
 collected for `recheck_settle_s` (3 s; changes arriving together are one question), then the
@@ -1753,7 +1756,7 @@ status (pending|confirming|confirmed|declined|superseded), result, held}`.
 
 `held` is the planner's held question when it holds this robot (else null):
 `{id, robots[], reasons[], reason, source, t, stopped[]}`, where `stopped` lists the held robots
-on a Husky platform (phoenix). The console keeps the question apart from the cards: **every robot
+that were stopped (Huskies). The console keeps the question apart from the cards: **every robot
 it holds always has a pending card**. One is made with `origin: planner` (the question's reasons,
 priority high) when the robot has none -- also when the console has no recorded goal for it (a
 team goal sent through another robot, a goal sent elsewhere, a console restart: then
@@ -1777,6 +1780,11 @@ them. On a held card:
   answered with it (`result.by`), and their other cards just lose `held`. When publishing fails
   (ROS down, or no subscriber matched) the card stays pending with `result.error` and the route
   answers 502.
+- An answered card stays shown with `result.waiting: true` until the planner publishes `""`, a
+  new id or a list without its robot; the same answer can be sent again from it (a different
+  one is a 409). The decision waits up to 3 s for the planner's subscription. When the planner
+  republishes an answered id (the decision was lost), its robots are asked again. A declined
+  Husky gets `result.note` and an event `replan_declined`: it stays stopped and needs a new goal.
 - The UI sends `held_id`, the question id the card showed (`""` none), with confirm and decline;
   a different question now (or none) is a 409, as is a second answer to one question (in flight
   or done) or a question the planner dropped meanwhile. Held cards are exempt from the history

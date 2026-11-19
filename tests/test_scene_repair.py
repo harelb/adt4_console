@@ -1432,8 +1432,8 @@ def test_a_hold_cleared_before_the_answer_gives_409_not_a_stuck_card():
     (rec,) = _pending(sr)
     take = sr._take
 
-    def take_then_clear(rid):  # the planner clears between the two lock sections
-        out = take(rid)
+    def take_then_clear(rid, **kw):  # the planner clears between the two lock sections
+        out = take(rid, **kw)
         if sr._take is take_then_clear:
             sr._take = take
             sr._held = None
@@ -1582,3 +1582,99 @@ def test_a_region_name_with_punctuation_counts():
     sr.on_applied("awcd/hamilton", 5, [_added("o77", "box")])
     run()
     assert len(asked) == 1
+
+
+# ---- target scenario probes (rv5) ----
+
+
+def _shown(sr):
+    """The cards the panel shows: pending, confirming, or answered and waiting."""
+    return [r for r in sr.state()["recommendations"]
+            if r["status"] in ("pending", "confirming") or (r["result"] or {}).get("waiting")]  # fmt: skip
+
+
+def test_a_lost_decision_keeps_the_cards_until_the_planner_takes_it():
+    sr, _, _, p = make_held(
+        goals={"euclid": _g(), "hamilton": _g()}, planner=Planner(clears=False)
+    )
+    sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))
+    c = _by_robot(sr)
+    sr.decline(c["hamilton"]["id"], resume=False)
+    shown = {r["robot"]: r for r in _shown(sr)}
+    assert sorted(shown) == ["euclid", "hamilton"] and all(
+        r["result"]["waiting"] for r in shown.values()
+    )
+    # retry: the same answer again; a different one is refused
+    sr.decline(c["euclid"]["id"], held_id="q1")
+    assert p.decisions == [{"id": "q1", "decision": "decline"}] * 2
+    with pytest.raises(NotPending, match="answered decline"):
+        sr.confirm(c["euclid"]["id"], "original")
+    sr.on_replan_pending("")  # the planner took it
+    assert _shown(sr) == []
+
+
+def test_the_same_question_republished_after_an_answer_is_asked_again():
+    """rv5 probe: the decision was lost; the planner re-latches the question."""
+    sr, _, _, p = make_held(
+        goals={"euclid": _g(), "hamilton": _g()}, planner=Planner(clears=False)
+    )
+    sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))
+    sr.decline(_by_robot(sr)["hamilton"]["id"], resume=False)
+    sr.on_replan_pending(pending_msg(["euclid", "hamilton"]))
+    assert sorted(_by_robot(sr)) == ["euclid", "hamilton"]
+    assert all(r["held"]["id"] == "q1" for r in _pending(sr))
+
+
+def test_the_bridge_waits_longer_for_the_planner_to_match(monkeypatch):
+    rb = RosBridge.__new__(RosBridge)
+    rb.planner_ns = "omniplanner"
+    got = []
+    monkeypatch.setattr(rb, "publish", lambda topic, t, f, match_timeout=2.0: got.append(match_timeout) or 1,
+                        raising=False)  # fmt: skip
+    rb.decide_replan("q7", "confirm")
+    assert got == [3.0]
+
+
+def test_the_planners_stopped_list_tells_a_husky_from_a_spot():
+    sr, _, _, _ = make_held(
+        goals={}, platforms={"gauss": "spot"}
+    )  # topology says otherwise
+    msg = json.loads(pending_msg(["gauss", "hamilton"]))
+    sr.on_replan_pending(json.dumps({**msg, "stopped": ["gauss"]}))
+    assert _by_robot(sr)["gauss"]["held"]["stopped"] == ["gauss"]
+    sr, _, _, _ = make_held(goals={}, platforms={"gauss": "phoenix"})
+    sr.on_replan_pending(pending_msg(["gauss"]))  # no "stopped": an older planner
+    assert _by_robot(sr)["gauss"]["held"]["stopped"] == ["gauss"]
+
+
+def test_dismiss_for_a_held_husky_leaves_a_note_that_it_needs_a_goal():
+    sr, _, resumed, _ = make_held(goals={}, platforms={"gauss": "phoenix"})
+    sr.on_replan_pending(pending_msg(["gauss"]))
+    out = sr.decline(_by_robot(sr)["gauss"]["id"], resume=True)
+    assert (
+        "gauss stays stopped" in out["result"]["note"]
+        and "new goal" in out["result"]["note"]
+    )
+    assert (
+        any("gauss stays stopped" in e["text"] for e in sr.state()["events"])
+        and resumed == []
+    )
+
+
+def test_a_region_that_is_a_destination_is_not_rechecked():
+    regions = {
+        "o77": {"symbol": "R1", "name": "basecamp"},
+        "o78": {"symbol": "R5", "name": "region five"},
+    }
+    for pddl, request, n in (
+        ("(holding-at o20 r1)", "Retrieve all cones to basecamp", 0),
+        ("(holding-at o20 r1)", "bring the cones into region 1", 0),
+        ("(visited-place r1)", "go", 1),  # a visited region in the goal stays relevant
+        ("(visited-place p3)", "search the objects of basecamp", 1),
+    ):
+        goal = {"hamilton": _g(pddl, request=request, t=1.0)}
+        sr, _, asked, run = make_llm(lambda r, g, rep: NO_CHANGE, goals=goal,
+                                     region_of=lambda s, xy: regions.get(sym_key(s)))  # fmt: skip
+        sr.on_applied("awcd/hamilton", 5, [_added("o77", "box")])
+        run()
+        assert len(asked) == n, (pddl, request)

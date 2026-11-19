@@ -233,6 +233,21 @@ describe("a replan the planner holds", () => {
     expect(calls.find(([m, u]) => m === "POST" && u.includes("sr1/decline"))?.[2]).toEqual({resume: false, held_id: ""});
   });
 
+  it("an answered card stays, waiting for the planner, and can send its answer again", async () => {
+    const rec = heldRec({robot: "gauss", status: "declined", held: {...HELD, robots: ["gauss"], stopped: ["gauss"]},
+                         result: {ok: true, planner: "decline", question: "q1", waiting: true,
+                                  note: "gauss stays stopped (no plan to resume) and needs a new goal"}});
+    const calls = stubFetch(state({recommendations: [rec], pending: {}}));
+    render(<SceneRepairPanel robot="gauss" />);
+    await flush();
+    expect(host!.textContent).toContain("Sent decline: waiting for the planner");
+    expect(host!.textContent).toContain("gauss stays stopped (no plan to resume) and needs a new goal");
+    expect(byText("Dismiss").disabled).toBe(false);
+    click(byText("Dismiss"));
+    await flush();
+    expect(calls.find(([m, u]) => m === "POST" && u.includes("sr2/decline"))?.[2]).toEqual({resume: true, held_id: "q1"});
+  });
+
   it("says the answer applies to every held robot", async () => {
     const held = {...HELD, robots: ["euclid", "gauss", "hamilton"], stopped: ["gauss"]};
     stubFetch(state({recommendations: [heldRec({held})], pending: {hamilton: "sr2"}}));

@@ -1092,7 +1092,7 @@ class RosBridge:
             f"/{self.planner_ns}/omniplanner_node/replan_decision",
             "std_msgs/msg/String",
             {"data": json.dumps({"id": str(question_id), "decision": decision})},
-            match_timeout=0.5,
+            match_timeout=3.0,  # a decision published before discovery matched is lost
         )
 
     def publish_scene_changes(

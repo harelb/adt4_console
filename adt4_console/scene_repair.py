@@ -460,12 +460,16 @@ class SceneRepair:
             ]
             reason = str(held.get("reason") or "").strip() or "; ".join(reasons)
             stopped = []
-            for r in robots:
+            for r in robots if "stopped" not in held else ():  # an older planner
                 try:
                     if str(self.platform_of(r) or "").lower() in STOPPED_PLATFORMS:
                         stopped.append(r)
                 except Exception:  # noqa: BLE001 — unknown platform: a Spot
                     pass
+            if "stopped" in held:  # the planner says which it stopped (Huskies)
+                stopped = [
+                    str(r) for r in held.get("stopped") or [] if str(r) in robots
+                ]
             held = {"id": str(held["id"]), "robots": robots,
                     "reasons": reasons or ([reason] if reason else []),
                     "reason": reason or "the planner holds a replan",
@@ -474,6 +478,11 @@ class SceneRepair:
             if not robots:
                 log.warning("replan_pending %s names no robot", held["id"])
         with self._lock:
+            if held is not None and self._held_done.pop(held["id"], None):
+                # the planner still asks after our answer (it was lost): ask again
+                log.warning(
+                    "replan question %s republished after it was answered", held["id"]
+                )
             self._held = held
         self._resume_released()
         self._publish()
@@ -501,6 +510,12 @@ class SceneRepair:
         robots = set(h["robots"]) if h else set()
         covered = set()
         for r in self._recs.values():
+            res = r.get("result") or {}
+            if res.get("waiting"):  # answered: shown until the planner takes it
+                now = self._held
+                if (now is None or now["id"] != res.get("question") or r["robot"] not in now["robots"]
+                        or now["id"] not in self._held_done):  # fmt: skip
+                    res["waiting"] = False
             if r["status"] not in ("pending", "confirming"):
                 continue
             view = self._held_view(r["robot"])
@@ -670,9 +685,13 @@ class SceneRepair:
     ) -> list[dict]:
         """The changes whose object lies in a region the goal or the request
         names ("visit all objects in region 5")."""
-        regions = {s for s in goal_symbols(goal.get("pddl") or "") if s.startswith("r")}
-        regions |= {f"r{n}" for n in _REGION_WORD.findall(request)}
+        regions = _visited_regions(goal.get("pddl") or "")
         words = _words(request)  # "the kitchen." -> "the kitchen"
+        regions |= {
+            f"r{m.group(1)}"
+            for m in _REGION_WORD.finditer(words)
+            if _in_region(words, m.start())
+        }
         if not regions and not words:
             return []
         out = []
@@ -689,9 +708,8 @@ class SceneRepair:
                 sym_key(reg.get("symbol") or ""),
                 _words(reg.get("name") or ""),
             )
-            if (sym and sym in regions) or (
-                len(name) > 2 and f" {name} " in f" {words} "
-            ):
+            at = f" {words} ".find(f" {name} ") if len(name) > 2 else -1
+            if (sym and sym in regions) or (at >= 0 and _in_region(words, at)):
                 out.append(c)
         return out
 
@@ -1034,10 +1052,14 @@ class SceneRepair:
                 raise KeyError(rid)
             return dict(self._recs[rid])
 
-    def _take(self, rid: str) -> dict:
+    def _take(self, rid: str, waiting: bool = False) -> dict:
+        """``waiting``: also an answered card still waiting for the planner (a
+        retry of its answer)."""
         rec = self._recs.get(rid)
         if rec is None:
             raise KeyError(rid)
+        if waiting and (rec.get("result") or {}).get("waiting"):
+            return rec
         if rec["status"] != "pending":
             raise NotPending(f"recommendation {rid} is {rec['status']}")
         return rec
@@ -1056,7 +1078,7 @@ class SceneRepair:
             raise ValueError(f"unknown variant {variant!r} (proposed / original)")
         with self._lock:
             self._sync_held()
-            rec = self._take(rid)
+            rec = self._take(rid, waiting=True)
             self._check_held_id(rec, held_id)
             # the planner's own replan, which it holds for this answer: the
             # same goal with the same constraints (else the new request is sent
@@ -1066,7 +1088,7 @@ class SceneRepair:
                 and self.decide is not None
                 and (variant == "original" or _same_request(rec))
             )
-        if planner:
+        if planner or (rec.get("result") or {}).get("waiting"):
             return self._answer_held(rid, "confirm", variant=variant, held_id=held_id)
         if self.send is None:
             raise RuntimeError("no goal sender (ROS unavailable)")
@@ -1123,7 +1145,7 @@ class SceneRepair:
         robot it holds that is a Spot (:meth:`_answer_held`)."""
         with self._lock:
             self._sync_held()
-            rec = self._take(rid)
+            rec = self._take(rid, waiting=True)
             self._check_held_id(rec, held_id)
             held = bool(rec.get("held")) and self.decide is not None
             if not held:
@@ -1151,10 +1173,16 @@ class SceneRepair:
         The card is answered only once the decision is published."""
         with self._lock:
             self._sync_held()
-            rec = self._take(rid)
+            rec = self._take(rid, waiting=True)
             self._check_held_id(rec, held_id)
             q = rec.get("held")
-            if q is None or (self._hold() or {}).get("id") != q["id"]:
+            now = self._held
+            if (
+                q is None
+                or now is None
+                or now["id"] != q["id"]
+                or rec["robot"] not in now["robots"]
+            ):
                 raise NotPending(
                     f"recommendation {rid}: the planner no longer holds that question"
                 )
@@ -1162,6 +1190,10 @@ class SceneRepair:
                 raise NotPending(
                     f"the planner's question {q['id']} is being answered on another card"
                 )
+            if self._held_done.get(q["id"], decision) != decision:
+                raise NotPending(f"the planner's question {q['id']} was answered "
+                                 f"{self._held_done[q['id']]}; only that can be sent again")  # fmt: skip
+            before = (rec["status"], rec.get("result"))
             rec["status"] = "confirming"
             self._deciding.add(q["id"])
         self._publish()
@@ -1172,8 +1204,13 @@ class SceneRepair:
         except Exception as e:  # noqa: BLE001 — leave it pending: the operator may retry
             with self._lock:
                 self._deciding.discard(q["id"])
-                rec.update(status="pending", result={"ok": False, "error": str(e), "planner": decision,
-                                                     **({"variant": variant} if variant else {})})  # fmt: skip
+                if (before[1] or {}).get(
+                    "waiting"
+                ):  # a retry: still answered, still waiting
+                    rec.update(status=before[0], result={**before[1], "error": str(e)})
+                else:
+                    rec.update(status="pending", result={"ok": False, "error": str(e), "planner": decision,
+                                                         **({"variant": variant} if variant else {})})  # fmt: skip
             self._publish()
             raise DecisionFailed(
                 f"the {decision} was not sent to the planner: {e}"
@@ -1190,11 +1227,17 @@ class SceneRepair:
                 "planner": decision,
                 "question": q["id"],
                 "robots": robots,
+                "waiting": True,  # until the planner clears or replaces the question
             }
             if variant:
                 result["variant"] = variant
             if decision == "decline":
                 result.update(resume=bool(resume), stopped=list(q["stopped"]))
+                if q["stopped"]:
+                    result["note"] = (f"{', '.join(q['stopped'])} stays stopped (no plan to resume) "
+                                      "and needs a new goal")  # fmt: skip
+                    self._events.append({"t": self.clock(), "kind": "replan_declined",
+                                         "text": f"held replan declined: {result['note']}"})  # fmt: skip
             rec.update(status=done, t_done=self.clock(), result=result)
             for r in self._recs.values():
                 if (
@@ -1206,10 +1249,14 @@ class SceneRepair:
                 if r["origin"] == "planner":
                     r.update(status=done, t_done=self.clock(),
                              result={"ok": True, "planner": decision, "question": q["id"], "by": rid,
-                                     "why": f"answered on {rec['robot']}'s card"})  # fmt: skip
+                                     "waiting": True, "why": f"answered on {rec['robot']}'s card"})  # fmt: skip
                 else:
                     r["held"] = None  # its own finding is still asked
-            if decision == "decline" and resume:
+            if (
+                decision == "decline"
+                and resume
+                and not any(w["id"] == q["id"] for w in self._to_resume)
+            ):
                 # resumed once the planner lets them go (its next replan_pending
                 # no longer holds them): it ignores a decision it does not expect
                 result["resumed"] = {}
@@ -1383,6 +1430,28 @@ def _one_line(x) -> str:
 
 # "region 5", "region5", "region_5" in the operator's request -> r5
 _REGION_WORD = re.compile(r"\bregion[\s_-]*(\d+)\b", re.I)
+
+
+# a region named after these is where things are looked at ("objects in region
+# 5", "explore the kitchen"); after "to" / "into" it is a destination
+_IN_WORDS = {"in", "inside", "within", "of", "around", "across", "throughout", "visit", "explore",
+             "search", "check", "inspect", "scan", "patrol", "survey"}  # fmt: skip
+_PREDICATE = re.compile(r"\(\s*([A-Za-z][\w-]*)([^()]*)\)")
+
+
+def _in_region(words: str, at: int) -> bool:
+    """The region named at ``at`` in ``words`` is one to look in, not a destination."""
+    before = [w for w in words[:at].split() if w not in ("the", "a", "an", "all")]
+    return bool(before) and before[-1] in _IN_WORDS
+
+
+def _visited_regions(pddl: str) -> set[str]:
+    """Region symbols in the goal's visit / explore / inspect predicates."""
+    out = set()
+    for m in _PREDICATE.finditer(pddl or ""):
+        if re.search(r"visit|explor|inspect", m.group(1), re.I):
+            out |= {s for s in goal_symbols(m.group(2)) if s.startswith("r")}
+    return out
 
 
 def _words(s) -> str:

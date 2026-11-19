@@ -185,7 +185,8 @@ export function SceneRepairPanel({robot}: {robot: string | null}) {
   const [st, setSt] = useSceneRepair();
   // an older console without §20 (or a test stub) answers something else
   if (!st || !Array.isArray(st.recommendations) || !Array.isArray(st.changes)) return null;
-  const pending = st.recommendations.filter(r => r.status === "pending" || r.status === "confirming").filter(r => !robot || r.robot === robot);
+  // an answered held card stays while the planner still holds its question (waiting)
+  const pending = st.recommendations.filter(r => r.status === "pending" || r.status === "confirming" || !!r.result?.waiting).filter(r => !robot || r.robot === robot);
   const recent = st.changes.slice(-6).reverse();
   const staged = st.staged && st.staged.count > 0 ? st.staged : null;
   if (!pending.length && !recent.length && !staged) return null;
@@ -231,7 +232,8 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
   const rewritten = (rec.rewrites.length > 0 || !!rec.llm) && rec.proposed_goal !== rec.goal.pddl;
   const newSyms = rec.rewrites.map(w => w.to.toUpperCase()).join(", ");
   const proposedLabel = rec.llm ? "Replan with new goal" : `Replan with ${newSyms}`;
-  const disabled = !!busy || rec.status !== "pending";
+  const waiting = !!rec.result?.waiting;
+  const disabled = !!busy || (rec.status !== "pending" && !waiting);
   return (
     <div className={`scene-rec prio-${rec.priority}`} role="alert" aria-label={`Replan recommendation for ${rec.robot}`}>
       <div className="row gap between">
@@ -240,6 +242,12 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
       </div>
       <p className="small scene-rec-reason">{rec.reason}</p>
       {rec.held && <HeldNote rec={rec} held={rec.held} />}
+      {waiting && (
+        <div className="inline-msg tone-warn small scene-rec-waiting" role="status">
+          Sent {String(rec.result?.planner)}: waiting for the planner to take it (send it again if it does not).
+          {rec.result?.note ? ` ${String(rec.result.note)}.` : ""}
+        </div>
+      )}
       {rec.changes.length > 0 && (
         <ul className="result-list small scene-rec-changes">
           {rec.changes.slice(-5).map((c, i) => (
