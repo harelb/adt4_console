@@ -1720,9 +1720,9 @@ finding above, or an **added or moved** object of a goal object's class or of a 
 operator's request names ("all the cones"), or an added or moved object of **any class inside a
 region** the goal names in a visit / explore / inspect predicate (`(visited-place r5)`) or the
 request names as a place to look in ("in region 5", "explore the kitchen", "search the objects
-of basecamp"; not a destination: "retrieve the cones to basecamp"; the map is asked only when
-the goal names a region or the request has "region N" or one of in / inside / within / around /
-across / throughout / explore / search / patrol / survey / scan;
+of basecamp"; not a destination: "retrieve the cones to basecamp"; objects are looked up only
+when the goal names a region, or the request has "region N" or the name of one of the map's
+regions (cached per map version);
 the object's Room by the MeshPlace that contains it in the live map, else by the place nearest
 the change's position; names match as words, punctuation ignored) -- is not turned into a recommendation at once. It is
 collected for `recheck_settle_s` (3 s; changes arriving together are one question), then the
@@ -1798,7 +1798,10 @@ them. On a held card:
   releases it and leaves every card as it was. Held cards are exempt from the history limit
   (with no question held, the limit works as before). Per-question records keep only the current
   id; a late LLM recheck is suppressed only for the question's robots and changes received
-  before the answer (its change set is then not asked again).
+  before the answer, and only when the card it would make is covered by the question (the same
+  goal and constraints, about its objects; its change set is then not asked again). A send that
+  returns `ok: false` is rolled back like a failed one. "The same request" counts the goal's
+  inherited use-robots, so the LLM keeping the goal answers confirm.
 
 | Method | Path | Body / notes |
 |---|---|---|

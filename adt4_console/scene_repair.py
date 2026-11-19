@@ -287,7 +287,7 @@ class SceneRepair:
                  map_changed=None, clock=time.time, max_changes: int = 100, max_recs: int = 50,
                  planner_wait_s: float = 10.0, recheck=None, recheck_on=None,
                  recheck_settle_s: float = 3.0, run_later=None, decide=None,
-                 region_of=None):  # fmt: skip
+                 region_of=None, regions=None):  # fmt: skip
         self.hub = hub
         # (robot, goal record, report text) -> {"goal", "constraints", "text"} | None:
         # the chat's LLM redoes the operator's request on the changed map (see
@@ -333,6 +333,9 @@ class SceneRepair:
         # the region (Room) holding the object, by its place in the live map or,
         # not linked yet, by its position. None: regions are not checked.
         self.region_of = region_of
+        # () -> [{"symbol": "r5", "name": "kitchen"}]: the map's regions, to see
+        # whether the request names one (cached by the caller)
+        self.regions = regions
         self.position_of = position_of or (lambda sym: None)
         self.robot_xy = robot_xy or (lambda robot: None)
         self.invalidate = invalidate  # () -> None: a batch from ROS changed the map
@@ -680,8 +683,20 @@ class SceneRepair:
             for m in _REGION_WORD.finditer(words)
             if _in_region(words, m.start())
         }
-        if not regions and not _names_region(words):
-            return []  # no region named: no map lookups
+        try:  # the map's regions the request names ("inspect the kitchen")
+            known = list(self.regions() or []) if self.regions is not None else []
+        except Exception:  # noqa: BLE001
+            known = []
+        for reg in known:
+            name = _words(reg.get("name") or "")
+            if len(name) > 2 and any(
+                _in_region(words, m.start() - 1)
+                for m in re.finditer(rf"(?<=\s){re.escape(name)}(?=\s)", f" {words} ")
+            ):
+                regions.add(sym_key(reg.get("symbol") or ""))
+        regions.discard("")
+        if not regions:
+            return []  # no region named: no lookups per object
         out = []
         for c in changes:
             try:
@@ -692,23 +707,8 @@ class SceneRepair:
                 continue
             if isinstance(reg, str):
                 reg = {"symbol": reg}
-            sym, name = (
-                sym_key(reg.get("symbol") or ""),
-                _words(reg.get("name") or ""),
-            )
-            hits = (
-                [
-                    m.start()
-                    for m in re.finditer(
-                        rf"(?<=\s){re.escape(name)}(?=\s)", f" {words} "
-                    )
-                ]
-                if len(name) > 2
-                else []
-            )
-            if (sym and sym in regions) or any(
-                _in_region(words, at - 1) for at in hits
-            ):
+            sym = sym_key(reg.get("symbol") or "")
+            if sym and sym in regions:
                 out.append(c)
         return out
 
@@ -802,15 +802,12 @@ class SceneRepair:
                     None  # the goal changed while the LLM answered: its answer is stale
                 )
             t_seen = max((b.get("t") or 0) for b in q["batches"])
-            if any(t >= t_seen and robot in aq["robots"] and _covered({"changes": batch["changes"]}, aq)
-                   for t, aq in self._answered_qs):  # fmt: skip
-                rec = None  # the operator already answered the planner's question about them
-                self._answered[robot] = (
-                    key  # change detection resends it: not asked again
-                )
-                self._events.append({"t": self.clock(), "kind": "recheck",
-                                     "text": f"{robot}: answered with the planner's question"})  # fmt: skip
-            elif res is None:
+            answered = [
+                aq
+                for t, aq in self._answered_qs
+                if t >= t_seen and robot in aq["robots"]
+            ]
+            if res is None:
                 # no LLM answer: the rules decide, exactly as without the recheck
                 rec = (
                     self._recommend(robot, goal, batch, q["findings"])
@@ -820,6 +817,15 @@ class SceneRepair:
             else:
                 self._answered[robot] = key
                 rec = self._from_answer(robot, goal, batch, q, res)
+            if rec is not None and any(_covered(rec, aq) for aq in answered):
+                # the operator already answered the planner's question about
+                # exactly this (same goal, its objects): not asked again
+                self._recs[rec["id"]].update(status="superseded", t_done=self.clock(),
+                                             result={"by": None, "why": "answered with the planner's question"})  # fmt: skip
+                rec = None
+                self._answered[robot] = key  # change detection resends it
+                self._events.append({"t": self.clock(), "kind": "recheck",
+                                     "text": f"{robot}: answered with the planner's question"})  # fmt: skip
         self._publish()
         return rec
 
@@ -1131,15 +1137,7 @@ class SceneRepair:
                 and rec.get("llm")
                 and rec.get("proposed_constraints") is not None
             ):
-                constraints = list(rec["proposed_constraints"])
-                if not any(_is_use_robots(c) for c in constraints):
-                    # the LLM's goal is still this goal's robots' (never the fleet's)
-                    constraints += [
-                        c
-                        for c in _per_goal_constraints(goal, []) or []
-                        if _is_use_robots(c)
-                    ]
-                constraints = constraints or None
+                constraints = _llm_constraints(rec) or None
             else:
                 constraints = _per_goal_constraints(
                     goal, rec["rewrites"] if variant == "proposed" else []
@@ -1164,6 +1162,14 @@ class SceneRepair:
                 )
             self._publish()
             raise
+        if was and not (res or {}).get("ok", True):  # refused: as a failed send
+            with self._lock:
+                self._deciding.pop(was, None)
+                rec.update(status="pending", result={"ok": False, "error": str((res or {}).get("error") or "the goal was refused"),
+                                                     "variant": variant, "send": res})  # fmt: skip
+                out = dict(rec)
+            self._publish()
+            return out
         with self._lock:
             if was:
                 self._mark_answered(q, rec, rid, "goal")
@@ -1349,12 +1355,8 @@ def _covered(rec: dict, q: dict) -> bool:
     asked = goal_symbols(" ".join(q.get("reasons") or [q.get("reason") or ""]))
     mine = {sym_key(c.get("symbol")) for c in rec.get("changes") or []} - {""}
     mine |= goal_symbols(" ".join(rec.get("reasons") or []))
-    # a rewrite or a proposed goal that names another object asks more
-    mine |= {
-        sym_key(x) for w in rec.get("rewrites") or [] for x in (w["from"], w["to"])
-    }
-    goal = (rec.get("goal") or {}).get("pddl") or ""
-    mine |= goal_symbols(rec.get("proposed_goal") or "") - goal_symbols(goal)
+    if "goal" in rec and not _same_request(rec):
+        return False  # it proposes another goal or constraints: more than the question
     return bool(mine) and mine <= asked
 
 
@@ -1364,8 +1366,24 @@ def _same_request(rec: dict) -> bool:
     goal = rec["goal"]
     if not _same_goal(rec.get("proposed_goal") or "", goal.get("pddl") or ""):
         return False
-    pc = rec.get("proposed_constraints") if rec.get("llm") else None
-    return pc is None or _cons_key(pc) == _cons_key(goal.get("constraints"))
+    if not rec.get("llm") or rec.get("proposed_constraints") is None:
+        return True
+
+    def facts(cs):
+        return sorted(_cons_key([c]) for c in cs or [])
+
+    return facts(_llm_constraints(rec)) == facts(goal.get("constraints"))
+
+
+def _llm_constraints(rec: dict) -> list:
+    """The LLM's constraints as sent: with the goal's use-robots when it gave
+    none (its goal is still this goal's robots', never the fleet's)."""
+    out = list(rec.get("proposed_constraints") or [])
+    if not any(_is_use_robots(c) for c in out):
+        out += [
+            c for c in _per_goal_constraints(rec["goal"], []) or [] if _is_use_robots(c)
+        ]
+    return out
 
 
 def _remaining_from(plan_state) -> int:
@@ -1465,15 +1483,6 @@ _REGION_WORD = re.compile(r"\bregion[\s_-]*(\d+)\b", re.I)
 # 5", "explore the kitchen"); after "to" / "into" it is a destination
 _IN_WORDS = {"in", "inside", "within", "of", "around", "across", "throughout", "visit", "explore",
              "search", "check", "inspect", "scan", "patrol", "survey"}  # fmt: skip
-# a request names a place to look in only with these (no map lookup otherwise)
-_LOOK_IN = {"in", "inside", "within", "around", "across", "throughout", "explore", "search",
-            "patrol", "survey", "scan"}  # fmt: skip
-
-
-def _names_region(words: str) -> bool:
-    return bool(_REGION_WORD.search(words)) or bool(_LOOK_IN & set(words.split()))
-
-
 _PREDICATE = re.compile(r"\(\s*([A-Za-z][\w-]*)([^()]*)\)")
 
 
