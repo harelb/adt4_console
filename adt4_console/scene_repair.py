@@ -462,6 +462,11 @@ class SceneRepair:
                     "source": str(held.get("source") or ""), "t": held.get("t")}  # fmt: skip
             if not robots:
                 log.warning("replan_pending %s names no robot", held["id"])
+        # one line per question: a rig run shows whether the console got it
+        log.info(
+            "replan_pending %s",
+            f"{held['id'][:8]} robots={held['robots']}" if held else '""',
+        )
         with self._lock:
             # an answered id again (our answer was lost): its cards stay answered
             # and waiting; only the same answer can be re-sent. Other ids are gone.

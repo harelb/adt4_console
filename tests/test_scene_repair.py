@@ -2229,3 +2229,42 @@ def test_an_answer_never_reinserts_a_question_the_planner_dropped():
     sr.on_replan_pending(pending_msg(["hamilton"]))
     sr.decline(_pending(sr)[0]["id"])
     assert p.decisions and not sr._held_done and not sr._deciding
+
+
+def test_rig_b_answered_then_a_team_goal_via_euclid_then_a_question_for_hamilton_only():
+    """Rig 7da994a, question 94c4027f: B (o4 removed) is confirmed on euclid's
+    card and cleared; a fresh team goal goes through euclid (recorded under
+    euclid only); hamilton runs it; change detection removes o15 and the
+    planner asks for hamilton alone. Hamilton gets an answerable card."""
+    team = "(and (object-placed-by euclid o4 t2229) (object-placed-by euclid o8 t2229) (object-placed-by hamilton o15 t2229))"
+    goals = {"euclid": _g(team, request="retrieve trash cans", t=1.0)}
+    p = Planner()  # clears the question when it gets the answer
+    sr, sent, _, run = make_llm(lambda r, g, rep: NO_CHANGE, goals=goals, decide=p)
+    p.sr = sr
+    rm = [
+        {"kind": REMOVED, "symbol": s, "label": "trash", "old": [1.0, 1.0, 0.0]}
+        for s in ("O8", "O4", "O15")
+    ]
+    sr.on_applied("awcd/gauss", 5, [rm[1]])
+    sr.on_replan_pending(pending_msg(["euclid", "gauss", "hamilton"], qid="B",
+                                     reasons=("scene changed: o4 removed, and the plan still has to pick it",)))  # fmt: skip
+    run()
+    sr.confirm(_by_robot(sr)["euclid"]["id"], "original", held_id="B")
+    assert _pending(sr) == [] and p.decisions == [{"id": "B", "decision": "confirm"}]
+    goals["euclid"] = _g("(and (object-in-place o15 t2229) (object-in-place o16 t2229))",
+                         request="retrieve all the trash cans and place them at t2229", t=2.0)  # fmt: skip
+    sr.goal_sent("euclid")
+    sr.on_applied("awcd/reconciled", 8, rm)  # change detection resends its whole set
+    sr.on_replan_pending(json.dumps({"id": "94c4027f", "robots": ["hamilton"],
+                                     "reasons": ["scene changed: o15 removed, and the goal says where it must end up"],
+                                     "reason": "scene changed: o15 removed, and the goal says where it must end up",
+                                     "source": "awcd/reconciled", "t": 1.0, "stopped": []}))  # fmt: skip
+    run()
+    card = _by_robot(sr)["hamilton"]
+    assert (
+        card["held"]["id"] == "94c4027f"
+        and card["origin"] == "planner"
+        and card["goal"]["unknown"]
+    )
+    sr.decline(card["id"], held_id="94c4027f")
+    assert p.decisions[-1] == {"id": "94c4027f", "decision": "decline"} and sent == []
