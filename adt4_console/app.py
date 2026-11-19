@@ -419,10 +419,15 @@ def wire_scene_repair(svc) -> None:
         else:
             svc.graph.refresh(t.id, "scene changes")
 
-    def send(robot, pddl, constraints, engine):
+    def send(robot, pddl, constraints, engine, request=None):
         return svc.ros.send_pddl_goal(
-            robot, pddl, constraints=constraints, engine=engine
+            robot, pddl, constraints=constraints, engine=engine, request=request
         )
+
+    def recheck(robot, goal, report):
+        """The chat's LLM redoes the operator's request on the changed map."""
+        chat = getattr(svc, "chat", None)
+        return chat.recheck(robot, goal, report) if chat is not None else None
 
     def resume(robot):
         from .routes import teleop as teleop_routes  # Resume also clears a STOP latch
@@ -434,6 +439,8 @@ def wire_scene_repair(svc) -> None:
         plan_of=lambda robot: svc.ros.plan(robot),
         class_of=lambda sym: (_object_row(svc, sym) or {}).get("c"),
         position_of=position_of, robot_xy=robot_xy, map_changed=map_changed,
+        recheck=recheck,
+        recheck_on=lambda: getattr(svc, "chat", None) is not None and svc.chat.recheck_available(),
     )  # fmt: skip
     svc.scene_repair = sr
     svc.ros.scene_repair = sr

@@ -609,6 +609,10 @@ export interface SceneRecommendation {
   /** the goal with the old target replaced (same as goal.pddl when nothing was rewritten) */
   proposed_goal: string;
   rewrites: {from: string; to: string}[];
+  /** the chat's LLM redid the operator's request on the changed map and proposed this goal */
+  llm?: boolean;
+  /** the constraints sent with the LLM's goal (null: the goal's own) */
+  proposed_constraints?: unknown[] | null;
   status: "pending" | "confirming" | "confirmed" | "declined" | "superseded";
   result: Record<string, unknown> | null;
 }

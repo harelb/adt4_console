@@ -1900,7 +1900,14 @@ class RosBridge:
         }
 
     def send_pddl_goal(
-        self, robot, goal, plugin=None, constraints=None, route="auto", engine=None
+        self,
+        robot,
+        goal,
+        plugin=None,
+        constraints=None,
+        route="auto",
+        engine=None,
+        request=None,
     ) -> dict:
         """:meth:`_send_pddl_goal`, then the goal is the robot's active goal."""
         from .mission.omni_planner import AREA_SYMBOL
@@ -1913,6 +1920,7 @@ class RosBridge:
         self._plan[robot].active_goal = {
             "pddl": goal, "constraints": list(constraints or []), "engine": engine, "route": route,
             "plugin": plugin, "t": time.time(), "via": out.get("via"),
+            "request": (str(request).strip()[:600] or None) if request else None,
         }  # fmt: skip
         if self.scene_repair is not None:
             try:
