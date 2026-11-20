@@ -71,7 +71,8 @@ def awcd_msg_to_dict(msg) -> dict:
 
 
 class AwcdChangeSet:
-    """The last reconciled set plus each robot's own report (for attribution)."""
+    """The last reconciled set plus each robot's own report (attribution, and
+    drawn on request: Layers -> raw robot reports)."""
 
     def __init__(self, clock=time.time):
         self.clock = clock
@@ -101,6 +102,13 @@ class AwcdChangeSet:
                 "removed": len(d.get("removed") or []),
                 "removed_ids": {int(o["id"]) for o in d.get("removed") or []},
                 "added_ids": {int(o["id"]) for o in d.get("added") or []},
+                # the raw report itself, in the robot's frame (Layers: raw reports)
+                "frame_id": d.get("frame_id") or "",
+                "raw": [
+                    {**o, "key": f"{robot}:{kind[0]}{o['id']}", "kind": kind, "short_id": int(o["id"]), "robots": [robot]}
+                    for kind in ("removed", "added")
+                    for o in d.get(kind) or []
+                ],
             }
 
     def set_topic(self, topic: str) -> None:
@@ -168,6 +176,11 @@ class AwcdChangeSet:
                 },
                 "robots": {
                     r: {"t": s["t"], "added": s["added"], "removed": s["removed"]}
+                    for r, s in sorted(self._robots.items())
+                },
+                # each robot's own report on /awcd_changes, in its frame_id
+                "raw": {
+                    r: {"t": s["t"], "frame_id": s["frame_id"], "changes": s["raw"]}
                     for r, s in sorted(self._robots.items())
                 },
             }
