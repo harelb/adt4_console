@@ -208,6 +208,20 @@ named in use-robots gets a new plan: when it is EXECUTING itself, re-send its ow
 are still wanted with the new one. When no robot is free and the operator names none, ask \
 which robot should do it. The whole team's goal is re-sent only when the operator asks for \
 every robot, a new mission, or to replan the team.
+- REPAIRING THE RUNNING GOAL ("plan repair", "include the new ...", after a map change): the \
+goal you propose replaces the running goal of every robot it covers (the robots in its \
+use-robots, or the whole team without one), so a task you leave out is cancelled. Start from \
+the running goal ("Goals sent from this console") and keep every one of its tasks for those \
+robots exactly as it is (same object, same destination place, same robot); add the new \
+objects' tasks; drop a task only when its object was removed, or the operator or the map shows \
+it done (an object already at its destination). Before calling propose_goal, check task by \
+task that nothing still to do is missing; say which tasks you added and dropped. The card \
+warns about running tasks the goal leaves out.
+- OBJECTS AND PLACES IN A GOAL: only objects in the map now: filter retired ones in every \
+query (WHERE coalesce(o.retired, false) = false), and never add objects of a class just \
+because one was removed. Each object moved into a region gets its own destination place: a \
+place inside that region that no other task in the goal uses and no object already sits on \
+(check with run_cypher). Never send two objects to the same place.
 """
 # GRSTAPS-X is optional (not installed, or no GRSTAPS-X planner running): without
 # it the engine note names Fast Downward only
@@ -1387,6 +1401,30 @@ class ChatService:
         return ("; ".join(parts) + ": this goal does not name it, so it is put down where the robot "
                 "stands before the plan starts. To carry it, use object-placed-by (or keep holding in the goal)")  # fmt: skip
 
+    def _repair_warning(self, goal: str, constraints) -> str:
+        """What the card's operator must see before sending a goal that replaces
+        running work (Nov 20): running tasks of the robots it covers that it
+        leaves out (they would be cancelled, unless already done), and objects
+        sent to the same place. Never blocks the card."""
+        try:
+            return repair_warning(goal, constraints, self._running_goals())
+        except Exception:  # noqa: BLE001 — a warning must never block a goal
+            return ""
+
+    def _running_goals(self) -> list[str]:
+        """The PDDL goals the console sent that a robot is executing now."""
+        busy = set(self._busy())
+        active = getattr(self.ros, "active_goals", None)
+        if not busy or active is None:
+            return []
+        out = []
+        for robot, g in (active() or {}).items():
+            pddl = g.get("pddl") or ""
+            words = set(re.findall(r"[a-z0-9_]+", pddl.lower()))
+            if pddl and (robot in busy or busy & words) and pddl not in out:
+                out.append(pddl)
+        return out
+
     def _busy(self) -> dict:
         """{robot: goal summary} of the robots executing a goal now ({} when the
         console does not track goals)."""
@@ -1758,6 +1796,9 @@ class ChatService:
         )
         if scope:
             card["warning"] = "; ".join(x for x in (card.get("warning"), scope) if x)
+        repair = self._repair_warning(goal, body.get("constraints"))
+        if repair:
+            card["warning"] = "; ".join(x for x in (card.get("warning"), repair) if x)
         if replaces:
             card["replaces"] = True
         note = "The operator approves and sends it once, to the whole team."
@@ -2341,6 +2382,50 @@ def fleet_roster(ros, live) -> list[dict]:
 
 
 _ATOM = re.compile(r"\(\s*([a-z][a-z0-9_-]*)((?:\s+[a-z0-9_?-]+)+)\s*\)")
+
+
+_PLACED = re.compile(r"^\((object-placed-by|object-in-place)\s+(.*)\)$")
+
+
+def repair_warning(goal: str, constraints, running: list[str]) -> str:
+    """The card warning for a goal proposed while ``running`` goals execute.
+
+    * Left out: tasks of the running goals for the robots this goal covers (its
+      use-robots; without one, every robot, and the team's robot-free tasks).
+    * Doubled: two objects placed at one place."""
+    atoms = goal_atoms(goal)
+    users = set()
+    for c in constraints or []:
+        if isinstance(c, dict) and c.get("predicate") == "use-robots":
+            users |= {str(s).lower() for s in c.get("symbols") or []}
+    left = []
+    for run in running:
+        for a in sorted(goal_atoms(run) - atoms):
+            parts = a.strip("()").split()
+            # the robot a task names: (x-by <robot> ...), (at-place <robot> ...)
+            by = parts[1] if len(parts) > 1 and (parts[0].endswith("-by") or parts[0].startswith("at-")) else None
+            if users and (by is None or by not in users):
+                continue  # another robot's task, or the team's: not replaced
+            if a not in left:
+                left.append(a)
+    places = {}
+    for a in atoms:
+        m = _PLACED.match(a)
+        if m:
+            args = m.group(2).split()
+            if len(args) >= 2:
+                places.setdefault(args[-1], []).append(args[-2])
+    doubled = {p: objs for p, objs in places.items() if len(set(objs)) > 1}
+    out = []
+    if left:
+        out.append(
+            f"replaces running work: {' '.join(left)} "
+            f"{'is' if len(left) == 1 else 'are'} not in this goal and would be cancelled "
+            "(fine only if already done)"
+        )
+    for p, objs in sorted(doubled.items()):
+        out.append(f"{', '.join(o.upper() for o in sorted(set(objs)))} all go to the same place {p.upper()}")
+    return "; ".join(out)
 
 
 def goal_atoms(goal: str) -> set[str]:
