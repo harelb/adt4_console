@@ -639,6 +639,9 @@ class RosBridge:
         # scene_repair.SceneRepair (the app binds it): fed applied scene changes,
         # omniplanner replan requests / map versions and the goals sent
         self.scene_repair = None
+        # omniplanner's latched replan_pending, last received ("" / JSON / None)
+        self.replan_pending: str | None = None
+        self._replan_pending_lock = threading.Lock()
         # what the planner says it believes (planner_state): goal_manager's
         # robot_plan_states, omniplanner's plan_robots / map_version / map_epoch
         self._planner: dict = {}
@@ -931,10 +934,31 @@ class RosBridge:
             lambda m: self.scene_repair is not None and self.scene_repair.on_replan_request(m.data), 10,
         )  # fmt: skip
         n.create_subscription(
+            import_type("std_msgs/msg/String"), f"/{self.planner_ns}/omniplanner_node/replan_pending",
+            self._on_replan_pending,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL),
+        )  # fmt: skip
+        n.create_subscription(
             import_type("std_msgs/msg/Int64"), f"/{self.planner_ns}/omniplanner_node/map_version",
             self._on_planner_map_version,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL),
         )  # fmt: skip
+
+    def _on_replan_pending(self, msg) -> None:
+        # kept: a latched question that arrives before scene repair is wired is
+        # handed to it then (attach_scene_repair); one lock orders the two
+        with self._replan_pending_lock:
+            self.replan_pending = msg.data
+            if self.scene_repair is not None:
+                self.scene_repair.on_replan_pending(msg.data)
+
+    def attach_scene_repair(self, sr) -> None:
+        """Bind scene repair and hand it the last replan_pending received, so a
+        newer message is never overwritten by the replayed one."""
+        with self._replan_pending_lock:
+            self.scene_repair = sr
+            if self.replan_pending is not None:
+                sr.on_replan_pending(self.replan_pending)
 
     def _on_planner_map_version(self, msg) -> None:
         self._planner_set(map_version=int(msg.data))
@@ -1055,6 +1079,21 @@ class RosBridge:
             self.scene_repair.on_applied(d["source"], d["map_version"], d["changes"])
         except Exception:  # noqa: BLE001
             log.exception("scene changes from %s", d.get("source"))
+
+    def decide_replan(self, question_id: str, decision: str) -> int:
+        """Answer omniplanner's held replan question ``question_id`` (its
+        ``replan_pending`` id): "confirm" or "decline". Returns the matched
+        subscribers (0: the planner did not get it)."""
+        import json
+
+        if decision not in ("confirm", "decline"):
+            raise ValueError(f"unknown decision {decision!r} (confirm / decline)")
+        return self.publish(
+            f"/{self.planner_ns}/omniplanner_node/replan_decision",
+            "std_msgs/msg/String",
+            {"data": json.dumps({"id": str(question_id), "decision": decision})},
+            match_timeout=3.0,  # a decision published before discovery matched is lost
+        )
 
     def publish_scene_changes(
         self, source: str, map_version, changes: list[dict]
@@ -1369,7 +1408,8 @@ class RosBridge:
 
     def _on_manipulation_request(self, robot: str, msg) -> None:
         try:
-            self.manipulation.receive_request(robot, msg)
+            plan_id = (self._plan[robot].plan or {}).get("plan_id") if robot in self._plan else None
+            self.manipulation.receive_request(robot, msg, plan_id=plan_id)
         except Exception:  # noqa: BLE001
             log.exception("manipulation request from %s", robot)
 
@@ -1609,6 +1649,14 @@ class RosBridge:
         # both executor topic spellings may carry the same result: count it once
         if res not in self._plan[robot].results:
             self.goals.on_result(robot, res)
+            status = str(res["status"] or "").upper()
+            manip = getattr(self, "manipulation", None)
+            # only a Pick asks for a grasp: its end (pre-empted / failed) means
+            # the grasp it asked for is no longer waited on; a Gaze or Follow
+            # that fails, or an older plan's late result, leaves a request alone
+            if (manip is not None and status and status != "SUCCESS"
+                    and str(res["action_type"] or "").upper() == "PICK"):  # fmt: skip
+                manip.withdraw(robot, f"pick {status.lower()}", plan_id=res["plan_id"] or None)
         self._plan[robot].results.append(res)
         self._publish_plan(robot)
 
@@ -1916,6 +1964,8 @@ class RosBridge:
             # a drawn area is a polygon only the console has; the robots plan Room nodes
             raise ValueError("a drawn mission area (area1, ...) cannot be sent to the robots: plan it in the "
                              "mission planner (GRSTAPS-X), or name a map region (r...)")  # fmt: skip
+        # judged before sending: "still running" is about the goals before this one
+        request = self._carried_request(goal, request)
         out = self._send_pddl_goal(robot, goal, plugin, constraints, route, engine)
         self._plan[robot].active_goal = {
             "pddl": goal, "constraints": list(constraints or []), "engine": engine, "route": route,
@@ -1929,6 +1979,70 @@ class RosBridge:
                 log.exception("scene_repair.goal_sent")
         self._publish_plan(robot)
         return out
+
+    def _carried_request(self, goal: str, request):
+        """The operator's words for a goal that continues a running one.
+
+        A goal that changes a mission still running keeps that mission's
+        request in front of its own: on 2026-11-19 a repair goal sent from the
+        chat carried only the last chat messages ("one cone / propose plan
+        repairing"), so a bag added later in building facade 2 was rechecked
+        against a request about cones, and "visit all bags at building facade
+        2" was lost. It continues the mission when a robot the new goal
+        involves is still running a goal with a request, and the new goal
+        shares an object with it. A goal after the mission ended, or sharing
+        no object with it, is a new request and keeps only its own words. (A
+        repair confirmed on a plan repair card is sent with the mission's
+        request already, whatever objects it names.)"""
+        new = (str(request).strip() if request else "") or ""
+        text = (goal or "").lower()
+        objs = set(re.findall(r"\bo\d+\b", text))
+        if not objs:
+            return new or None
+        try:
+            busy = set(self.goals.busy_robots())
+        except Exception:  # noqa: BLE001 -- no tracker: nothing is known to run
+            busy = set()
+        items = list(self._plan.items())
+        # a team goal is recorded on the robot it was sent through, which may
+        # have got no work of its own: the newest goal counts while any robot works
+        newest = max(((getattr(st, "active_goal", None) or {}).get("t") or 0 for _r, st in items), default=0)
+        best = None
+        for robot, st in items:
+            ag = getattr(st, "active_goal", None) or {}
+            old = (ag.get("request") or "").strip()
+            if not old:
+                continue
+            if robot not in busy:
+                # the newest goal, recorded on a robot that got no work: it
+                # counts while a robot it names (or, naming none, any robot) works
+                if (ag.get("t") or 0) < newest:
+                    continue
+                words = set(re.findall(r"[a-z0-9_]+", " ".join(
+                    [str(ag.get("pddl") or "")] + [" ".join(map(str, c.get("symbols") or []))
+                                                   for c in ag.get("constraints") or [] if isinstance(c, dict)]).lower()))
+                named = words & set(self._plan)
+                if not (busy & named if named else busy):
+                    continue
+            old_objs = re.findall(r"\bo\d+\b", str(ag.get("pddl") or "").lower())
+            if not objs & set(old_objs):
+                continue
+            if best is None or (ag.get("t") or 0) > (best.get("t") or 0):
+                best = ag
+        if best is None:
+            return new or None
+        old = best["request"].strip()
+        if not new or new in old:
+            return old
+        if old in new:
+            return new  # it already says it all (and adds to it): keep the new words
+        # 600 chars in all: the mission's words first (at least 200 of them), then
+        # the newest words (their end: the operator's latest message)
+        keep_old = min(len(old), max(200, 600 - len(new) - 4))
+        old = old if keep_old == len(old) else old[: keep_old - 3] + "..."
+        room = 600 - len(old) - 4
+        new = new if len(new) <= room else "..." + new[-(room - 3):]
+        return f"{old} // {new}"
 
     def _send_pddl_goal(
         self, robot, goal, plugin=None, constraints=None, route="auto", engine=None

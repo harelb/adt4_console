@@ -8,6 +8,7 @@ import {fmtTime} from "../lib/fuzzy";
 import type {
   ConstraintFact,
   GoalSendResult,
+  HeldReplan,
   RepairAlert,
   RepairStatus,
   SceneChangeBatch,
@@ -184,7 +185,8 @@ export function SceneRepairPanel({robot}: {robot: string | null}) {
   const [st, setSt] = useSceneRepair();
   // an older console without §20 (or a test stub) answers something else
   if (!st || !Array.isArray(st.recommendations) || !Array.isArray(st.changes)) return null;
-  const pending = st.recommendations.filter(r => r.status === "pending" || r.status === "confirming").filter(r => !robot || r.robot === robot);
+  // an answered held card stays while the planner still holds its question (waiting)
+  const pending = st.recommendations.filter(r => r.status === "pending" || r.status === "confirming" || !!r.result?.waiting).filter(r => !robot || r.robot === robot);
   const recent = st.changes.slice(-6).reverse();
   const staged = st.staged && st.staged.count > 0 ? st.staged : null;
   if (!pending.length && !recent.length && !staged) return null;
@@ -209,7 +211,10 @@ export function SceneRepairPanel({robot}: {robot: string | null}) {
 export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onDone?: () => void}) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // ticked while the card is held, unless the operator chose otherwise
   const [resume, setResume] = useState(false);
+  // the question this card shows: an answer is refused (409) when it changed
+  const heldId = rec.held?.id ?? "";
   const base = `api/plan/scene_repair/${encodeURIComponent(rec.id)}`;
   const act = async (label: string, path: string, body: unknown) => {
     setBusy(label);
@@ -226,7 +231,9 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
   const rewritten = (rec.rewrites.length > 0 || !!rec.llm) && rec.proposed_goal !== rec.goal.pddl;
   const newSyms = rec.rewrites.map(w => w.to.toUpperCase()).join(", ");
   const proposedLabel = rec.llm ? "Replan with new goal" : `Replan with ${newSyms}`;
-  const disabled = !!busy || rec.status !== "pending";
+  const waiting = !!rec.result?.waiting;
+  // a waiting card can only send its answer again
+  const disabled = !!busy || (rec.status !== "pending" && !waiting);
   return (
     <div className={`scene-rec prio-${rec.priority}`} role="alert" aria-label={`Replan recommendation for ${rec.robot}`}>
       <div className="row gap between">
@@ -234,6 +241,12 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
         <Badge tone={PRIORITY_TONE[rec.priority] ?? "warn"}>{rec.priority}</Badge>
       </div>
       <p className="small scene-rec-reason">{rec.reason}</p>
+      {rec.held && <HeldNote rec={rec} held={rec.held} />}
+      {waiting && (
+        <div className="inline-msg tone-warn small scene-rec-waiting" role="status">
+          Sent {String(rec.result?.planner)}: waiting for the planner to take it (send it again if it does not).
+        </div>
+      )}
       {rec.changes.length > 0 && (
         <ul className="result-list small scene-rec-changes">
           {rec.changes.slice(-5).map((c, i) => (
@@ -246,7 +259,7 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
       <div className="scene-rec-goals small">
         <div>
           <span className="muted">goal </span>
-          <code className="mono">{rec.goal.pddl}</code>
+          {rec.goal.pddl ? <code className="mono">{rec.goal.pddl}</code> : <span className="muted">the planner's (not sent from this console)</span>}
         </div>
         {rewritten && (
           <div>
@@ -263,21 +276,39 @@ export function RecommendationCard({rec, onDone}: {rec: SceneRecommendation; onD
       </div>
       <div className="row gap-sm wrap">
         {rewritten && (
-          <button className="btn btn-sm btn-primary" disabled={disabled} onClick={() => act("proposed", `${base}/confirm`, {variant: "proposed"})}>
+          <button className="btn btn-sm btn-primary" disabled={disabled || waiting} onClick={() => act("proposed", `${base}/confirm`, {variant: "proposed", held_id: heldId})}>
             {proposedLabel}
           </button>
         )}
-        <button className={`btn btn-sm${rewritten ? "" : " btn-primary"}`} disabled={disabled} onClick={() => act("original", `${base}/confirm`, {variant: "original"})}>
+        <button className={`btn btn-sm${rewritten ? "" : " btn-primary"}`} disabled={disabled || (waiting && rec.result?.planner !== "confirm")} onClick={() => act("original", `${base}/confirm`, {variant: "original", held_id: heldId})}>
           Replan same goal
         </button>
-        <button className="btn btn-sm" disabled={disabled} onClick={() => act("decline", `${base}/decline`, {resume})}>
+        <button className="btn btn-sm" disabled={disabled || (waiting && rec.result?.planner !== "decline")} onClick={() => act("decline", `${base}/decline`, {resume: !rec.held && resume, held_id: heldId})}>
           Dismiss
         </button>
-        <label className="small muted row gap-sm" title="goal_manager may have paused the robot for this change">
-          <input type="checkbox" checked={resume} onChange={e => setResume(e.target.checked)} aria-label="Resume robot on dismiss" /> resume robot
-        </label>
+        {!rec.held && (
+          <label className="small muted row gap-sm" title="goal_manager may have paused the robot for this change">
+            <input type="checkbox" checked={resume} onChange={e => setResume(e.target.checked)} aria-label="Resume robot on dismiss" /> resume robot
+          </label>
+        )}
       </div>
       {err && <div className="inline-msg tone-err small">{err}</div>}
+    </div>
+  );
+}
+
+function HeldNote({rec, held}: {rec: SceneRecommendation; held: HeldReplan}) {
+  const others = held.robots.filter(r => r !== rec.robot);
+  return (
+    <div className="small scene-rec-held" role="status">
+      <p>The robots keep their current plan. Replan applies the repaired plan; Dismiss keeps the current plan.</p>
+      <ul className="scene-rec-held-reasons">
+        {held.reasons.map((r, i) => (
+          <li key={i}>{r}</li>
+        ))}
+      </ul>
+      {others.length === 0 && <p>Held: {rec.robot}.</p>}
+      {others.length > 0 && <p className="scene-rec-held-all">This answer applies to all of {held.robots.join(", ")}: the planner holds them together.</p>}
     </div>
   );
 }

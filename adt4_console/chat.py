@@ -182,8 +182,19 @@ object cannot be both held and placed; no husky, and no robot without an arm. GR
 no or / at-*: those need Fast Downward (engine='fast_downward', the planner toggle); with no or, \
 "each robot picks up a different cone" names a specific robot for each cone. The rules above are for <engine>, <engine_why>; propose PDDL goals with \
 engine='<engine>' unless the operator asks for the other engine.
-- "Goals sent from this console" below lists the last goals: when the operator adds a task, \
-re-send the tasks of the last one that are still wanted.
+- "Goals sent from this console" below lists the last goals: when the operator adds a task \
+and no robot is EXECUTING, re-send the tasks of the last one that are still wanted.
+- ADDING A TASK WHILE ROBOTS EXECUTE (the fleet roster marks them "EXECUTING a goal now"): \
+this replaces the re-send rule above. Propose a goal with only the new task(s), and always \
+with a use-robots constraint naming the robots that do it: the robots the operator names for \
+it; when the operator names none, the online robots that are not EXECUTING and can do the \
+task (an arm for picking up or moving an object). The planner then replans those robots only \
+and leaves the others to their plans. Do not re-send the tasks of robots the goal does not \
+name: a goal that lists them is the whole team's, and the planner may interrupt them. A robot \
+named in use-robots gets a new plan: when it is EXECUTING itself, re-send its own tasks that \
+are still wanted with the new one. When no robot is free and the operator names none, ask \
+which robot should do it. The whole team's goal is re-sent only when the operator asks for \
+every robot, a new mission, or to replan the team.
 """
 # GRSTAPS-X is optional (not installed, or no GRSTAPS-X planner running): without
 # it the engine note names Fast Downward only
@@ -211,10 +222,46 @@ Recheck the operator's request on the updated map:
 2. If related, redo the request's reasoning on the updated map with run_cypher_query, the way it was first answered:
    - "the nearest X" or "an X": a new X may now be closer, or the chosen X may be gone. Recompute which X fits best.
    - "all X" / "every X": a new X must be added to the goal; a removed X is dropped from it.
-   - An object the goal uses was removed: find another that still does what the operator asked (same class, same role). If there is none, say the request can no longer be done.
-3. If the goal that does what the operator asked differs from the current goal, propose it with the goal tool (it is held for the operator to confirm, never sent) and say in one sentence why. Keep the robot assignment and every constraint still active.
-4. If it is the same goal, do not propose anything; answer in one line, e.g. "O99 (chair) added: not related to the request; no change."
+   - An object the goal uses was removed, and the operator asked by description ("the nearest cone", "a cone by the door"): find another that still does what the operator asked (same class, same role). If there is none, say the request can no longer be done.
+   - An object the goal uses was removed, and the operator named that object itself (its symbol, e.g. "O392", or "this cone" after it was shown): never pick another one in its place. Drop its task from the goal and keep the rest; if nothing is left, say the request can no longer be done.
+   - A robot that holds an object (see the report) keeps it: never drop or reassign a task on the object it holds, and keep that task with that robot.
+3. If the goal that does what the operator asked differs from the current goal, propose it with the goal tool (it is held for the operator to confirm, never sent) and say in one sentence why. Start from the current goal and change only what the change requires: add or drop tasks, and keep every other task exactly as it is (the same object, the same destination place, the same robot) and every constraint still active. Never pick new destination places for tasks that already have one: the robots may already have done them, and a new place makes them move those objects again. Never only describe the change ("I will update the goal ..."): an answer without the goal tool keeps the current goal.
+4. If it is the same goal, do not propose anything; answer in one line that ends with "no change", e.g. "O99 (chair) added: not related to the request; no change."
 """
+
+
+RECHECK_NUDGE = """{prompt}
+
+Your answer to this report was: {said!r}
+You did not call the goal tool, so nothing was proposed, and the answer does not end with "no change". If the goal must change, call the goal tool now with the whole new goal. If it stays the same, answer only "no change"."""
+
+
+# A recheck answer that announces a goal change ("O753 must also be brought in",
+# "I will update the goal"): with no goal tool call it is asked again
+_CHANGE_INTENT = re.compile(
+    r"\b(will|must|should|needs? to|has to|have to|to be)\b[^.;:]*?"
+    r"\b(add|added|update|include|included|bring|brought|replace|replaced|drop|dropped)\b",
+    re.IGNORECASE,
+)
+_VERDICT = re.compile(r"(^no change\b|\bno change( (is )?(needed|required|to the goal))?$)")
+
+
+def keeps_goal(text: str) -> bool:
+    """A recheck answer that proposed no goal says the goal stays: its verdict
+    is "no change" (the one-line form RECHECK_PROMPT asks for), at its start or
+    end ("No change to the goal.", "**No change.**", "...; no change needed"),
+    and it announces no change ("should not be added" is none). A phrase
+    elsewhere is not enough ("O752 is not related; O753 must be added ...",
+    "keeping the robots unchanged, O753 ...", "O753 must be added; otherwise no
+    change"): those are asked again."""
+    t = " ".join(re.sub(r"[*_`\"\u201c\u201d]", "", text or "").split()).rstrip(" .!'").lower()
+    if not _VERDICT.search(t):
+        return False
+    return not any(
+        # "does not need to be included": the negation may come just before
+        not re.search(r"\bnot\b|n't\b|\bno need\b", t[max(0, m.start() - 12) : m.end()])
+        for m in _CHANGE_INTENT.finditer(t)
+    )
 
 
 def operator_request(message: str, turn=None, limit: int = 3) -> str:
@@ -686,8 +733,23 @@ class ChatService:
         a goal for other robots), so the rule-based recommendation is used."""
         if not self.recheck_available():
             return None
+        prompt = RECHECK_PROMPT.format(report=report)
+        out = self._recheck_once(robot, goal, prompt)
+        if out is None or out["goal"] is not None or keeps_goal(out["text"]):
+            return out
+        # 2026-11-19: "O753 is outside intersection 2, so it must also be brought
+        # in. I will update the goal ..." and no goal tool call; it read as "the
+        # goal stays". Ask once for the goal itself.
+        log.warning("LLM recheck of %s proposed no goal and did not say \"no change\"; asking again", robot)
+        again = self._recheck_once(robot, goal, RECHECK_NUDGE.format(prompt=prompt, said=out["text"]))
+        if again is not None and (again["goal"] is not None or keeps_goal(again["text"])):
+            return again
+        # still no goal: the operator reviews it (never "the goal stays the same")
+        return {**out, "unsure": True}
+
+    def _recheck_once(self, robot: str, goal: dict, prompt: str) -> dict | None:
         cards, says, errors = [], [], []
-        for ev in self.stream(RECHECK_PROMPT.format(report=report), robot=robot,
+        for ev in self.stream(prompt, robot=robot,
                               engine=goal.get("engine"), recheck=True):  # fmt: skip
             ty = ev.get("type")
             if ty == "goal":
@@ -712,8 +774,13 @@ class ChatService:
             )
             return None
         card = cards[0]
-        for_robot = card.get("robot") in (None, robot) or robot in (
-            card.get("team") or []
+        # a team goal rechecked through one robot may end up with another
+        # robot's tasks only (hamilton's cone was removed: euclid's visit is left)
+        in_goal = set(re.findall(r"[a-z0-9_]+", str(goal.get("pddl") or "").lower()))
+        for_robot = (
+            card.get("robot") in (None, robot)
+            or robot in (card.get("team") or [])
+            or str(card.get("robot") or "").lower() in in_goal
         )
         if not for_robot:
             log.warning(
@@ -1298,6 +1365,10 @@ class ChatService:
         """A roster robot that can be given a task now: connected, or, when the
         console has no link state for it, one it has a pose from (the topology
         also lists robots that are not out at all)."""
+        if row.get("stale_s") is not None:
+            # a dropping link: still out working on its own goal, but it may as
+            # well be shut down -- never offered as a free robot for new work
+            return row["robot"] in self._busy()
         if row["online"] is not None:
             return bool(row["online"])
         try:
@@ -1353,7 +1424,11 @@ class ChatService:
         lines = []
         for r in rows:
             line = f"- {r['robot']}: {r['label']} — {r['can']}"
-            if r["online"] is not None:
+            if r.get("stale_s") is not None:
+                line += (f"; LINK STALE (last heard {r['stale_s']:.0f} s ago): not offline; "
+                         "it keeps its own tasks, but give it no new task unless the operator "
+                         "names it")  # fmt: skip
+            elif r["online"] is not None:
                 line += "; online" if r["online"] else "; offline"
             if holding.get(r["robot"]):
                 # the planner puts a held object down before a goal that does not name it
@@ -1370,14 +1445,22 @@ class ChatService:
             "only say where the robots that have a position are):\n" + "\n".join(lines)
         )
         online = [r["robot"] for r in rows if r["online"] is True]
-        offline = [r["robot"] for r in rows if r["online"] is False]
+        offline = [r["robot"] for r in rows if is_offline(r)]
+        stale = [r["robot"] for r in rows if r.get("stale_s") is not None]
+        if stale:
+            text += (
+                f"\nLink stale (not offline): {', '.join(stale)}. Keep its tasks and keep it in "
+                "goals the operator asks for; never move its tasks to another robot on your own. "
+                "When it matters for the request, tell the operator how long ago it was last "
+                "heard from and ask whether to wait for it or reassign its tasks."
+            )
         if offline:
             # availability facts only; the goal rules themselves come from heracles_agents
             text += (
-                f"\nThe team now (online, connected): {', '.join(online) or 'none'}. "
+                f"\nThe team now (online, or link stale): {', '.join(online + stale) or 'none'}. "
                 f'Offline — do not assign: {", ".join(offline)}. "All robots", "the team", '
-                '"both robots" and "every robot" mean the online robots, and a platform word '
-                '("the spots", "the huskies") the online robots of that platform; never put an '
+                '"both robots" and "every robot" mean these robots, and a platform word '
+                '("the spots", "the huskies") these robots of that platform; never put an '
                 "offline robot in a goal or use-robots unless the operator names it. An offline "
                 "robot is a known robot: say it is offline, never that it is unknown or not in "
                 "the fleet."
@@ -1557,7 +1640,8 @@ class ChatService:
                 "Tell the operator; goto / tsp / language goals still work."
             }
         roster = fleet_roster(self.ros, self.live)
-        offline = {r["robot"] for r in roster if r["online"] is False}
+        offline = {r["robot"] for r in roster if is_offline(r)}
+        stale = [r["robot"] for r in roster if r.get("stale_s") is not None]
         online = [r["robot"] for r in roster if r["online"] is True]
         named = goal_named_robots(goal)
         allowed = use_robots(body.get("constraints"))
@@ -1620,6 +1704,11 @@ class ChatService:
         if warned:
             card["warning"] = (f"{', '.join(warned)} {'is' if len(warned) == 1 else 'are'} offline "
                                "(not connected): its tasks wait until it connects")  # fmt: skip
+        lagging = [r for r in team if r in stale]
+        if lagging:
+            note = (f"{', '.join(lagging)}: link stale (not heard from for a while); its plan "
+                    "may not reach it until the link is back -- check the delivery status")  # fmt: skip
+            card["warning"] = "; ".join(x for x in (card.get("warning"), note) if x)
         put_down = (
             ""
             if self._sim_only(turn)
@@ -2153,13 +2242,27 @@ def operator_named_robots(message: str, robots) -> set[str]:
     }
 
 
+# A robot whose fleetlink link dropped less than this long ago is "link stale",
+# not offline: on 2026-11-19 hamilton's link dropped for 9-20 s at a time while it
+# worked, and the chat called it offline and gave all its tasks to euclid.
+STALE_LINK_S = 120.0
+
+
+def is_offline(row: dict) -> bool:
+    """Not connected and not heard from for :data:`STALE_LINK_S` (or never)."""
+    return row["online"] is False and row.get("stale_s") is None
+
+
 def fleet_roster(ros, live) -> list[dict]:
     """[{robot, platform, label, can, online, arm}] for every robot the console
     knows: the fleet topology's robots plus robots live over fleetlink. A
     Spot is assumed to have its arm (the topology has no arm flag); a live
     camera named hand* confirms it.  ``online``: the fleetlink link is
     connected (fresh); False when it is not, or when fleetlink reports other
-    robots but never this one; None when the console has no link state at all."""
+    robots but never this one; None when the console has no link state at all.
+    ``stale_s``: seconds since the robot was last heard from, when its link is
+    not connected but it was heard from less than :data:`STALE_LINK_S` ago (a
+    dropping link, not a robot that is gone); None otherwise."""
     names: list[str] = []
     fleet = getattr(ros, "fleet", None) if ros is not None else None
     try:
@@ -2189,12 +2292,16 @@ def fleet_roster(ros, live) -> list[dict]:
         if hand:
             label = "Spot (legged, with arm: hand camera live)"
         link = links.get(r)
+        stale = None
         if isinstance(link, dict):
             online = bool(link.get("connected"))
+            age = link.get("staleness_s")
+            if not online and isinstance(age, (int, float)) and age < STALE_LINK_S:
+                stale = float(age)
         else:
             online = False if links else None  # fleetlink is up but never heard of it
         out.append({"robot": r, "platform": platform, "label": label, "can": can,
-                    "online": online, "arm": platform == "spot"})  # fmt: skip
+                    "online": online, "stale_s": stale, "arm": platform == "spot"})  # fmt: skip
     return out
 
 

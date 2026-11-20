@@ -56,7 +56,7 @@ def test_roster_marks_gauss_offline_and_the_team_is_the_online_robots():
     assert rows["gauss"]["online"] is False  # in the topology, never connected
     text = chat()._system(None, "euclid")
     team_line = next(x for x in text.splitlines() if x.startswith("The team now"))
-    assert "online, connected): euclid, hamilton." in team_line
+    assert "online, or link stale): euclid, hamilton." in team_line
     assert (
         "Offline — do not assign: " in team_line
         and "gauss" in team_line.split("do not assign:")[1]
@@ -128,7 +128,7 @@ def test_the_roster_is_the_one_robot_list_and_offline_is_not_unknown():
     assert "even with no Robot node in the database" in head
     team_line = next(x for x in text.splitlines() if x.startswith("The team now"))
     assert (
-        '("the spots", "the huskies") the online robots of that platform' in team_line
+        '("the spots", "the huskies") these robots of that platform' in team_line
     )
     assert "An offline robot is a known robot: say it is offline" in team_line
     assert "never that it is unknown or not in the fleet" in team_line
@@ -373,6 +373,40 @@ def test_the_roster_says_which_robots_are_executing():
     line = {x.split(":")[0]: x for x in text.splitlines() if x.startswith("- ")}
     assert "EXECUTING a goal now" in line["- hamilton"]
     assert "EXECUTING" not in line["- euclid"] and "EXECUTING" not in line["- gauss"]
+
+
+@needs_heracles_agents
+def test_the_prompt_says_how_to_add_a_task_while_robots_execute():
+    """2026-11-18: during a mission the chat never suggested use-robots for an
+    added task. Its rules only said to re-send the last goal's tasks with the
+    new one, which makes the goal the whole team's."""
+    text = executing(chat(Live(ALL_ONLINE)), "hamilton")._system(None, "euclid")
+    for line in (
+        'ADDING A TASK WHILE ROBOTS EXECUTE (the fleet roster marks them "EXECUTING a goal now")',
+        "this replaces the re-send rule above",
+        "Propose a goal with only the new task(s), and always with a use-robots constraint",
+        "the online robots that are not EXECUTING and can do the task",
+        "Do not re-send the tasks of robots the goal does not name",
+        "re-send its own tasks that are still wanted with the new one",
+        "ask which robot should do it",
+        "when the operator adds a task and no robot is EXECUTING, re-send the tasks",
+    ):
+        assert line in " ".join(text.split()), line
+    # the roster line the rule points at is in the same prompt
+    assert "- hamilton:" in text and "EXECUTING a goal now" in text
+
+
+@needs_heracles_agents
+def test_an_added_task_limited_to_the_free_robot_is_proposed_without_a_warning():
+    c = executing(chat(Live(ALL_ONLINE)), "euclid", "hamilton")
+    [card], out = propose(
+        c,
+        "(visited-object o31)",
+        "also go look at O31",
+        constraints=[{"predicate": "use-robots", "symbols": ["gauss"]}],
+    )
+    assert out["proposed"] is True and out["team"] == ["gauss"]
+    assert "warning" not in card and "suggest_to_operator" not in out
 
 
 def test_a_broken_goal_tracker_never_blocks_a_goal():
