@@ -1548,7 +1548,27 @@ class ChatService:
                 "\nGoals sent from this console, latest last (live status):\n"
                 + "\n".join(f"- {x}" for x in recent)
             )
+            done = self._progress_lines()
+            if done:
+                # Nov 20: the chat kept O751 in a repair minutes after euclid placed it
+                text += (
+                    "\nDone since the running goals were sent (the robots' own reports; visits "
+                    "are not reported, so a visit may be done too). An object already put down "
+                    "where its task wants it is done: leave that task out of a repair, never "
+                    "move the object again:\n" + "\n".join(f"- {x}" for x in done)
+                )
         return text
+
+    def _progress_lines(self) -> list[str]:
+        sr = getattr(self.ros, "scene_repair", None)
+        active = getattr(self.ros, "active_goals", None)
+        if sr is None or active is None or not hasattr(sr, "progress_lines"):
+            return []
+        try:
+            ts = [float(g.get("t") or 0) for g in (active() or {}).values()]
+            return sr.progress_lines(min(ts)) if ts else []
+        except Exception:  # noqa: BLE001 — context must never fail a turn
+            return []
 
     def _edit_note(self) -> str:
         """Which edit path this turn has, for the system prompt."""

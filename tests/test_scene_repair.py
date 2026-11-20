@@ -2347,3 +2347,23 @@ def test_the_recheck_has_its_own_model_and_reasoning(monkeypatch):
     assert chat_mod.recheck_reasoning() == "high"
     monkeypatch.setenv("ADT4_RECHECK_REASONING", "bogus")
     assert chat_mod.recheck_reasoning() == "medium"
+
+
+def test_the_recheck_report_lists_what_the_robots_put_down():
+    # Nov 20: euclid placed O751 at 10:35:33; the card and the chat kept moving it
+    goals = {"hamilton": {"pddl": CONES, "constraints": [], "engine": None, "request": "x", "t": 1.0}}
+    reports = []
+    sr, _, _, run = make_llm(lambda r, g, rep: reports.append(rep) or NO_CHANGE, goals=goals)
+    sr.on_applied("executor/euclid", 4, [{"kind": "moved", "symbol": "O21", "label": "",
+                                          "new": [9.0, 1.0, 0.0]}])  # fmt: skip
+    assert sr.progress_lines(0.0) == ["euclid put down O21 at (9.0, 1.0)"]
+    sr.on_applied("sget/chat", 5, [_added("o43", "cone")], local=True)
+    run()
+    assert reports and "euclid put down O21 at (9.0, 1.0)" in reports[-1]
+    assert "drop that task" in reports[-1]
+
+
+def test_reports_before_the_goal_are_not_progress():
+    sr, _, _, _ = make_llm(lambda r, g, rep: NO_CHANGE)
+    sr.on_applied("executor/euclid", 4, [{"kind": "moved", "symbol": "O21", "label": "", "new": [9.0, 1.0, 0.0]}])
+    assert sr.progress_lines(sr.clock() + 10) == []
