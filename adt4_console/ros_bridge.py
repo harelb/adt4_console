@@ -1982,32 +1982,29 @@ class RosBridge:
         object with any active goal is a new request and keeps only its own words.
 
         Only a goal still being worked on is continued: the robot it was sent
-        through still runs a plan, or it is the newest goal sent and some robot
-        still runs a plan (a team goal sent through a robot that got no work).
-        A finished mission's words are never carried into a later goal."""
-        from .scene_repair import _plan_done
-
+        through is busy on a plan (the goal tracker's view: executing, paused,
+        waiting for the lease, or just planned; a Husky's arrival, an empty plan
+        and a failed action end it), or it is the newest goal sent and some
+        robot is busy (a team goal sent through a robot that got no work). A
+        finished mission's words are never carried into a later goal."""
         new = (str(request).strip() if request else "") or ""
         objs = set(re.findall(r"\bo\d+\b", (goal or "").lower()))
         if not objs:
             return new or None
-
-        def running(st) -> bool:
-            plan = (st.plan or {}) if isinstance(st.plan, dict) else {}
-            if not plan.get("actions"):
-                return bool(plan.get("plan_id"))  # a Path: no action reports
-            return not _plan_done({"plan": plan, "results": list(st.results)})
-
-        states = list(self._plan.values())
-        newest = max((st.active_goal or {}).get("t") or 0 for st in states) if states else 0
-        anyone = any(running(st) for st in states)
+        try:
+            busy = set(self.goals.busy_robots())
+        except Exception:  # noqa: BLE001 -- no tracker: every active goal counts
+            busy = None
+        items = list(self._plan.items())
+        newest = max(((st.active_goal or {}).get("t") or 0 for _r, st in items), default=0)
         best = None
-        for st in states:
+        for robot, st in items:
             ag = st.active_goal or {}
             old = (ag.get("request") or "").strip()
             if not old or not objs & set(re.findall(r"\bo\d+\b", str(ag.get("pddl") or "").lower())):
                 continue
-            if not (running(st) or ((ag.get("t") or 0) >= newest and anyone)):
+            live = busy is None or robot in busy or ((ag.get("t") or 0) >= newest and bool(busy))
+            if not live:
                 continue  # a finished goal: its words are not this request's
             if best is None or (ag.get("t") or 0) > (best.get("t") or 0):
                 best = ag

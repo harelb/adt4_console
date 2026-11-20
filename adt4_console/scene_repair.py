@@ -1060,7 +1060,10 @@ class SceneRepair:
             self._recs[rid] = rec
             while len(self._recs) > self._max_recs and self._held is None:
                 # as main (no question held), but never a card being confirmed
-                old = next((k for k, r in self._recs.items() if r["status"] != "confirming"), None)
+                old = next((k for k, r in self._recs.items()
+                            if k != rid and r["status"] != "confirming"), None)  # fmt: skip
+                if old is None and self._max_recs == 0:
+                    old = rid  # as main: no history kept at all
                 if old is None:
                     break
                 del self._recs[old]

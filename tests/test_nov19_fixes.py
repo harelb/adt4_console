@@ -114,15 +114,11 @@ def test_an_unsure_recheck_card_never_says_the_goal_stays():
 
 
 # ------------------------------------------------ the mission's request kept
-def _state(goal, running=True):
-    # a plan of two actions: none done (running) or both done (finished)
-    plan = {"plan_id": "p1", "actions": [{"type": "FOLLOW"}, {"type": "PICK"}]}
-    done = [] if running else [{"plan_id": "p1", "action_index": 1, "status": "done"}]
-    return NS(active_goal=goal, plan=plan, results=done)
-
-
-def _bridge(active, running=True):
-    b = NS(_plan={r: _state(g, running) for r, g in active.items()})
+def _bridge(active, running=True, busy=None):
+    # busy: the goal tracker's busy robots (default: every robot with a goal when running)
+    busy = (list(active) if running else []) if busy is None else busy
+    b = NS(_plan={r: NS(active_goal=g) for r, g in active.items()},
+           goals=NS(busy_robots=lambda: {r: "goal" for r in busy}))  # fmt: skip
     return lambda goal, request: RosBridge._carried_request(b, goal, request)
 
 
@@ -183,3 +179,25 @@ def test_the_recheck_verdict_is_no_change_at_the_end():
     assert not _keeps_goal("Keeping the robot assignment unchanged, O753 must be added.")
     assert not _keeps_goal("removal of O12 does not affect the plan, but new cone O753 must be brought in")
     assert not _keeps_goal("O753 must be added; no change")
+
+
+def test_a_team_goal_sent_through_an_idle_robot_is_continued_while_others_work():
+    # the newest goal was sent through hamilton, which got no work; euclid runs it
+    carry = _bridge({"hamilton": {"pddl": MISSION_GOAL, "request": MISSION, "t": 2.0}, "euclid": None},
+                    busy=["euclid"])  # fmt: skip
+    assert carry(MISSION_GOAL, "use hamilton and euclid equally").startswith(MISSION)
+    # an older goal on an idle robot is not
+    carry = _bridge({"hamilton": {"pddl": MISSION_GOAL, "request": MISSION, "t": 1.0},
+                     "euclid": {"pddl": "(visited-object o5)", "request": "look at O5", "t": 2.0}},
+                    busy=["euclid"])  # fmt: skip
+    assert carry(MISSION_GOAL, "use both") == "use both"
+
+
+def test_benign_no_change_answers_keep_the_goal():
+    from adt4_console.chat import _keeps_goal
+
+    for t in ("**No change.**", "No change to the goal.", "No change: O99 is unrelated.",
+              "O99 (chair) added; no change needed.",
+              "O99 (cone) added outside intersection 2, so it should not be added; no change.",
+              "O99 is a chair, so it does not need to be included; no change."):  # fmt: skip
+        assert _keeps_goal(t), t

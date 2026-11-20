@@ -242,13 +242,23 @@ _CHANGE_INTENT = re.compile(
 )
 
 
+_VERDICT = re.compile(r"(^no change\b|\bno change( (is )?(needed|required|to the goal))?$)")
+
+
 def _keeps_goal(text: str) -> bool:
     """The recheck's verdict is "no change" (the prompt asks it to end so): the
-    answer ends with it and announces no change to the goal. A phrase like "not
-    related" or "unchanged" elsewhere in an answer that also says a cone must be
-    added is not a verdict (2026-11-19, O753)."""
-    t = " ".join((text or "").split()).rstrip(" .!").lower()
-    return t.endswith("no change") and not _CHANGE_INTENT.search(t)
+    answer starts or ends with it and announces no change to the goal ("should
+    not be added" is no announcement). A phrase like "not related" or
+    "unchanged" elsewhere in an answer that also says a cone must be added is
+    not a verdict (2026-11-19, O753)."""
+    t = " ".join(re.sub(r"[*_`\"']", "", text or "").split()).rstrip(" .!").lower()
+    if not _VERDICT.search(t):
+        return False
+    return not any(
+        # "does not need to be included": the negation may come just before
+        not re.search(r"\bnot\b|n't\b|\bno need\b", t[max(0, m.start() - 12) : m.end()])
+        for m in _CHANGE_INTENT.finditer(t)
+    )
 
 
 def operator_request(message: str, turn=None, limit: int = 3) -> str:
