@@ -859,9 +859,43 @@ def test_a_finished_plan_is_not_rechecked():
     assert asked == []
 
 
+def test_a_second_edit_builds_on_the_pending_card():
+    """Nov 20: cone O752 (card sr1), then bag O753 -- sr2 had lost O752."""
+    with_43 = "(and (visited-object o20) (visited-object o21) (visited-object o43))"
+    with_both = "(and (visited-object o20) (visited-object o21) (visited-object o43) (visited-object o44))"
+    shown = []
+
+    def answer(robot, goal, report):
+        shown.append(goal["pddl"])
+        return {"goal": with_43 if len(shown) == 1 else with_both, "constraints": [], "text": "add"}
+
+    sr, _, _, run = make_llm(answer)
+    sr.on_applied("sget/chat", 5, [_added("o43", "cone")], local=True)
+    run()
+    sr.on_applied("sget/chat", 6, [_added("o44", "cone", (31.0, 3.0))], local=True)
+    run()
+    assert shown == [CONES, with_43]  # the second recheck starts from the card
+    (rec,) = _pending(sr)
+    assert rec["proposed_goal"] == with_both
+
+
+def test_no_change_to_the_pending_card_keeps_its_goal():
+    with_43 = "(and (visited-object o20) (visited-object o21) (visited-object o43))"
+    answers = iter([{"goal": with_43, "constraints": [], "text": "add O43"}, NO_CHANGE])
+    sr, _, _, run = make_llm(lambda r, g, rep: next(answers))
+    sr.on_applied("sget/chat", 5, [_added("o43", "cone")], local=True)
+    run()
+    sr.on_applied("sget/chat", 6, [_added("o44", "cone", (31.0, 3.0))], local=True)
+    run()
+    (rec,) = _pending(sr)
+    assert rec["proposed_goal"] == with_43 and rec["llm"]
+
+
 def test_the_llm_keeping_the_goal_retires_its_earlier_proposal():
+    # shown the card's goal, it answers with the running goal again: O43 is gone
     answers = iter([{"goal": "(and (visited-object o20) (visited-object o21) (visited-object o43))",
-                     "constraints": [], "text": "add O43"}, NO_CHANGE])  # fmt: skip
+                     "constraints": [], "text": "add O43"},
+                    {"goal": CONES, "constraints": [], "text": "O43 is gone again"}])  # fmt: skip
     plan = {
         "plan": {
             "plan_id": "p1",
@@ -1172,8 +1206,10 @@ def test_a_change_detection_reset_never_leaves_a_held_robot_without_a_card():
 
 
 def test_the_llm_keeping_the_goal_never_leaves_a_held_robot_without_a_card():
+    # shown the card's goal, it answers with the running goal again: O43 is gone
     answers = iter([{"goal": "(and (visited-object o20) (visited-object o21) (visited-object o43))",
-                     "constraints": [], "text": "add O43"}, NO_CHANGE])  # fmt: skip
+                     "constraints": [], "text": "add O43"},
+                    {"goal": CONES, "constraints": [], "text": "O43 is gone again"}])  # fmt: skip
     plan = {"plan": {"plan_id": "p1", "actions": [{"type": "FOLLOW", "path": [[0, 0, 0], [10, 0, 0]]}]},
             "results": []}  # fmt: skip
     p = Planner()

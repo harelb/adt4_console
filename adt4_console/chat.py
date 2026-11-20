@@ -98,6 +98,15 @@ def uses_responses_api(model: str) -> bool:
     return bool(re.match(r"^gpt-([6-9]|\d\d)", model or ""))
 
 
+def recheck_reasoning() -> str:
+    """The plan repair recheck's reasoning effort, separate from the chat
+    panel's picker (the recheck has no panel): ADT4_RECHECK_REASONING, one of
+    REASONING_LEVELS, default "medium" -- a repair card must keep every
+    unfinished task, which "fast" got wrong on Nov 20."""
+    v = (os.environ.get("ADT4_RECHECK_REASONING") or "medium").strip().lower()
+    return v if v in REASONING_LEVELS else "medium"
+
+
 def chat_reasoning_effort(model: str) -> str:
     """The lowest effort chat completions accept WITH tools: 'none' for GPT-5.1+,
     'minimal' for the original gpt-5 / -mini / -nano."""
@@ -749,8 +758,8 @@ class ChatService:
 
     def _recheck_once(self, robot: str, goal: dict, prompt: str) -> dict | None:
         cards, says, errors = [], [], []
-        for ev in self.stream(prompt, robot=robot,
-                              engine=goal.get("engine"), recheck=True):  # fmt: skip
+        for ev in self.stream(prompt, robot=robot, engine=goal.get("engine"),
+                              reasoning=recheck_reasoning(), recheck=True):  # fmt: skip
             ty = ev.get("type")
             if ty == "goal":
                 cards.append(ev)

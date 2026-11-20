@@ -848,10 +848,11 @@ class SceneRepair:
         seen = goal
         with self._lock:
             prev = self._pending_same_goal(robot, goal)
-            if prev is not None and prev.get("proposed_goal"):
+            if prev is not None and prev.get("llm") and prev.get("proposed_goal"):
                 seen = dict(goal, pddl=prev["proposed_goal"])
                 if prev.get("proposed_constraints") is not None:
                     seen["constraints"] = prev["proposed_constraints"]
+        q["seen"] = seen
         report = recheck_report(robot, seen, batch["changes"], q["findings"])
         try:
             res = self.recheck(robot, seen, report)
@@ -898,6 +899,12 @@ class SceneRepair:
         text = _one_line(res.get("text"))
         proposed = _one_line(res.get("goal"))
         p_cons = res.get("constraints")
+        seen = q.get("seen") or goal
+        if not proposed and seen is not goal:
+            # "no change" to the pending card's goal it was shown: keep that
+            proposed = seen["pddl"]
+            if p_cons is None and seen.get("constraints") != goal.get("constraints"):
+                p_cons = seen.get("constraints")
         changed = bool(proposed) and (
             not _same_goal(proposed, goal["pddl"])
             or (
@@ -1093,11 +1100,14 @@ class SceneRepair:
                 reasons, changes = list(prev["reasons"]), list(prev["changes"])
                 rewrites = {r["from"]: r["to"] for r in prev["rewrites"]}
                 base = prev.get("proposed_goal") or goal["pddl"]
-                if base != goal["pddl"]:
+                # (a rules-only card is rebuilt from the merged rewrites below)
+                if prev.get("llm") and base != goal["pddl"]:
                     # the pending card already changed the goal (an earlier edit):
                     # build on it, never back to the running goal, which would
                     # drop what that edit added
-                    if proposed is None or _same_goal(proposed, goal["pddl"]):
+                    # no LLM answer (rules only): keep the card's goal. An LLM
+                    # answer was given that goal already and stands as it is.
+                    if proposed is None:
                         proposed = base
                         for old, new in rewrites.items():
                             proposed = rewrite_goal(proposed, old, new)
