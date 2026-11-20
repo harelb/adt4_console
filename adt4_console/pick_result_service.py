@@ -227,9 +227,9 @@ class PickResultService:
 
 def ros_answer_publisher(ros):
     """``publish(robot, payload)`` that sends the answer through
-    :class:`RosBridge` (``publish_to_robot``).  Nothing received it (no
-    subscriber, or fleetlink could not relay / get an ack): 503, and the
-    question stays open.  The robot ignores a second answer to a question it
+    :class:`RosBridge` (``publish_to_robot``).  Nothing could have received it
+    (no subscriber, or fleetlink could not relay it): 503, and the question
+    stays open.  Relayed but not acked in time: answered, ``unconfirmed``.  The robot ignores a second answer to a question it
     has stopped waiting on, so answering again is safe."""
 
     def publish(robot: str, payload: dict) -> dict:
@@ -245,9 +245,15 @@ def ros_answer_publisher(ros):
                     503, f"Answer not relayed to {robot}: {out['error']}"
                 )
             if not out.get("delivered"):
-                raise ApprovalError(
-                    503, f"{robot} did not acknowledge the answer in time; try again"
+                # No ack in time is not "not received": on 2026-11-19 and in the sim
+                # the robot acted on every such answer while the console said 503
+                # "try again". The relay keeps retrying, and a robot that really
+                # missed it asks again (every pick_result_repeat_s = 20 s, past
+                # ANSWER_GRACE_S), so the question is closed as answered.
+                log.warning(
+                    "pick answer to %s sent, not yet acknowledged by the relay", robot
                 )
+                details["unconfirmed"] = True
         elif not out.get("subscribers"):
             raise ApprovalError(
                 503, f"{robot}'s executor is not listening for the answer"

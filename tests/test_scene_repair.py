@@ -435,13 +435,11 @@ def test_routes_and_edit_hook(client):
     r = client.post(
         f"/api/plan/scene_repair/{rid}/confirm", json={"variant": "original"}
     )
+    # GOAL names only the retired O20: sending it again cannot plan (Nov 20 sim:
+    # "it names o291, which the scene graph does not have"), so nothing is sent
+    assert r.status_code == 409 and "nothing is left" in r.text and sent == []
     assert (
-        r.status_code == 200
-        and r.json()["status"] == "confirmed"
-        and sent == [("hamilton", GOAL)]
-    )
-    assert (
-        client.post(f"/api/plan/scene_repair/{rid}/decline", json={}).status_code == 409
+        client.post(f"/api/plan/scene_repair/{rid}/decline", json={}).status_code == 200
     )
     assert (
         client.post(

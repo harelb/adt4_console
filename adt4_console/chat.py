@@ -222,8 +222,10 @@ Recheck the operator's request on the updated map:
 2. If related, redo the request's reasoning on the updated map with run_cypher_query, the way it was first answered:
    - "the nearest X" or "an X": a new X may now be closer, or the chosen X may be gone. Recompute which X fits best.
    - "all X" / "every X": a new X must be added to the goal; a removed X is dropped from it.
-   - An object the goal uses was removed: find another that still does what the operator asked (same class, same role). If there is none, say the request can no longer be done.
-3. If the goal that does what the operator asked differs from the current goal, propose it with the goal tool (it is held for the operator to confirm, never sent) and say in one sentence why. Keep the robot assignment and every constraint still active. Never only describe the change ("I will update the goal ..."): an answer without the goal tool keeps the current goal.
+   - An object the goal uses was removed, and the operator asked by description ("the nearest cone", "a cone by the door"): find another that still does what the operator asked (same class, same role). If there is none, say the request can no longer be done.
+   - An object the goal uses was removed, and the operator named that object itself (its symbol, e.g. "O392", or "this cone" after it was shown): never pick another one in its place. Drop its task from the goal and keep the rest; if nothing is left, say the request can no longer be done.
+   - A robot that holds an object (see the report) keeps it: never drop or reassign a task on the object it holds, and keep that task with that robot.
+3. If the goal that does what the operator asked differs from the current goal, propose it with the goal tool (it is held for the operator to confirm, never sent) and say in one sentence why. Start from the current goal and change only what the change requires: add or drop tasks, and keep every other task exactly as it is (the same object, the same destination place, the same robot) and every constraint still active. Never pick new destination places for tasks that already have one: the robots may already have done them, and a new place makes them move those objects again. Never only describe the change ("I will update the goal ..."): an answer without the goal tool keeps the current goal.
 4. If it is the same goal, do not propose anything; answer in one line that ends with "no change", e.g. "O99 (chair) added: not related to the request; no change."
 """
 
@@ -771,8 +773,13 @@ class ChatService:
             )
             return None
         card = cards[0]
-        for_robot = card.get("robot") in (None, robot) or robot in (
-            card.get("team") or []
+        # a team goal rechecked through one robot may end up with another
+        # robot's tasks only (hamilton's cone was removed: euclid's visit is left)
+        in_goal = set(re.findall(r"[a-z0-9_]+", str(goal.get("pddl") or "").lower()))
+        for_robot = (
+            card.get("robot") in (None, robot)
+            or robot in (card.get("team") or [])
+            or str(card.get("robot") or "").lower() in in_goal
         )
         if not for_robot:
             log.warning(
@@ -1358,7 +1365,9 @@ class ChatService:
         console has no link state for it, one it has a pose from (the topology
         also lists robots that are not out at all)."""
         if row.get("stale_s") is not None:
-            return True  # a dropping link: the robot is still out working
+            # a dropping link: still out working on its own goal, but it may as
+            # well be shut down -- never offered as a free robot for new work
+            return row["robot"] in self._busy()
         if row["online"] is not None:
             return bool(row["online"])
         try:
@@ -1415,8 +1424,9 @@ class ChatService:
         for r in rows:
             line = f"- {r['robot']}: {r['label']} — {r['can']}"
             if r.get("stale_s") is not None:
-                line += (f"; LINK STALE (last heard {r['stale_s']:.0f} s ago): it is probably "
-                         "still working; not offline")  # fmt: skip
+                line += (f"; LINK STALE (last heard {r['stale_s']:.0f} s ago): not offline; "
+                         "it keeps its own tasks, but give it no new task unless the operator "
+                         "names it")  # fmt: skip
             elif r["online"] is not None:
                 line += "; online" if r["online"] else "; offline"
             if holding.get(r["robot"]):
@@ -1449,8 +1459,8 @@ class ChatService:
             text += (
                 f"\nThe team now (online, or link stale): {', '.join(online) or 'none'}. "
                 f'Offline — do not assign: {", ".join(offline)}. "All robots", "the team", '
-                '"both robots" and "every robot" mean the online robots, and a platform word '
-                '("the spots", "the huskies") the online robots of that platform; never put an '
+                '"both robots" and "every robot" mean these robots, and a platform word '
+                '("the spots", "the huskies") these robots of that platform; never put an '
                 "offline robot in a goal or use-robots unless the operator names it. An offline "
                 "robot is a known robot: say it is offline, never that it is unknown or not in "
                 "the fleet."

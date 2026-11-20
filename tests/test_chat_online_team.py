@@ -128,7 +128,7 @@ def test_the_roster_is_the_one_robot_list_and_offline_is_not_unknown():
     assert "even with no Robot node in the database" in head
     team_line = next(x for x in text.splitlines() if x.startswith("The team now"))
     assert (
-        '("the spots", "the huskies") the online robots of that platform' in team_line
+        '("the spots", "the huskies") these robots of that platform' in team_line
     )
     assert "An offline robot is a known robot: say it is offline" in team_line
     assert "never that it is unknown or not in the fleet" in team_line

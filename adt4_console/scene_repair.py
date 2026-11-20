@@ -114,6 +114,46 @@ def rewrite_goal(pddl: str, old: str, new: str) -> str:
     return pat.sub(sym_key(new), pddl)
 
 
+def _conjuncts(pddl: str) -> list[str]:
+    """The top-level conjuncts of ``(and ...)``, or ``[pddl]`` for any other goal."""
+    text = (pddl or "").strip()
+    if not re.match(r"\(\s*and\b", text, re.IGNORECASE):
+        return [text] if text else []
+    body, out, depth, start = (
+        text[text.index("and") + 3 : text.rindex(")")],
+        [],
+        0,
+        None,
+    )
+    for i, ch in enumerate(body):
+        if ch == "(":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0 and start is not None:
+                out.append(body[start : i + 1])
+    return out
+
+
+def drop_removed(pddl: str, gone) -> str | None:
+    """``pddl`` without the top-level tasks that name a removed symbol (the
+    planner cannot read a goal naming one): the goal itself when it names
+    none, None when nothing would be left."""
+    keys = {sym_key(g) for g in gone if g}
+    if not keys:
+        return pddl
+    named = lambda c: any(rewrite_goal(c, k, "__gone__") != c for k in keys)
+    parts = _conjuncts(pddl)
+    left = [c for c in parts if not named(c)]
+    if len(left) == len(parts):
+        return pddl
+    if not left:
+        return None
+    return left[0] if len(left) == 1 else "(and " + " ".join(left) + ")"
+
+
 def _xy(p):
     if p is None:
         return None
@@ -1161,6 +1201,25 @@ class SceneRepair:
             rec["status"] = "confirming"
             goal = rec["goal"]
             pddl = rec["proposed_goal"] if variant == "proposed" else goal["pddl"]
+            # a goal sent from here never names what was removed: the planner
+            # cannot read it ("names o291, which the scene graph does not
+            # have"). (Answering the planner's held question, above, leaves the
+            # dropping to the planner.)
+            gone = {
+                c["symbol"]
+                for c in rec.get("changes") or []
+                if c.get("kind") == "removed"
+            }
+            kept = drop_removed(pddl, gone)
+            if kept is None:
+                rec["status"] = "pending"
+                if was:  # the claim goes; nothing was sent
+                    self._deciding.pop(was, None)
+                raise NotPending(
+                    f"recommendation {rid}: nothing is left of the goal without the removed "
+                    f"{', '.join(sorted(gone))}; ask the chat for a new goal, or decline"
+                )
+            pddl = kept
             if (
                 variant == "proposed"
                 and rec.get("llm")

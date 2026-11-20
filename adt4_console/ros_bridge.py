@@ -1648,6 +1648,13 @@ class RosBridge:
         # both executor topic spellings may carry the same result: count it once
         if res not in self._plan[robot].results:
             self.goals.on_result(robot, res)
+            status = str(res["status"] or "").upper()
+            manip = getattr(self, "manipulation", None)
+            if manip is not None and status and status != "SUCCESS":
+                # a grasp it asked for is no longer waited on
+                manip.withdraw(
+                    robot, f"{res['action_type'] or 'action'} {status.lower()}"
+                )
         self._plan[robot].results.append(res)
         self._publish_plan(robot)
 
@@ -1955,8 +1962,9 @@ class RosBridge:
             # a drawn area is a polygon only the console has; the robots plan Room nodes
             raise ValueError("a drawn mission area (area1, ...) cannot be sent to the robots: plan it in the "
                              "mission planner (GRSTAPS-X), or name a map region (r...)")  # fmt: skip
-        out = self._send_pddl_goal(robot, goal, plugin, constraints, route, engine)
+        # judged before sending: "still running" is about the goals before this one
         request = self._carried_request(goal, request)
+        out = self._send_pddl_goal(robot, goal, plugin, constraints, route, engine)
         self._plan[robot].active_goal = {
             "pddl": goal, "constraints": list(constraints or []), "engine": engine, "route": route,
             "plugin": plugin, "t": time.time(), "via": out.get("via"),
