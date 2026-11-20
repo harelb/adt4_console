@@ -98,6 +98,19 @@ def uses_responses_api(model: str) -> bool:
     return bool(re.match(r"^gpt-([6-9]|\d\d)", model or ""))
 
 
+# the recheck's model when ADT4_RECHECK_MODEL is not set: the first the key offers
+RECHECK_MODELS = ("gpt-5.6-terra", "claude-opus-5-5")
+
+
+def recheck_reasoning() -> str:
+    """The plan repair recheck's reasoning effort, separate from the chat
+    panel's picker (the recheck has no panel): ADT4_RECHECK_REASONING, one of
+    REASONING_LEVELS, default "medium" -- a repair card must keep every
+    unfinished task, which "fast" got wrong on Nov 20."""
+    v = (os.environ.get("ADT4_RECHECK_REASONING") or "medium").strip().lower()
+    return v if v in REASONING_LEVELS else "medium"
+
+
 def chat_reasoning_effort(model: str) -> str:
     """The lowest effort chat completions accept WITH tools: 'none' for GPT-5.1+,
     'minimal' for the original gpt-5 / -mini / -nano."""
@@ -195,6 +208,20 @@ named in use-robots gets a new plan: when it is EXECUTING itself, re-send its ow
 are still wanted with the new one. When no robot is free and the operator names none, ask \
 which robot should do it. The whole team's goal is re-sent only when the operator asks for \
 every robot, a new mission, or to replan the team.
+- REPAIRING THE RUNNING GOAL ("plan repair", "include the new ...", after a map change): the \
+goal you propose replaces the running goal of every robot it covers (the robots in its \
+use-robots, or the whole team without one), so a task you leave out is cancelled. Start from \
+the running goal ("Goals sent from this console") and keep every one of its tasks for those \
+robots exactly as it is (same object, same destination place, same robot); add the new \
+objects' tasks; drop a task only when its object was removed, or the operator or the map shows \
+it done (an object already at its destination). Before calling propose_goal, check task by \
+task that nothing still to do is missing; say which tasks you added and dropped. The card \
+warns about running tasks the goal leaves out.
+- OBJECTS AND PLACES IN A GOAL: only objects in the map now: filter retired ones in every \
+query (WHERE coalesce(o.retired, false) = false), and never add objects of a class just \
+because one was removed. Each object moved into a region gets its own destination place: a \
+place inside that region that no other task in the goal uses and no object already sits on \
+(check with run_cypher). Never send two objects to the same place.
 """
 # GRSTAPS-X is optional (not installed, or no GRSTAPS-X planner running): without
 # it the engine note names Fast Downward only
@@ -225,7 +252,13 @@ Recheck the operator's request on the updated map:
    - An object the goal uses was removed, and the operator asked by description ("the nearest cone", "a cone by the door"): find another that still does what the operator asked (same class, same role). If there is none, say the request can no longer be done.
    - An object the goal uses was removed, and the operator named that object itself (its symbol, e.g. "O392", or "this cone" after it was shown): never pick another one in its place. Drop its task from the goal and keep the rest; if nothing is left, say the request can no longer be done.
    - A robot that holds an object (see the report) keeps it: never drop or reassign a task on the object it holds, and keep that task with that robot.
+   - Only objects in the map now count. Never put an object the report removed, or one marked retired (retired = true) or missing from the map, into the goal; filter them out in every run_cypher_query (WHERE coalesce(o.retired, false) = false). A task on a removed object is dropped, never kept.
+   - A removed object is never a reason to add other objects: drop its task (or, when the operator asked by description, put the one best substitute in its place). Never widen the goal to every object of its class.
+   - A new object counts only if it is in the request's scope. When the request names a region or place ("bags at building FACADE 2", "cones outside intersection 2"), check with run_cypher_query which region contains the new object; outside the scope it needs no task. A new object already where the request wants it (a cone already inside the destination region) needs no task either.
+   - A new object's task goes to the robot the request gave that kind of task (the cones to the robot moving the cones, the bags to the robot visiting the bags), in the same form as that robot's existing tasks (object-placed-by <robot> ... , visited-object-by <robot> ...).
+   - A new object to bring somewhere gets a destination place inside the destination region that no other task in the goal uses and no object already sits on (check with run_cypher_query). Never send two objects to the same place.
 3. If the goal that does what the operator asked differs from the current goal, propose it with the goal tool (it is held for the operator to confirm, never sent) and say in one sentence why. Start from the current goal and change only what the change requires: add or drop tasks, and keep every other task exactly as it is (the same object, the same destination place, the same robot) and every constraint still active. Never pick new destination places for tasks that already have one: the robots may already have done them, and a new place makes them move those objects again. Never only describe the change ("I will update the goal ..."): an answer without the goal tool keeps the current goal.
+   The current goal is the whole mission, often for several robots (a team goal sent through one of them), and it may already include earlier changes. The proposed goal replaces it: a task you leave out is cancelled for its robot. So never propose only the new tasks. Before calling the goal tool, check task by task that every task of the current goal is in your goal, unchanged, unless this change removed its object; handle every change of the report in one goal.
 4. If it is the same goal, do not propose anything; answer in one line that ends with "no change", e.g. "O99 (chair) added: not related to the request; no change."
 """
 
@@ -292,7 +325,9 @@ SGET_TURN_NOTE = (
     'change with the map edit tools you have (e.g. "SGET: move object 52 to t142" moves the '
     "object O52 in the map to place t142's position: look the position up, then "
     "move_scene_object). If no edit tool can make the change, say so; do not offer a goal "
-    "instead unless the operator asks for one."
+    "instead unless the operator asks for one. A detection with no count (\"detect cones at "
+    "T(1669)\") is ONE object of that class at that place: propose it right away; never ask how "
+    "many. Propose one edit per detection in the message, all in this reply."
 )
 
 
@@ -568,6 +603,21 @@ class ChatService:
             OPENAI_DEFAULT_MODEL if prov == "openai" else ANTHROPIC_DEFAULT_MODEL
         )
 
+    def recheck_model(self) -> str | None:
+        """The plan repair recheck's model, separate from the chat panel's
+        picker: ADT4_RECHECK_MODEL, else the strongest model the key offers
+        (RECHECK_MODELS, in order), else the configured default. Nov 20: with no
+        ADT4_LLM_MODEL the recheck ran on gpt-4.1 while the chat used a
+        reasoning model."""
+        offered = self.models()
+        want = (os.environ.get("ADT4_RECHECK_MODEL") or "").strip()
+        if want:
+            return want if want in offered else self.model()
+        for m in RECHECK_MODELS:
+            if m in offered:
+                return m
+        return self.model()
+
     def models(self) -> list[str]:
         prov = self.provider()
         if prov is None:
@@ -749,8 +799,9 @@ class ChatService:
 
     def _recheck_once(self, robot: str, goal: dict, prompt: str) -> dict | None:
         cards, says, errors = [], [], []
-        for ev in self.stream(prompt, robot=robot,
-                              engine=goal.get("engine"), recheck=True):  # fmt: skip
+        for ev in self.stream(prompt, robot=robot, engine=goal.get("engine"),
+                              model=self.recheck_model(), reasoning=recheck_reasoning(),
+                              recheck=True):  # fmt: skip
             ty = ev.get("type")
             if ty == "goal":
                 cards.append(ev)
@@ -1352,6 +1403,30 @@ class ChatService:
         return ("; ".join(parts) + ": this goal does not name it, so it is put down where the robot "
                 "stands before the plan starts. To carry it, use object-placed-by (or keep holding in the goal)")  # fmt: skip
 
+    def _repair_warning(self, goal: str, constraints) -> str:
+        """What the card's operator must see before sending a goal that replaces
+        running work (Nov 20): running tasks of the robots it covers that it
+        leaves out (they would be cancelled, unless already done), and objects
+        sent to the same place. Never blocks the card."""
+        try:
+            return repair_warning(goal, constraints, self._running_goals())
+        except Exception:  # noqa: BLE001 — a warning must never block a goal
+            return ""
+
+    def _running_goals(self) -> list[str]:
+        """The PDDL goals the console sent that a robot is executing now."""
+        busy = set(self._busy())
+        active = getattr(self.ros, "active_goals", None)
+        if not busy or active is None:
+            return []
+        out = []
+        for robot, g in (active() or {}).items():
+            pddl = g.get("pddl") or ""
+            words = set(re.findall(r"[a-z0-9_]+", pddl.lower()))
+            if pddl and (robot in busy or busy & words) and pddl not in out:
+                out.append(pddl)
+        return out
+
     def _busy(self) -> dict:
         """{robot: goal summary} of the robots executing a goal now ({} when the
         console does not track goals)."""
@@ -1473,7 +1548,27 @@ class ChatService:
                 "\nGoals sent from this console, latest last (live status):\n"
                 + "\n".join(f"- {x}" for x in recent)
             )
+            done = self._progress_lines()
+            if done:
+                # Nov 20: the chat kept O751 in a repair minutes after euclid placed it
+                text += (
+                    "\nDone since the running goals were sent (the robots' own reports; visits "
+                    "are not reported, so a visit may be done too). An object already put down "
+                    "where its task wants it is done: leave that task out of a repair, never "
+                    "move the object again:\n" + "\n".join(f"- {x}" for x in done)
+                )
         return text
+
+    def _progress_lines(self) -> list[str]:
+        sr = getattr(self.ros, "scene_repair", None)
+        active = getattr(self.ros, "active_goals", None)
+        if sr is None or active is None or not hasattr(sr, "progress_lines"):
+            return []
+        try:
+            ts = [float(g.get("t") or 0) for g in (active() or {}).values()]
+            return sr.progress_lines(min(ts)) if ts else []
+        except Exception:  # noqa: BLE001 — context must never fail a turn
+            return []
 
     def _edit_note(self) -> str:
         """Which edit path this turn has, for the system prompt."""
@@ -1723,6 +1818,9 @@ class ChatService:
         )
         if scope:
             card["warning"] = "; ".join(x for x in (card.get("warning"), scope) if x)
+        repair = self._repair_warning(goal, body.get("constraints"))
+        if repair:
+            card["warning"] = "; ".join(x for x in (card.get("warning"), repair) if x)
         if replaces:
             card["replaces"] = True
         note = "The operator approves and sends it once, to the whole team."
@@ -2306,6 +2404,50 @@ def fleet_roster(ros, live) -> list[dict]:
 
 
 _ATOM = re.compile(r"\(\s*([a-z][a-z0-9_-]*)((?:\s+[a-z0-9_?-]+)+)\s*\)")
+
+
+_PLACED = re.compile(r"^\((object-placed-by|object-in-place)\s+(.*)\)$")
+
+
+def repair_warning(goal: str, constraints, running: list[str]) -> str:
+    """The card warning for a goal proposed while ``running`` goals execute.
+
+    * Left out: tasks of the running goals for the robots this goal covers (its
+      use-robots; without one, every robot, and the team's robot-free tasks).
+    * Doubled: two objects placed at one place."""
+    atoms = goal_atoms(goal)
+    users = set()
+    for c in constraints or []:
+        if isinstance(c, dict) and c.get("predicate") == "use-robots":
+            users |= {str(s).lower() for s in c.get("symbols") or []}
+    left = []
+    for run in running:
+        for a in sorted(goal_atoms(run) - atoms):
+            parts = a.strip("()").split()
+            # the robot a task names: (x-by <robot> ...), (at-place <robot> ...)
+            by = parts[1] if len(parts) > 1 and (parts[0].endswith("-by") or parts[0].startswith("at-")) else None
+            if users and (by is None or by not in users):
+                continue  # another robot's task, or the team's: not replaced
+            if a not in left:
+                left.append(a)
+    places = {}
+    for a in atoms:
+        m = _PLACED.match(a)
+        if m:
+            args = m.group(2).split()
+            if len(args) >= 2:
+                places.setdefault(args[-1], []).append(args[-2])
+    doubled = {p: objs for p, objs in places.items() if len(set(objs)) > 1}
+    out = []
+    if left:
+        out.append(
+            f"replaces running work: {' '.join(left)} "
+            f"{'is' if len(left) == 1 else 'are'} not in this goal and would be cancelled "
+            "(fine only if already done)"
+        )
+    for p, objs in sorted(doubled.items()):
+        out.append(f"{', '.join(o.upper() for o in sorted(set(objs)))} all go to the same place {p.upper()}")
+    return "; ".join(out)
 
 
 def goal_atoms(goal: str) -> set[str]:

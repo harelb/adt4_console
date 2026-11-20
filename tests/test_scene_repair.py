@@ -642,13 +642,31 @@ def test_a_new_cone_for_all_the_cones_proposes_the_goal_with_it():
     assert sent[-1][1] == goal
 
 
-def test_a_relevant_new_object_keeps_replan_same_goal_when_the_llm_keeps_the_goal():
+def test_a_detected_relevant_object_the_llm_keeps_the_goal_for_makes_no_card():
+    # Nov 20: "new tree O566 relevant to the goal. The goal stays the same" cards
     sr, _, _, run = make_llm(lambda r, g, rep: NO_CHANGE)
     sr.on_applied("awcd/euclid", 5, [_added("o43", "cone")])
+    run()
+    assert _pending(sr) == []
+
+
+def test_an_edited_relevant_object_the_llm_keeps_the_goal_for_still_makes_a_card():
+    sr, _, _, run = make_llm(lambda r, g, rep: NO_CHANGE)
+    sr.on_applied("sget/chat", 5, [_added("o43", "cone")], local=True)
     run()
     (rec,) = _pending(sr)
     assert not rec["llm"] and rec["proposed_goal"] == CONES and rec["rewrites"] == []
     assert "new cone O43" in rec["reason"]
+
+
+def test_a_held_card_proposes_the_goal_without_the_removed_object():
+    # Nov 20 sr18: "o512 removed before the visit the goal asks for"
+    goals = {"hamilton": {"pddl": "(and (visited-object o20) (visited-object o512))",
+                          "constraints": [], "engine": None, "request": "x", "t": 1.0}}  # fmt: skip
+    sr, _, _, _ = make_held(goals=goals)
+    sr.on_replan_pending(pending_msg(["hamilton"], reasons=["o512 removed before the visit the goal asks for"]))
+    rec = _by_robot(sr)["hamilton"]
+    assert rec["held"] and rec["proposed_goal"] == "(visited-object o20)"
 
 
 def test_a_route_side_change_the_llm_finds_harmless_asks_nothing():
@@ -859,9 +877,43 @@ def test_a_finished_plan_is_not_rechecked():
     assert asked == []
 
 
+def test_a_second_edit_builds_on_the_pending_card():
+    """Nov 20: cone O752 (card sr1), then bag O753 -- sr2 had lost O752."""
+    with_43 = "(and (visited-object o20) (visited-object o21) (visited-object o43))"
+    with_both = "(and (visited-object o20) (visited-object o21) (visited-object o43) (visited-object o44))"
+    shown = []
+
+    def answer(robot, goal, report):
+        shown.append(goal["pddl"])
+        return {"goal": with_43 if len(shown) == 1 else with_both, "constraints": [], "text": "add"}
+
+    sr, _, _, run = make_llm(answer)
+    sr.on_applied("sget/chat", 5, [_added("o43", "cone")], local=True)
+    run()
+    sr.on_applied("sget/chat", 6, [_added("o44", "cone", (31.0, 3.0))], local=True)
+    run()
+    assert shown == [CONES, with_43]  # the second recheck starts from the card
+    (rec,) = _pending(sr)
+    assert rec["proposed_goal"] == with_both
+
+
+def test_no_change_to_the_pending_card_keeps_its_goal():
+    with_43 = "(and (visited-object o20) (visited-object o21) (visited-object o43))"
+    answers = iter([{"goal": with_43, "constraints": [], "text": "add O43"}, NO_CHANGE])
+    sr, _, _, run = make_llm(lambda r, g, rep: next(answers))
+    sr.on_applied("sget/chat", 5, [_added("o43", "cone")], local=True)
+    run()
+    sr.on_applied("sget/chat", 6, [_added("o44", "cone", (31.0, 3.0))], local=True)
+    run()
+    (rec,) = _pending(sr)
+    assert rec["proposed_goal"] == with_43 and rec["llm"]
+
+
 def test_the_llm_keeping_the_goal_retires_its_earlier_proposal():
+    # shown the card's goal, it answers with the running goal again: O43 is gone
     answers = iter([{"goal": "(and (visited-object o20) (visited-object o21) (visited-object o43))",
-                     "constraints": [], "text": "add O43"}, NO_CHANGE])  # fmt: skip
+                     "constraints": [], "text": "add O43"},
+                    {"goal": CONES, "constraints": [], "text": "O43 is gone again"}])  # fmt: skip
     plan = {
         "plan": {
             "plan_id": "p1",
@@ -942,7 +994,7 @@ def test_confirming_keeps_the_operators_words_with_the_goal():
     sr = SceneRepair(None, send=lambda *a, **k: sent.append((a, k)) or {"ok": True},
                      active_goals=lambda: goals, class_of=lambda s: (MAP.get(sym_key(s)) or (None,))[0],
                      recheck=lambda r, g, rep: NO_CHANGE, run_later=lambda d, fn: fn())  # fmt: skip
-    sr.on_applied("awcd/euclid", 5, [_added("o43", "cone")])
+    sr.on_applied("console/op", 5, [_added("o43", "cone")], local=True)
     (rec,) = _pending(sr)
     sr.confirm(rec["id"], "original")
     assert sent[-1][1] == {"request": "Visit all the cones"}
@@ -1172,8 +1224,10 @@ def test_a_change_detection_reset_never_leaves_a_held_robot_without_a_card():
 
 
 def test_the_llm_keeping_the_goal_never_leaves_a_held_robot_without_a_card():
+    # shown the card's goal, it answers with the running goal again: O43 is gone
     answers = iter([{"goal": "(and (visited-object o20) (visited-object o21) (visited-object o43))",
-                     "constraints": [], "text": "add O43"}, NO_CHANGE])  # fmt: skip
+                     "constraints": [], "text": "add O43"},
+                    {"goal": CONES, "constraints": [], "text": "O43 is gone again"}])  # fmt: skip
     plan = {"plan": {"plan_id": "p1", "actions": [{"type": "FOLLOW", "path": [[0, 0, 0], [10, 0, 0]]}]},
             "results": []}  # fmt: skip
     p = Planner()
@@ -1309,7 +1363,7 @@ def test_the_llm_proposing_the_same_request_on_a_held_card_confirms():
     p = Planner()
     sr.decide, p.sr = p, sr
     sr.on_applied(
-        "awcd/hamilton", 5, [_added("o43", "cone")]
+        "console/op", 5, [_added("o43", "cone")], local=True
     )  # relevant new cone: same goal asked
     run()
     sr.on_replan_pending(pending_msg(["hamilton"]))
@@ -1473,7 +1527,7 @@ def test_a_new_box_in_region_5_is_rechecked_for_visit_all_objects_in_region_5():
         region_of=_region_of,
         regions=lambda: list(REGIONS.values()),
     )
-    sr.on_applied("awcd/hamilton", 5, [_added("o77", "box")])
+    sr.on_applied("console/op", 5, [_added("o77", "box")], local=True)
     run()
     assert [a[0] for a in asked] == ["hamilton"]
     (rec,) = _pending(sr)
@@ -2271,3 +2325,45 @@ def test_rig_b_answered_then_a_team_goal_via_euclid_then_a_question_for_hamilton
     )
     sr.decline(card["id"], held_id="94c4027f")
     assert p.decisions[-1] == {"id": "94c4027f", "decision": "decline"} and sent == []
+
+
+def test_the_recheck_has_its_own_model_and_reasoning(monkeypatch):
+    from adt4_console import chat as chat_mod
+
+    class Svc:
+        models = lambda self: ["gpt-4.1", "gpt-5.6-terra"]  # noqa: E731
+        model = lambda self, requested=None: "gpt-4.1"  # noqa: E731
+        recheck_model = chat_mod.ChatService.recheck_model
+
+    monkeypatch.delenv("ADT4_RECHECK_MODEL", raising=False)
+    assert Svc().recheck_model() == "gpt-5.6-terra"  # not the gpt-4.1 default
+    monkeypatch.setenv("ADT4_RECHECK_MODEL", "gpt-4.1")
+    assert Svc().recheck_model() == "gpt-4.1"
+    monkeypatch.setenv("ADT4_RECHECK_MODEL", "not-offered")
+    assert Svc().recheck_model() == "gpt-4.1"  # the configured default
+    monkeypatch.delenv("ADT4_RECHECK_REASONING", raising=False)
+    assert chat_mod.recheck_reasoning() == "medium"
+    monkeypatch.setenv("ADT4_RECHECK_REASONING", "high")
+    assert chat_mod.recheck_reasoning() == "high"
+    monkeypatch.setenv("ADT4_RECHECK_REASONING", "bogus")
+    assert chat_mod.recheck_reasoning() == "medium"
+
+
+def test_the_recheck_report_lists_what_the_robots_put_down():
+    # Nov 20: euclid placed O751 at 10:35:33; the card and the chat kept moving it
+    goals = {"hamilton": {"pddl": CONES, "constraints": [], "engine": None, "request": "x", "t": 1.0}}
+    reports = []
+    sr, _, _, run = make_llm(lambda r, g, rep: reports.append(rep) or NO_CHANGE, goals=goals)
+    sr.on_applied("executor/euclid", 4, [{"kind": "moved", "symbol": "O21", "label": "",
+                                          "new": [9.0, 1.0, 0.0]}])  # fmt: skip
+    assert sr.progress_lines(0.0) == ["euclid put down O21 at (9.0, 1.0)"]
+    sr.on_applied("sget/chat", 5, [_added("o43", "cone")], local=True)
+    run()
+    assert reports and "euclid put down O21 at (9.0, 1.0)" in reports[-1]
+    assert "drop that task" in reports[-1]
+
+
+def test_reports_before_the_goal_are_not_progress():
+    sr, _, _, _ = make_llm(lambda r, g, rep: NO_CHANGE)
+    sr.on_applied("executor/euclid", 4, [{"kind": "moved", "symbol": "O21", "label": "", "new": [9.0, 1.0, 0.0]}])
+    assert sr.progress_lines(sr.clock() + 10) == []

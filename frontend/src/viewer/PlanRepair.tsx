@@ -186,7 +186,11 @@ export function SceneRepairPanel({robot}: {robot: string | null}) {
   // an older console without §20 (or a test stub) answers something else
   if (!st || !Array.isArray(st.recommendations) || !Array.isArray(st.changes)) return null;
   // an answered held card stays while the planner still holds its question (waiting)
-  const pending = st.recommendations.filter(r => r.status === "pending" || r.status === "confirming" || !!r.result?.waiting).filter(r => !robot || r.robot === robot);
+  // every robot's cards, the selected robot's first: a team goal's card is
+  // filed under the robot it was sent through, which may not be the one shown
+  const pending = st.recommendations
+    .filter(r => r.status === "pending" || r.status === "confirming" || !!r.result?.waiting)
+    .sort((a, b) => Number(b.robot === robot) - Number(a.robot === robot));
   const recent = st.changes.slice(-6).reverse();
   const staged = st.staged && st.staged.count > 0 ? st.staged : null;
   if (!pending.length && !recent.length && !staged) return null;
