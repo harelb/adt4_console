@@ -842,9 +842,19 @@ class SceneRepair:
         with self._lock:
             if self._answered.get(robot) == key:
                 return None  # the same changes again (change detection resends its set)
-        report = recheck_report(robot, goal, batch["changes"], q["findings"])
+        # A card still pending for this goal already proposes edits (an earlier
+        # SGET cone): the LLM rechecks that proposal, so this change adds to it
+        # instead of starting over from the running goal and dropping them.
+        seen = goal
+        with self._lock:
+            prev = self._pending_same_goal(robot, goal)
+            if prev is not None and prev.get("proposed_goal"):
+                seen = dict(goal, pddl=prev["proposed_goal"])
+                if prev.get("proposed_constraints") is not None:
+                    seen["constraints"] = prev["proposed_constraints"]
+        report = recheck_report(robot, seen, batch["changes"], q["findings"])
         try:
-            res = self.recheck(robot, goal, report)
+            res = self.recheck(robot, seen, report)
         except Exception:  # noqa: BLE001
             log.exception("LLM recheck of %s", robot)
             res = None
@@ -1082,6 +1092,19 @@ class SceneRepair:
             if prev is not None and prev["goal"]["pddl"] == goal["pddl"]:
                 reasons, changes = list(prev["reasons"]), list(prev["changes"])
                 rewrites = {r["from"]: r["to"] for r in prev["rewrites"]}
+                base = prev.get("proposed_goal") or goal["pddl"]
+                if base != goal["pddl"]:
+                    # the pending card already changed the goal (an earlier edit):
+                    # build on it, never back to the running goal, which would
+                    # drop what that edit added
+                    if proposed is None or _same_goal(proposed, goal["pddl"]):
+                        proposed = base
+                        for old, new in rewrites.items():
+                            proposed = rewrite_goal(proposed, old, new)
+                        rewrites = {}
+                    if proposed_constraints is None and prev.get("proposed_constraints") is not None:
+                        proposed_constraints = prev["proposed_constraints"]
+                    llm = llm or bool(prev.get("llm"))
             for reason, rw, _p in findings:
                 reasons.append(reason)
                 if rw is not None:
@@ -1129,6 +1152,14 @@ class SceneRepair:
                     break
                 del self._recs[old]
             return dict(rec)
+
+    def _pending_same_goal(self, robot, goal) -> dict | None:
+        """The robot's pending card about this same running goal (lock held)."""
+        prev = next((r for r in reversed(self._recs.values())
+                     if r["robot"] == robot and r["status"] == "pending"), None)  # fmt: skip
+        if prev is None or prev["goal"].get("pddl") != goal.get("pddl"):
+            return None
+        return prev
 
     def _supersede(self, robot, by, why) -> bool:
         hit = False
