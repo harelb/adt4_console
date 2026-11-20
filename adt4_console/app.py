@@ -371,6 +371,27 @@ def _region_row(svc, sym: str, xy=None) -> dict | None:
     return dict(rows[0]) if rows else None
 
 
+_REGIONS_CACHE: dict = {}
+
+
+def _region_names(svc) -> list[dict]:
+    """The live map's regions ({symbol, name}), cached per map and map version."""
+    t = _live_target(svc)
+    if t is None:
+        return []
+    key = (t.id, getattr(getattr(svc, "scene_repair", None), "map_version", None))
+    if key not in _REGIONS_CACHE:
+        try:
+            rows = t.query(
+                "MATCH (r:Room) WHERE r.name IS NOT NULL RETURN r.nodeSymbol AS symbol, r.name AS name"
+            )
+        except Exception:  # noqa: BLE001
+            return []
+        _REGIONS_CACHE.clear()
+        _REGIONS_CACHE[key] = [dict(r) for r in rows]
+    return _REGIONS_CACHE[key]
+
+
 def relocalized_xy(svc, robot: str):
     """The robot's fleetlink live pose in the global map frame, only when it is
     relocalized (``frame_align.ok``) or already reports the global frame; else
@@ -470,6 +491,7 @@ def wire_scene_repair(svc) -> None:
         recheck_on=lambda: getattr(svc, "chat", None) is not None and svc.chat.recheck_available(),
         decide=lambda qid, decision: svc.ros.decide_replan(qid, decision),
         region_of=lambda sym, xy: _region_row(svc, sym, xy),
+        regions=lambda: _region_names(svc),
     )  # fmt: skip
     svc.scene_repair = sr
     svc.ros.attach_scene_repair(sr)  # with replan_pending latched before
