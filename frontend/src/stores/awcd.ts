@@ -14,6 +14,10 @@ interface AwcdStore {
   /** draw the boxes on the map (default on) */
   show: boolean;
   labels: boolean;
+  /** robots whose reconciled changes are hidden on the map ("?" = unattributed) */
+  hiddenRobots: Record<string, boolean>;
+  /** draw each robot's raw report (/awcd_changes, its own frame) too (default off) */
+  showRaw: boolean;
   /** the change picked in the list (highlighted on the map) */
   focus: string | null;
   set: (patch: Partial<AwcdStore>) => void;
@@ -28,6 +32,26 @@ function readBool(key: string, dflt: boolean): boolean {
   }
 }
 
+function readHidden(): Record<string, boolean> {
+  try {
+    const v = JSON.parse(localStorage.getItem("adt4.awcd.hiddenRobots") ?? "{}");
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+export function setRobotHidden(robot: string, hidden: boolean) {
+  const next = {...useAwcd.getState().hiddenRobots, [robot]: hidden};
+  if (!hidden) delete next[robot];
+  try {
+    localStorage.setItem("adt4.awcd.hiddenRobots", JSON.stringify(next));
+  } catch {
+    /* private window */
+  }
+  useAwcd.setState({hiddenRobots: next});
+}
+
 export function saveBool(key: string, v: boolean) {
   try {
     localStorage.setItem(key, v ? "1" : "0");
@@ -40,6 +64,8 @@ export const useAwcd = create<AwcdStore>(set => ({
   state: null,
   show: readBool("adt4.awcd.show", true),
   labels: readBool("adt4.awcd.labels", true),
+  hiddenRobots: readHidden(),
+  showRaw: readBool("adt4.awcd.raw", false),
   focus: null,
   set: patch => set(patch as Partial<AwcdStore>),
 }));
