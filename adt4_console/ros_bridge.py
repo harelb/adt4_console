@@ -1956,6 +1956,7 @@ class RosBridge:
             raise ValueError("a drawn mission area (area1, ...) cannot be sent to the robots: plan it in the "
                              "mission planner (GRSTAPS-X), or name a map region (r...)")  # fmt: skip
         out = self._send_pddl_goal(robot, goal, plugin, constraints, route, engine)
+        request = self._carried_request(goal, request)
         self._plan[robot].active_goal = {
             "pddl": goal, "constraints": list(constraints or []), "engine": engine, "route": route,
             "plugin": plugin, "t": time.time(), "via": out.get("via"),
@@ -1968,6 +1969,41 @@ class RosBridge:
                 log.exception("scene_repair.goal_sent")
         self._publish_plan(robot)
         return out
+
+    def _carried_request(self, goal: str, request):
+        """The operator's words for a goal that continues an active one.
+
+        A goal that keeps an object of a robot's active goal (a repair or a
+        change of the same mission) keeps that goal's request in front of its own:
+        on 2026-11-19 a repair goal sent from the chat carried only the last chat
+        messages ("one cone / propose plan repairing"), so a bag added later in
+        building facade 2 was rechecked against a request about cones, and
+        "visit all bags at building facade 2" was lost. A goal that shares no
+        object with any active goal is a new request and keeps only its own words."""
+        new = (str(request).strip() if request else "") or ""
+        objs = set(re.findall(r"\bo\d+\b", (goal or "").lower()))
+        if not objs:
+            return new or None
+        best = None
+        for st in list(self._plan.values()):
+            ag = st.active_goal or {}
+            old = (ag.get("request") or "").strip()
+            if not old or not objs & set(re.findall(r"\bo\d+\b", str(ag.get("pddl") or "").lower())):
+                continue
+            if best is None or (ag.get("t") or 0) > (best.get("t") or 0):
+                best = ag
+        if best is None:
+            return new or None
+        old = best["request"].strip()
+        if not new or old in new:
+            return old
+        if new in old:
+            return old
+        room = 600 - len(new) - 4
+        if room < 40:
+            return new
+        old = old if len(old) <= room else old[: room - 3] + "..."
+        return f"{old} // {new}"
 
     def _send_pddl_goal(
         self, robot, goal, plugin=None, constraints=None, route="auto", engine=None

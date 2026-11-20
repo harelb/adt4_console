@@ -855,6 +855,16 @@ class SceneRepair:
                 robot, goal, batch, [(text or "the goal changes with the map", None, "high")],
                 proposed=proposed, proposed_constraints=p_cons, llm=True,
             )  # fmt: skip
+        if res.get("unsure"):
+            # it said the goal changes but proposed none (even when asked again):
+            # the operator decides; never written as "the goal stays the same"
+            return self._recommend(
+                robot, goal, batch,
+                [((f"the recheck says the goal may need to change but proposed no new goal: "
+                   f"{text or 'no reason given'}. Review it, and ask the chat for the new goal "
+                   "if it is right"), None, "high")],
+                proposed=goal["pddl"], llm=False,
+            )  # fmt: skip
         # The LLM keeps the goal. Still asked, as without it: an edit; a goal or
         # plan object removed or moved (high); a relevant new object (the same
         # goal may plan differently now).
