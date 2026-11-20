@@ -98,6 +98,10 @@ def uses_responses_api(model: str) -> bool:
     return bool(re.match(r"^gpt-([6-9]|\d\d)", model or ""))
 
 
+# the recheck's model when ADT4_RECHECK_MODEL is not set: the first the key offers
+RECHECK_MODELS = ("gpt-5.6-terra", "claude-opus-5-5")
+
+
 def recheck_reasoning() -> str:
     """The plan repair recheck's reasoning effort, separate from the chat
     panel's picker (the recheck has no panel): ADT4_RECHECK_REASONING, one of
@@ -234,7 +238,13 @@ Recheck the operator's request on the updated map:
    - An object the goal uses was removed, and the operator asked by description ("the nearest cone", "a cone by the door"): find another that still does what the operator asked (same class, same role). If there is none, say the request can no longer be done.
    - An object the goal uses was removed, and the operator named that object itself (its symbol, e.g. "O392", or "this cone" after it was shown): never pick another one in its place. Drop its task from the goal and keep the rest; if nothing is left, say the request can no longer be done.
    - A robot that holds an object (see the report) keeps it: never drop or reassign a task on the object it holds, and keep that task with that robot.
+   - Only objects in the map now count. Never put an object the report removed, or one marked retired (retired = true) or missing from the map, into the goal; filter them out in every run_cypher_query (WHERE coalesce(o.retired, false) = false). A task on a removed object is dropped, never kept.
+   - A removed object is never a reason to add other objects: drop its task (or, when the operator asked by description, put the one best substitute in its place). Never widen the goal to every object of its class.
+   - A new object counts only if it is in the request's scope. When the request names a region or place ("bags at building FACADE 2", "cones outside intersection 2"), check with run_cypher_query which region contains the new object; outside the scope it needs no task. A new object already where the request wants it (a cone already inside the destination region) needs no task either.
+   - A new object's task goes to the robot the request gave that kind of task (the cones to the robot moving the cones, the bags to the robot visiting the bags), in the same form as that robot's existing tasks (object-placed-by <robot> ... , visited-object-by <robot> ...).
+   - A new object to bring somewhere gets a destination place inside the destination region that no other task in the goal uses and no object already sits on (check with run_cypher_query). Never send two objects to the same place.
 3. If the goal that does what the operator asked differs from the current goal, propose it with the goal tool (it is held for the operator to confirm, never sent) and say in one sentence why. Start from the current goal and change only what the change requires: add or drop tasks, and keep every other task exactly as it is (the same object, the same destination place, the same robot) and every constraint still active. Never pick new destination places for tasks that already have one: the robots may already have done them, and a new place makes them move those objects again. Never only describe the change ("I will update the goal ..."): an answer without the goal tool keeps the current goal.
+   The current goal is the whole mission, often for several robots (a team goal sent through one of them), and it may already include earlier changes. The proposed goal replaces it: a task you leave out is cancelled for its robot. So never propose only the new tasks. Before calling the goal tool, check task by task that every task of the current goal is in your goal, unchanged, unless this change removed its object; handle every change of the report in one goal.
 4. If it is the same goal, do not propose anything; answer in one line that ends with "no change", e.g. "O99 (chair) added: not related to the request; no change."
 """
 
@@ -577,6 +587,21 @@ class ChatService:
             OPENAI_DEFAULT_MODEL if prov == "openai" else ANTHROPIC_DEFAULT_MODEL
         )
 
+    def recheck_model(self) -> str | None:
+        """The plan repair recheck's model, separate from the chat panel's
+        picker: ADT4_RECHECK_MODEL, else the strongest model the key offers
+        (RECHECK_MODELS, in order), else the configured default. Nov 20: with no
+        ADT4_LLM_MODEL the recheck ran on gpt-4.1 while the chat used a
+        reasoning model."""
+        offered = self.models()
+        want = (os.environ.get("ADT4_RECHECK_MODEL") or "").strip()
+        if want:
+            return want if want in offered else self.model()
+        for m in RECHECK_MODELS:
+            if m in offered:
+                return m
+        return self.model()
+
     def models(self) -> list[str]:
         prov = self.provider()
         if prov is None:
@@ -759,7 +784,8 @@ class ChatService:
     def _recheck_once(self, robot: str, goal: dict, prompt: str) -> dict | None:
         cards, says, errors = [], [], []
         for ev in self.stream(prompt, robot=robot, engine=goal.get("engine"),
-                              reasoning=recheck_reasoning(), recheck=True):  # fmt: skip
+                              model=self.recheck_model(), reasoning=recheck_reasoning(),
+                              recheck=True):  # fmt: skip
             ty = ev.get("type")
             if ty == "goal":
                 cards.append(ev)

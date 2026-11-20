@@ -2307,3 +2307,25 @@ def test_rig_b_answered_then_a_team_goal_via_euclid_then_a_question_for_hamilton
     )
     sr.decline(card["id"], held_id="94c4027f")
     assert p.decisions[-1] == {"id": "94c4027f", "decision": "decline"} and sent == []
+
+
+def test_the_recheck_has_its_own_model_and_reasoning(monkeypatch):
+    from adt4_console import chat as chat_mod
+
+    class Svc:
+        models = lambda self: ["gpt-4.1", "gpt-5.6-terra"]  # noqa: E731
+        model = lambda self, requested=None: "gpt-4.1"  # noqa: E731
+        recheck_model = chat_mod.ChatService.recheck_model
+
+    monkeypatch.delenv("ADT4_RECHECK_MODEL", raising=False)
+    assert Svc().recheck_model() == "gpt-5.6-terra"  # not the gpt-4.1 default
+    monkeypatch.setenv("ADT4_RECHECK_MODEL", "gpt-4.1")
+    assert Svc().recheck_model() == "gpt-4.1"
+    monkeypatch.setenv("ADT4_RECHECK_MODEL", "not-offered")
+    assert Svc().recheck_model() == "gpt-4.1"  # the configured default
+    monkeypatch.delenv("ADT4_RECHECK_REASONING", raising=False)
+    assert chat_mod.recheck_reasoning() == "medium"
+    monkeypatch.setenv("ADT4_RECHECK_REASONING", "high")
+    assert chat_mod.recheck_reasoning() == "high"
+    monkeypatch.setenv("ADT4_RECHECK_REASONING", "bogus")
+    assert chat_mod.recheck_reasoning() == "medium"
