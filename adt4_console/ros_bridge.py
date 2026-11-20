@@ -1979,30 +1979,51 @@ class RosBridge:
         messages ("one cone / propose plan repairing"), so a bag added later in
         building facade 2 was rechecked against a request about cones, and
         "visit all bags at building facade 2" was lost. A goal that shares no
-        object with any active goal is a new request and keeps only its own words."""
+        object with any active goal is a new request and keeps only its own words.
+
+        Only a goal still being worked on is continued: the robot it was sent
+        through still runs a plan, or it is the newest goal sent and some robot
+        still runs a plan (a team goal sent through a robot that got no work).
+        A finished mission's words are never carried into a later goal."""
+        from .scene_repair import _plan_done
+
         new = (str(request).strip() if request else "") or ""
         objs = set(re.findall(r"\bo\d+\b", (goal or "").lower()))
         if not objs:
             return new or None
+
+        def running(st) -> bool:
+            plan = (st.plan or {}) if isinstance(st.plan, dict) else {}
+            if not plan.get("actions"):
+                return bool(plan.get("plan_id"))  # a Path: no action reports
+            return not _plan_done({"plan": plan, "results": list(st.results)})
+
+        states = list(self._plan.values())
+        newest = max((st.active_goal or {}).get("t") or 0 for st in states) if states else 0
+        anyone = any(running(st) for st in states)
         best = None
-        for st in list(self._plan.values()):
+        for st in states:
             ag = st.active_goal or {}
             old = (ag.get("request") or "").strip()
             if not old or not objs & set(re.findall(r"\bo\d+\b", str(ag.get("pddl") or "").lower())):
                 continue
+            if not (running(st) or ((ag.get("t") or 0) >= newest and anyone)):
+                continue  # a finished goal: its words are not this request's
             if best is None or (ag.get("t") or 0) > (best.get("t") or 0):
                 best = ag
         if best is None:
             return new or None
         old = best["request"].strip()
-        if not new or old in new:
+        if not new or new in old:
             return old
-        if new in old:
-            return old
-        room = 600 - len(new) - 4
-        if room < 40:
-            return new
-        old = old if len(old) <= room else old[: room - 3] + "..."
+        if old in new:
+            return new  # the new words already hold the old ones, and say more
+        # 600 chars in all: the mission's words first (at least 200 of them), then
+        # the newest words (their end: the operator's latest message)
+        keep_old = min(len(old), max(200, 600 - len(new) - 4))
+        old = old if keep_old == len(old) else old[: keep_old - 3] + "..."
+        room = 600 - len(old) - 4
+        new = new if len(new) <= room else "..." + new[-(room - 3):]
         return f"{old} // {new}"
 
     def _send_pddl_goal(

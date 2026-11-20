@@ -468,12 +468,10 @@ class SceneRepair:
             f"{held['id'][:8]} robots={held['robots']}" if held else '""',
         )
         with self._lock:
-            # an answered id again (our answer was lost): its cards stay answered
-            # and waiting; only the same answer can be re-sent. Other ids are gone.
-            keep = held["id"] if held else None
-            self._held_done = collections.OrderedDict(
-                (k, v) for k, v in self._held_done.items() if k == keep
-            )
+            # an answered id again (our answer was lost, or a late copy after a
+            # planner restart): its cards stay answered; only the same answer can
+            # be re-sent. The planner asks again with a NEW id, so the last 20
+            # answered ids are kept, not only the current one.
             self._held = held
         self._publish()  # the hub only: nothing here publishes on ROS
 
@@ -858,11 +856,14 @@ class SceneRepair:
         if res.get("unsure"):
             # it said the goal changes but proposed none (even when asked again):
             # the operator decides; never written as "the goal stays the same"
+            # the rules' own findings (a goal object removed, ...) stay on the card;
+            # Confirm can only replan the current goal, so the card says so
+            why = [r for r, _w, p in q["findings"] if p == "high"]
+            why.append(f"the recheck says the goal may need to change but proposed no new goal: "
+                       f"{text or 'no reason given'}. Confirm replans the CURRENT goal without "
+                       "that change; to apply it, ask the chat for the new goal")  # fmt: skip
             return self._recommend(
-                robot, goal, batch,
-                [((f"the recheck says the goal may need to change but proposed no new goal: "
-                   f"{text or 'no reason given'}. Review it, and ask the chat for the new goal "
-                   "if it is right"), None, "high")],
+                robot, goal, batch, [("; ".join(why), None, "high")],
                 proposed=goal["pddl"], llm=False,
             )  # fmt: skip
         # The LLM keeps the goal. Still asked, as without it: an edit; a goal or
@@ -1058,12 +1059,17 @@ class SceneRepair:
             self._supersede(robot, rid, "a newer recommendation")
             self._recs[rid] = rec
             while len(self._recs) > self._max_recs and self._held is None:
-                self._recs.popitem(last=False)  # as main: no question held
+                # as main (no question held), but never a card being confirmed
+                old = next((k for k, r in self._recs.items() if r["status"] != "confirming"), None)
+                if old is None:
+                    break
+                del self._recs[old]
             while len(self._recs) > self._max_recs:
                 # the oldest card, but never this one or one that asks the held
                 # question (those may exceed the limit)
                 old = next((k for k, r in self._recs.items() if k != rid
-                            and not (r.get("held") and r["status"] in ("pending", "confirming"))
+                            and r["status"] != "confirming"  # being answered: get() follows
+                            and not (r.get("held") and r["status"] == "pending")
                             and not (r.get("result") or {}).get("waiting")), None)  # fmt: skip
                 if old is None:
                     break
@@ -1319,6 +1325,8 @@ class SceneRepair:
         _kind, t = self._deciding.pop(q["id"], (kind, self.clock()))
         if (self._held or {}).get("id") == q["id"]:  # gone meanwhile: nothing to keep
             self._held_done[q["id"]] = kind
+            while len(self._held_done) > 20:
+                self._held_done.popitem(last=False)
         self._answered_qs.append((t, q))  # changes received after the answer are new
         done = {"confirm": "confirmed", "decline": "declined"}.get(kind)
         for r in self._recs.values():

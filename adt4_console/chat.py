@@ -224,21 +224,31 @@ Recheck the operator's request on the updated map:
    - "all X" / "every X": a new X must be added to the goal; a removed X is dropped from it.
    - An object the goal uses was removed: find another that still does what the operator asked (same class, same role). If there is none, say the request can no longer be done.
 3. If the goal that does what the operator asked differs from the current goal, propose it with the goal tool (it is held for the operator to confirm, never sent) and say in one sentence why. Keep the robot assignment and every constraint still active. Never only describe the change ("I will update the goal ..."): an answer without the goal tool keeps the current goal.
-4. If it is the same goal, do not propose anything; answer in one line, e.g. "O99 (chair) added: not related to the request; no change."
+4. If it is the same goal, do not propose anything; answer in one line that ends with "no change", e.g. "O99 (chair) added: not related to the request; no change."
 """
 
 
 RECHECK_NUDGE = """{prompt}
 
 Your answer to this report was: {said!r}
-It describes a change to the goal, but you did not call the goal tool, so nothing was proposed. If the goal must change, call the goal tool now with the whole new goal. If it stays the same, answer only "no change"."""
+It proposes no goal and does not end with the verdict "no change", so nothing was proposed. If the goal must change, call the goal tool now with the whole new goal. If it stays the same, answer only "no change"."""
 
-# A recheck answer that says the goal stays (no goal proposed is then right)
-_KEEPS_GOAL = re.compile(
-    r"\b(no change|unchanged|not related|unrelated|stays the same|no replan|needs? no|"
-    r"no action|still correct|nothing to (do|change)|does not (change|affect))\b",
+# A recheck answer that announces a goal change ("O753 must also be brought in",
+# "I will update the goal"): with no goal tool call it is asked again
+_CHANGE_INTENT = re.compile(
+    r"\b(will|must|should|needs? to|has to|have to|to be)\b[^.;:]*?"
+    r"\b(add|added|update|include|included|bring|brought|replace|replaced|drop|dropped)\b",
     re.IGNORECASE,
 )
+
+
+def _keeps_goal(text: str) -> bool:
+    """The recheck's verdict is "no change" (the prompt asks it to end so): the
+    answer ends with it and announces no change to the goal. A phrase like "not
+    related" or "unchanged" elsewhere in an answer that also says a cone must be
+    added is not a verdict (2026-11-19, O753)."""
+    t = " ".join((text or "").split()).rstrip(" .!").lower()
+    return t.endswith("no change") and not _CHANGE_INTENT.search(t)
 
 
 def operator_request(message: str, turn=None, limit: int = 3) -> str:
@@ -712,14 +722,14 @@ class ChatService:
             return None
         prompt = RECHECK_PROMPT.format(report=report)
         out = self._recheck_once(robot, goal, prompt)
-        if out is None or out["goal"] is not None or _KEEPS_GOAL.search(out["text"]):
+        if out is None or out["goal"] is not None or _keeps_goal(out["text"]):
             return out
         # 2026-11-19: "O753 is outside intersection 2, so it must also be brought
         # in. I will update the goal ..." and no goal tool call; it read as "the
         # goal stays". Ask once for the goal itself.
-        log.warning("LLM recheck of %s described a change without a goal; asking again", robot)
+        log.warning("LLM recheck of %s proposed no goal without a no-change verdict; asking again", robot)
         again = self._recheck_once(robot, goal, RECHECK_NUDGE.format(prompt=prompt, said=out["text"]))
-        if again is not None and (again["goal"] is not None or _KEEPS_GOAL.search(again["text"])):
+        if again is not None and (again["goal"] is not None or _keeps_goal(again["text"])):
             return again
         # still no goal: the operator reviews it (never "the goal stays the same")
         return {**out, "unsure": True}
@@ -1413,7 +1423,8 @@ class ChatService:
             "in it is a known robot even with no Robot node in the database (Robot nodes "
             "only say where the robots that have a position are):\n" + "\n".join(lines)
         )
-        online = [r["robot"] for r in rows if r["online"] is True]
+        # a robot whose link is stale is still out working: on the team
+        online = [r["robot"] for r in rows if r["online"] is True or r.get("stale_s") is not None]
         offline = [r["robot"] for r in rows if is_offline(r)]
         stale = [r["robot"] for r in rows if r.get("stale_s") is not None]
         if stale:
@@ -1426,7 +1437,7 @@ class ChatService:
         if offline:
             # availability facts only; the goal rules themselves come from heracles_agents
             text += (
-                f"\nThe team now (online, connected): {', '.join(online) or 'none'}. "
+                f"\nThe team now (online, or link stale): {', '.join(online) or 'none'}. "
                 f'Offline — do not assign: {", ".join(offline)}. "All robots", "the team", '
                 '"both robots" and "every robot" mean the online robots, and a platform word '
                 '("the spots", "the huskies") the online robots of that platform; never put an '
@@ -1611,7 +1622,7 @@ class ChatService:
         roster = fleet_roster(self.ros, self.live)
         offline = {r["robot"] for r in roster if is_offline(r)}
         stale = [r["robot"] for r in roster if r.get("stale_s") is not None]
-        online = [r["robot"] for r in roster if r["online"] is True]
+        online = [r["robot"] for r in roster if r["online"] is True or r.get("stale_s") is not None]
         named = goal_named_robots(goal)
         allowed = use_robots(body.get("constraints"))
         asked = operator_named_robots(message, offline)
@@ -1676,7 +1687,7 @@ class ChatService:
         lagging = [r for r in team if r in stale]
         if lagging:
             note = (f"{', '.join(lagging)}: link stale (not heard from for a few seconds); "
-                    "the goal reaches it when the link is back")  # fmt: skip
+                    "check that it gets the plan")  # fmt: skip
             card["warning"] = "; ".join(x for x in (card.get("warning"), note) if x)
         put_down = (
             ""

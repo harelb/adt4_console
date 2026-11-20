@@ -79,7 +79,7 @@ def test_a_change_described_without_a_goal_is_asked_for_again():
     )
     out = c.recheck("hamilton", {"pddl": "(object-in-place o749 t6792)"}, "report")
     assert out["goal"] == NEW and not out.get("unsure")
-    assert len(seen) == 2 and "you did not call the goal tool" in seen[1] and SAID in seen[1]
+    assert len(seen) == 2 and "does not end with the verdict" in seen[1] and SAID in seen[1]
 
 
 def test_no_goal_even_when_asked_again_is_unsure():
@@ -114,8 +114,15 @@ def test_an_unsure_recheck_card_never_says_the_goal_stays():
 
 
 # ------------------------------------------------ the mission's request kept
-def _bridge(active):
-    b = NS(_plan={r: NS(active_goal=g) for r, g in active.items()})
+def _state(goal, running=True):
+    # a plan of two actions: none done (running) or both done (finished)
+    plan = {"plan_id": "p1", "actions": [{"type": "FOLLOW"}, {"type": "PICK"}]}
+    done = [] if running else [{"plan_id": "p1", "action_index": 1, "status": "done"}]
+    return NS(active_goal=goal, plan=plan, results=done)
+
+
+def _bridge(active, running=True):
+    b = NS(_plan={r: _state(g, running) for r, g in active.items()})
     return lambda goal, request: RosBridge._carried_request(b, goal, request)
 
 
@@ -143,3 +150,36 @@ def test_the_same_request_is_not_repeated():
     carry = _bridge({"hamilton": {"pddl": MISSION_GOAL, "request": MISSION, "t": 1.0}})
     assert carry(MISSION_GOAL, MISSION) == MISSION
     assert carry(MISSION_GOAL, None) == MISSION
+
+
+def test_a_finished_missions_request_is_not_carried():
+    # review 2026-11-20: active_goal is never cleared, so a mission done hours ago
+    # put "bring all the cones" in front of "bring O749 back to base"
+    carry = _bridge({"hamilton": {"pddl": MISSION_GOAL, "request": MISSION, "t": 1.0}}, running=False)
+    assert carry("(object-placed-by hamilton o749 t2273)", "bring O749 back to base") == "bring O749 back to base"
+
+
+def test_new_words_that_hold_the_old_ones_are_kept_whole():
+    # operator_request joins the last messages: "visit all bags / also visit all cones"
+    # contains the old request; it must not be cut back to "visit all bags"
+    carry = _bridge({"gauss": {"pddl": MISSION_GOAL, "request": "visit all bags", "t": 1.0}})
+    assert carry(MISSION_GOAL, "visit all bags / also visit all cones") == "visit all bags / also visit all cones"
+
+
+def test_a_long_new_request_still_keeps_the_mission_in_front():
+    carry = _bridge({"hamilton": {"pddl": MISSION_GOAL, "request": MISSION, "t": 1.0}})
+    got = carry(MISSION_GOAL, "x " * 400 + "use euclid too")
+    assert got.startswith(MISSION[:150]) and got.endswith("use euclid too") and len(got) <= 600
+
+
+def test_the_recheck_verdict_is_no_change_at_the_end():
+    from adt4_console.chat import _keeps_goal
+
+    assert _keeps_goal("O99 (chair) added: not related to the request; no change.")
+    assert _keeps_goal("no change")
+    # the review's examples: a phrase elsewhere is not the verdict
+    assert not _keeps_goal("O752 (bag) is not related; cone O753 is outside intersection 2, "
+                           "so it must also be brought in. I will update the goal")  # fmt: skip
+    assert not _keeps_goal("Keeping the robot assignment unchanged, O753 must be added.")
+    assert not _keeps_goal("removal of O12 does not affect the plan, but new cone O753 must be brought in")
+    assert not _keeps_goal("O753 must be added; no change")

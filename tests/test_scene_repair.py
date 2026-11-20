@@ -1998,9 +1998,12 @@ def test_per_question_records_are_bounded():
     for i in range(30):
         sr.on_replan_pending(pending_msg(["hamilton"], qid=f"q{i}"))
         sr.decline(_pending(sr)[0]["id"])
-    assert list(sr._held_done) == ["q29"] and len(sr._answered_qs) <= 20
+    assert list(sr._held_done) == [f"q{i}" for i in range(10, 30)] and len(sr._answered_qs) <= 20
     sr.on_replan_pending("")
-    assert not sr._held_done and not sr._deciding
+    # an answered id is remembered past "" (a late copy is not asked again)
+    assert "q29" in sr._held_done and not sr._deciding
+    sr.on_replan_pending(pending_msg(["hamilton"], qid="q29"))
+    assert not [r for r in _pending(sr) if (r.get("held") or {}).get("id") == "q29"]
 
 
 def test_no_region_lookup_unless_a_region_is_named():

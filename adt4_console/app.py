@@ -380,16 +380,18 @@ def _region_names(svc) -> list[dict]:
     if t is None:
         return []
     key = (t.id, getattr(getattr(svc, "scene_repair", None), "map_version", None))
-    if key not in _REGIONS_CACHE:
+    got = _REGIONS_CACHE.get(key)
+    if got is None:
         try:
             rows = t.query(
                 "MATCH (r:Room) WHERE r.name IS NOT NULL RETURN r.nodeSymbol AS symbol, r.name AS name"
             )
         except Exception:  # noqa: BLE001
             return []
-        _REGIONS_CACHE.clear()
-        _REGIONS_CACHE[key] = [dict(r) for r in rows]
-    return _REGIONS_CACHE[key]
+        got = [dict(r) for r in rows]
+        _REGIONS_CACHE.clear()  # another thread may clear it too: return our own list
+        _REGIONS_CACHE[key] = got
+    return got
 
 
 def relocalized_xy(svc, robot: str):

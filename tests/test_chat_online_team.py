@@ -56,7 +56,7 @@ def test_roster_marks_gauss_offline_and_the_team_is_the_online_robots():
     assert rows["gauss"]["online"] is False  # in the topology, never connected
     text = chat()._system(None, "euclid")
     team_line = next(x for x in text.splitlines() if x.startswith("The team now"))
-    assert "online, connected): euclid, hamilton." in team_line
+    assert "(online, or link stale): euclid, hamilton." in team_line
     assert (
         "Offline — do not assign: " in team_line
         and "gauss" in team_line.split("do not assign:")[1]
