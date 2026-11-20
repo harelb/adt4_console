@@ -34,6 +34,23 @@ export interface AwcdState {
   changes: AwcdChange[];
   counts: {added: number; removed: number};
   robots: Record<string, {t: number; added: number; removed: number}>;
+  /** each robot's own report on /awcd_changes, in its frame_id (older servers: absent) */
+  raw?: Record<string, {t: number; frame_id: string; changes: AwcdChange[]}>;
+}
+
+/** A reconciled change is shown unless every robot it is attributed to is
+ *  hidden (unattributed changes are shown while the "?" entry is). */
+export function changeVisible(c: Pick<AwcdChange, "robots">, hidden: Record<string, boolean>): boolean {
+  if (!c.robots.length) return !hidden["?"];
+  return c.robots.some(r => !hidden[r]);
+}
+
+/** Robots that appear in the change set (attribution or raw reports), sorted. */
+export function awcdRobots(st: AwcdState | null): string[] {
+  if (!st) return [];
+  const out = new Set<string>(Object.keys(st.robots));
+  for (const c of st.changes) for (const r of c.robots) out.add(r);
+  return [...out].sort();
 }
 
 /** awcd_visualizer's RED / GREEN */
