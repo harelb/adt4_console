@@ -254,7 +254,7 @@ def keeps_goal(text: str) -> bool:
     elsewhere is not enough ("O752 is not related; O753 must be added ...",
     "keeping the robots unchanged, O753 ...", "O753 must be added; otherwise no
     change"): those are asked again."""
-    t = " ".join(re.sub(r"[*_`\"']", "", text or "").split()).rstrip(" .!").lower()
+    t = " ".join(re.sub(r"[*_`\"\u201c\u201d]", "", text or "").split()).rstrip(" .!'").lower()
     if not _VERDICT.search(t):
         return False
     return not any(

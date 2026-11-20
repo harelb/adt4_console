@@ -183,3 +183,20 @@ def test_benign_no_change_answers_keep_the_goal():
               "O99 is a chair, so it does not need to be included; no change."):  # fmt: skip
         assert keeps_goal(t), t
     assert not keeps_goal("O753 must be added; otherwise no change")
+
+
+def test_a_contraction_is_a_negation_too():
+    assert keeps_goal("O99 is not related, so it doesn't need to be added; no change.")
+
+
+def test_a_team_goal_through_an_idle_robot_carries_only_while_its_robots_work():
+    from tests.test_nov19_fixes import MISSION, MISSION_GOAL, _bridge
+
+    team = {"pddl": MISSION_GOAL, "request": MISSION, "t": 2.0,
+            "constraints": [{"predicate": "use-robots", "symbols": ["hamilton", "euclid"]}]}  # fmt: skip
+    # sent through gauss, which got no work; euclid (in use-robots) works on it
+    carry = _bridge({"gauss": team, "euclid": None}, busy=["euclid"])
+    assert carry(MISSION_GOAL, "use hamilton and euclid equally").startswith(MISSION)
+    # only an unrelated robot works: the finished team goal's words are not carried
+    carry = _bridge({"gauss": team, "apollo": None}, busy=["apollo"])
+    assert carry(MISSION_GOAL, "bring O749 back") == "bring O749 back"

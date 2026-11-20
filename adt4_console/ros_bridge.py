@@ -2011,8 +2011,19 @@ class RosBridge:
         for robot, st in items:
             ag = getattr(st, "active_goal", None) or {}
             old = (ag.get("request") or "").strip()
-            if not old or not (robot in busy or ((ag.get("t") or 0) >= newest and busy)):
+            if not old:
                 continue
+            if robot not in busy:
+                # the newest goal, recorded on a robot that got no work: it
+                # counts while a robot it names (or, naming none, any robot) works
+                if (ag.get("t") or 0) < newest:
+                    continue
+                words = set(re.findall(r"[a-z0-9_]+", " ".join(
+                    [str(ag.get("pddl") or "")] + [" ".join(map(str, c.get("symbols") or []))
+                                                   for c in ag.get("constraints") or [] if isinstance(c, dict)]).lower()))
+                named = words & set(self._plan)
+                if not (busy & named if named else busy):
+                    continue
             old_objs = re.findall(r"\bo\d+\b", str(ag.get("pddl") or "").lower())
             if not objs & set(old_objs):
                 continue
