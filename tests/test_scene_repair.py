@@ -642,13 +642,31 @@ def test_a_new_cone_for_all_the_cones_proposes_the_goal_with_it():
     assert sent[-1][1] == goal
 
 
-def test_a_relevant_new_object_keeps_replan_same_goal_when_the_llm_keeps_the_goal():
+def test_a_detected_relevant_object_the_llm_keeps_the_goal_for_makes_no_card():
+    # Nov 20: "new tree O566 relevant to the goal. The goal stays the same" cards
     sr, _, _, run = make_llm(lambda r, g, rep: NO_CHANGE)
     sr.on_applied("awcd/euclid", 5, [_added("o43", "cone")])
+    run()
+    assert _pending(sr) == []
+
+
+def test_an_edited_relevant_object_the_llm_keeps_the_goal_for_still_makes_a_card():
+    sr, _, _, run = make_llm(lambda r, g, rep: NO_CHANGE)
+    sr.on_applied("sget/chat", 5, [_added("o43", "cone")], local=True)
     run()
     (rec,) = _pending(sr)
     assert not rec["llm"] and rec["proposed_goal"] == CONES and rec["rewrites"] == []
     assert "new cone O43" in rec["reason"]
+
+
+def test_a_held_card_proposes_the_goal_without_the_removed_object():
+    # Nov 20 sr18: "o512 removed before the visit the goal asks for"
+    goals = {"hamilton": {"pddl": "(and (visited-object o20) (visited-object o512))",
+                          "constraints": [], "engine": None, "request": "x", "t": 1.0}}  # fmt: skip
+    sr, _, _, _ = make_held(goals=goals)
+    sr.on_replan_pending(pending_msg(["hamilton"], reasons=["o512 removed before the visit the goal asks for"]))
+    rec = _by_robot(sr)["hamilton"]
+    assert rec["held"] and rec["proposed_goal"] == "(visited-object o20)"
 
 
 def test_a_route_side_change_the_llm_finds_harmless_asks_nothing():
@@ -976,7 +994,7 @@ def test_confirming_keeps_the_operators_words_with_the_goal():
     sr = SceneRepair(None, send=lambda *a, **k: sent.append((a, k)) or {"ok": True},
                      active_goals=lambda: goals, class_of=lambda s: (MAP.get(sym_key(s)) or (None,))[0],
                      recheck=lambda r, g, rep: NO_CHANGE, run_later=lambda d, fn: fn())  # fmt: skip
-    sr.on_applied("awcd/euclid", 5, [_added("o43", "cone")])
+    sr.on_applied("console/op", 5, [_added("o43", "cone")], local=True)
     (rec,) = _pending(sr)
     sr.confirm(rec["id"], "original")
     assert sent[-1][1] == {"request": "Visit all the cones"}
@@ -1345,7 +1363,7 @@ def test_the_llm_proposing_the_same_request_on_a_held_card_confirms():
     p = Planner()
     sr.decide, p.sr = p, sr
     sr.on_applied(
-        "awcd/hamilton", 5, [_added("o43", "cone")]
+        "console/op", 5, [_added("o43", "cone")], local=True
     )  # relevant new cone: same goal asked
     run()
     sr.on_replan_pending(pending_msg(["hamilton"]))
@@ -1509,7 +1527,7 @@ def test_a_new_box_in_region_5_is_rechecked_for_visit_all_objects_in_region_5():
         region_of=_region_of,
         regions=lambda: list(REGIONS.values()),
     )
-    sr.on_applied("awcd/hamilton", 5, [_added("o77", "box")])
+    sr.on_applied("console/op", 5, [_added("o77", "box")], local=True)
     run()
     assert [a[0] for a in asked] == ["hamilton"]
     (rec,) = _pending(sr)

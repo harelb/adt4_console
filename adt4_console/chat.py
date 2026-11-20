@@ -325,7 +325,9 @@ SGET_TURN_NOTE = (
     'change with the map edit tools you have (e.g. "SGET: move object 52 to t142" moves the '
     "object O52 in the map to place t142's position: look the position up, then "
     "move_scene_object). If no edit tool can make the change, say so; do not offer a goal "
-    "instead unless the operator asks for one."
+    "instead unless the operator asks for one. A detection with no count (\"detect cones at "
+    "T(1669)\") is ONE object of that class at that place: propose it right away; never ask how "
+    "many. Propose one edit per detection in the message, all in this reply."
 )
 
 

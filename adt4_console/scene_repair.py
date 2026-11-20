@@ -138,6 +138,10 @@ def _conjuncts(pddl: str) -> list[str]:
     return out
 
 
+# the planner's held reason naming a removed object: "o512 removed before ..."
+_REMOVED_IN_REASON = re.compile(r"\b([a-zA-Z]\d+) removed\b")
+
+
 def drop_removed(pddl: str, gone) -> str | None:
     """``pddl`` without the top-level tasks that name a removed symbol (the
     planner cannot read a goal naming one): the goal itself when it names
@@ -589,9 +593,21 @@ class SceneRepair:
                 goal = {"pddl": "", "constraints": [], "engine": None, "unknown": True}
             batch = {"source": h["source"] or "omniplanner", "origin": "planner",
                      "map_version": None, "changes": []}  # fmt: skip
-            self._recommend(
-                robot, goal, batch, [(x, None, "high") for x in h["reasons"]]
-            )
+            findings = [(x, None, "high") for x in h["reasons"]]
+            # Nov 20 (sr18): "o512 removed before the visit the goal asks for",
+            # and the card offered the running goal, which still names O512 --
+            # a goal the planner cannot plan. Offer it without the removed ones;
+            # Confirm then sends that goal (it answers the question).
+            gone = sorted({m.lower() for x in h["reasons"]
+                           for m in _REMOVED_IN_REASON.findall(str(x))})  # fmt: skip
+            kept = drop_removed(goal["pddl"], gone) if gone and goal.get("pddl") else None
+            if kept and not _same_goal(kept, goal["pddl"]):
+                batch["changes"] = [{"kind": "removed", "symbol": s.upper(), "label": ""} for s in gone]
+                findings.append((f"proposed without the removed {', '.join(s.upper() for s in gone)}: "
+                                 "its tasks are dropped, the rest is kept", None, "high"))  # fmt: skip
+                self._recommend(robot, goal, batch, findings, proposed=kept, llm=False)
+            else:
+                self._recommend(robot, goal, batch, findings)
 
     def on_replan_request(self, reason: str) -> None:
         self._event("replan_request", str(reason))
@@ -945,7 +961,14 @@ class SceneRepair:
                 if c["kind"] == "added"
             }
         )
-        if news:
+        # A new object of a relevant class that the LLM judged not to change the
+        # goal is no card on its own when change detection reported it: on Nov 20
+        # every new tree made one ("new tree O566 ... the goal stays the same"),
+        # and confirming it only replans the same goal. An operator's edit still
+        # gets one (they asked about that object).
+        named = {sym_key(s) for s in goal_symbols(goal.get("pddl") or "")}
+        restored = any(sym_key(c["symbol"]) in named for c in q["relevant"] if c["kind"] == "added")
+        if news and (why or q["edit"] or restored):
             why.append(f"new {', '.join(news)} relevant to the goal")
         if why:
             reason = "; ".join(why) + (
