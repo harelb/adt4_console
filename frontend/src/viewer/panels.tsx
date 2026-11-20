@@ -21,6 +21,7 @@ import {placeLabelsKey, useViewStyle, type PlaceLabelsKey} from "../stores/viewS
 import {BackgroundControl, HeightsControl, PathControls, RegionControls, RobotLookControl, ThemeControl} from "./StylePanels";
 import {ClearMapRow, ClearPathsRow} from "./ClearPaths";
 import {GroundImageryControls} from "./GroundImagery";
+import {AwcdLayerControls} from "./AwcdLayerControls";
 
 const KIND_LABEL: Record<string, string> = {neo4j: "Neo4j", file: "file", live: "live"};
 
@@ -129,6 +130,7 @@ export function LayersPanel() {
       <GroundImageryControls />
       {layers.some(([, l]) => l.kind === "rooms") && <RegionControls />}
       {(layers.some(([, l]) => l.kind === "agents") || order.some(id => sources[id]?.trajectory?.length)) && <PathControls />}
+      <AwcdLayerControls />
       <ul className="layer-list">
         {layers.map(([k, l]) => (
           <li key={k}>
