@@ -1993,13 +1993,17 @@ def test_a_card_proposing_another_object_is_not_retired_with_the_question():
 
 def test_per_question_records_are_bounded():
     sr, _, _, p = make_held(planner=Planner(clears=False))
-    for i in range(30):
+    for i in range(60):
         sr.on_replan_pending(pending_msg(["hamilton"], qid=f"q{i}"))
         sr.decline(_pending(sr)[0]["id"])
-    assert list(sr._held_done) == ["q29"] and len(sr._answered_qs) <= 20
+    # answered ids are kept (a new question has a new id), the newest 50
+    assert list(sr._held_done) == [f"q{i}" for i in range(10, 60)] and len(sr._answered_qs) <= 20
     sr.on_replan_pending("")
-    # an empty message (or a planner restart) keeps the answered ids, bounded
-    assert list(sr._held_done) == ["q29"] and not sr._deciding
+    # an empty message (or a planner restart) keeps them too
+    assert "q59" in sr._held_done and len(sr._held_done) <= 50 and not sr._deciding
+    # a late copy of an answered question is not asked again
+    sr.on_replan_pending(pending_msg(["hamilton"], qid="q59"))
+    assert not [r for r in _pending(sr) if (r.get("held") or {}).get("id") == "q59"]
 
 
 def test_no_region_lookup_unless_a_region_is_named():

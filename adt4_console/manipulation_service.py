@@ -355,13 +355,19 @@ class ManipulationApprovalService:
                 "requests": requests,
             }
 
-    def withdraw(self, robot: str, why: str) -> int:
+    def withdraw(self, robot: str, why: str, plan_id=None) -> int:
         """Close the robot's pending request: its action ended without it (the
         sequence was pre-empted or failed), and the executor waits no more. The
-        protocol has no cancel message, so the console closes it itself."""
+        protocol has no cancel message, so the console closes it itself.
+        ``plan_id``: the plan whose action ended; a request made under another
+        plan (a newer one: results and requests arrive on separate topics and
+        may cross over fleetlink) is not touched."""
         n = 0
         with self._lock:
             for request in self._requests.values():
+                mine = request.get("_plan_id")
+                if plan_id is not None and mine is not None and mine != plan_id:
+                    continue
                 if request["robot"] == robot and request["status"] == "pending":
                     request["status"], request["withdrawn"] = "withdrawn", why
                     self._drop_media(request)
@@ -382,8 +388,10 @@ class ManipulationApprovalService:
             log.exception("publishing %s", HUB_TOPIC)
 
     # ----------------------------------------------------------- requests
-    def receive_request(self, robot: str, message) -> dict:
-        """A ManipulationApprovalRequest from ``robot``: decode its images, supersede the robot's previous open request."""
+    def receive_request(self, robot: str, message, plan_id=None) -> dict:
+        """A ManipulationApprovalRequest from ``robot``: decode its images, supersede the robot's previous open request.
+        ``plan_id``: the robot's plan as the console knows it now (the request
+        itself names none): only that plan's end withdraws it."""
         declared = str(getattr(message, "robot_id", "") or "")
         if declared and declared != robot:
             raise ValueError("Request robot_id does not match its subscription")
@@ -477,6 +485,7 @@ class ManipulationApprovalService:
             "image_x": x,
             "image_y": y,
             "selection": selection,
+            "_plan_id": plan_id,
         }
         with self._lock:
             self._expire_locked()

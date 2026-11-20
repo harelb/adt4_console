@@ -236,12 +236,32 @@ Your answer to this report was: {said!r}
 You did not call the goal tool, so nothing was proposed, and the answer does not end with "no change". If the goal must change, call the goal tool now with the whole new goal. If it stays the same, answer only "no change"."""
 
 
+# A recheck answer that announces a goal change ("O753 must also be brought in",
+# "I will update the goal"): with no goal tool call it is asked again
+_CHANGE_INTENT = re.compile(
+    r"\b(will|must|should|needs? to|has to|have to|to be)\b[^.;:]*?"
+    r"\b(add|added|update|include|included|bring|brought|replace|replaced|drop|dropped)\b",
+    re.IGNORECASE,
+)
+_VERDICT = re.compile(r"(^no change\b|\bno change( (is )?(needed|required|to the goal))?$)")
+
+
 def keeps_goal(text: str) -> bool:
-    """A recheck answer that proposed no goal says the goal stays: it ends
-    with "no change", the one-line form RECHECK_PROMPT asks for. A phrase
+    """A recheck answer that proposed no goal says the goal stays: its verdict
+    is "no change" (the one-line form RECHECK_PROMPT asks for), at its start or
+    end ("No change to the goal.", "**No change.**", "...; no change needed"),
+    and it announces no change ("should not be added" is none). A phrase
     elsewhere is not enough ("O752 is not related; O753 must be added ...",
-    "keeping the robots unchanged, O753 ..."): those are asked again."""
-    return bool(re.search(r"\bno change\W*$", (text or "").strip(), re.IGNORECASE))
+    "keeping the robots unchanged, O753 ...", "O753 must be added; otherwise no
+    change"): those are asked again."""
+    t = " ".join(re.sub(r"[*_`\"']", "", text or "").split()).rstrip(" .!").lower()
+    if not _VERDICT.search(t):
+        return False
+    return not any(
+        # "does not need to be included": the negation may come just before
+        not re.search(r"\bnot\b|n't\b|\bno need\b", t[max(0, m.start() - 12) : m.end()])
+        for m in _CHANGE_INTENT.finditer(t)
+    )
 
 
 def operator_request(message: str, turn=None, limit: int = 3) -> str:

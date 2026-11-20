@@ -140,3 +140,46 @@ def test_a_stale_robot_is_offered_only_for_its_own_work():
     c._busy = lambda: {"hamilton": "g"}
     assert c._available({"robot": "hamilton", "online": False, "stale_s": 20.0})
     assert not c._available({"robot": "euclid", "online": False, "stale_s": 20.0})
+
+
+# ------------------------------------------------ v3 (review of 3d0e286)
+def test_a_grasp_request_of_a_newer_plan_is_not_withdrawn():
+    # the old plan's PREEMPTED arrives after the new plan's Pick asked (fleetlink
+    # relays the two topics separately): the new request stays
+    svc = make_service()
+    new = svc.receive_request("hamilton", request(), plan_id="p2")
+    assert svc.withdraw("hamilton", "pick preempted", plan_id="p1") == 0
+    assert new["id"] in [r["id"] for r in svc.pending()["requests"]]
+    assert svc.withdraw("hamilton", "pick failed", plan_id="p2") == 1
+
+
+def test_only_a_pick_result_withdraws_a_grasp_request():
+    from types import SimpleNamespace as NS
+    from adt4_console.ros_bridge import RosBridge, RobotPlanState
+
+    calls = []
+    b = RosBridge.__new__(RosBridge)
+    b._plan = {"hamilton": RobotPlanState()}
+    b.__dict__["_goals"] = NS(on_result=lambda *a, **k: None)
+    b.manipulation = NS(withdraw=lambda robot, why, plan_id=None: calls.append((robot, why, plan_id)))
+    b._publish_plan = lambda robot: None
+    hdr = NS(stamp=NS(sec=1, nanosec=0))
+    for i, (typ, st) in enumerate([("GAZE", "FAILED"), ("FOLLOW", "PREEMPTED"), ("PICK", "SUCCESS"), ("PICK", "PREEMPTED")]):
+        b._on_result("hamilton", NS(plan_id="p1", action_index=i, action_type=typ, status=st, detail="", header=hdr))
+    assert calls == [("hamilton", "pick preempted", "p1")]
+
+
+def test_an_uppercase_and_goal_is_split():
+    from adt4_console.scene_repair import _conjuncts, drop_removed
+
+    assert _conjuncts("(AND (visited-object o1) (visited-object o2))") == ["(visited-object o1)", "(visited-object o2)"]
+    assert drop_removed("(AND (visited-object o1) (visited-object o2))", {"o1"}) == "(visited-object o2)"
+
+
+def test_benign_no_change_answers_keep_the_goal():
+    for t in ("**No change.**", "No change to the goal.", "No change: O99 is unrelated.",
+              "O99 (chair) added; no change needed.",
+              "O99 (cone) added outside intersection 2, so it should not be added; no change.",
+              "O99 is a chair, so it does not need to be included; no change."):  # fmt: skip
+        assert keeps_goal(t), t
+    assert not keeps_goal("O753 must be added; otherwise no change")

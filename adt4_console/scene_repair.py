@@ -117,10 +117,11 @@ def rewrite_goal(pddl: str, old: str, new: str) -> str:
 def _conjuncts(pddl: str) -> list[str]:
     """The top-level conjuncts of ``(and ...)``, or ``[pddl]`` for any other goal."""
     text = (pddl or "").strip()
-    if not re.match(r"\(\s*and\b", text, re.IGNORECASE):
+    head = re.match(r"\(\s*and\b", text, re.IGNORECASE)
+    if not head:
         return [text] if text else []
     body, out, depth, start = (
-        text[text.index("and") + 3 : text.rindex(")")],
+        text[head.end() : text.rindex(")")],  # "(AND ...)" too
         [],
         0,
         None,
@@ -512,11 +513,8 @@ class SceneRepair:
             # and waiting; only the same answer can be re-sent. Other ids are gone.
             # An empty message (no question now, or a planner restarting) keeps
             # the answered ids: a republished copy is still not asked again.
-            if held is not None:
-                keep = held["id"]
-                self._held_done = collections.OrderedDict(
-                    (k, v) for k, v in self._held_done.items() if k == keep
-                )
+            # A new question keeps them too: the planner asks again with a NEW
+            # id, so a remembered id never hides a question.
             while len(self._held_done) > 50:
                 self._held_done.popitem(last=False)
             self._held = held
@@ -1114,7 +1112,9 @@ class SceneRepair:
             while len(self._recs) > self._max_recs and self._held is None:
                 # as main (no question held), but never a card being confirmed
                 old = next((k for k, r in self._recs.items()
-                            if r["status"] != "confirming"), None)  # fmt: skip
+                            if k != rid and r["status"] != "confirming"), None)  # fmt: skip
+                if old is None and self._max_recs == 0:
+                    old = rid  # as main: no history kept at all
                 if old is None:
                     break
                 del self._recs[old]
@@ -1224,16 +1224,24 @@ class SceneRepair:
             # cannot read it ("names o291, which the scene graph does not
             # have"). (Answering the planner's held question, above, leaves the
             # dropping to the planner.)
-            gone = {
-                c["symbol"]
-                for c in rec.get("changes") or []
-                if c.get("kind") == "removed"
-            }
-            kept = drop_removed(pddl, gone)
+            # removed by the latest change about it (removed, then added back:
+            # not gone)
+            last = {}
+            for c in rec.get("changes") or []:
+                if c.get("symbol"):
+                    last[sym_key(c["symbol"])] = c.get("kind")
+            gone = {k for k, kind in last.items() if kind == "removed"}
+            try:
+                kept = drop_removed(pddl, gone)
+            except Exception:  # noqa: BLE001 -- never leave the card confirming
+                kept = pddl
+                log.exception("dropping removed objects from %r", pddl)
+            dropped = [c for c in _conjuncts(pddl) if c not in _conjuncts(kept or "")] if kept != pddl else []
             if kept is None:
                 rec["status"] = "pending"
                 if was:  # the claim goes; nothing was sent
                     self._deciding.pop(was, None)
+                self._publish()  # the card shows pending again
                 raise NotPending(
                     f"recommendation {rid}: nothing is left of the goal without the removed "
                     f"{', '.join(sorted(gone))}; ask the chat for a new goal, or decline"
@@ -1300,8 +1308,13 @@ class SceneRepair:
             rec.update(status="confirmed", t_done=self.clock(),
                        result={"ok": bool((res or {}).get("ok", True)), "variant": variant, "pddl": pddl,
                                "send": res, "waited_s": round(waited, 2),
-                               **({} if fresh else {"warning": "the planner had not received the changed "
-                                                             "map yet; the goal may be judged on the old one"})})  # fmt: skip
+                               **({"dropped": dropped} if dropped else {}),
+                               **({"warning": w} if (w := "; ".join(x for x in (
+                                   (f"not sent (they name a removed object): {' '.join(dropped)}"
+                                    if dropped else ""),
+                                   ("" if fresh else "the planner had not received the changed "
+                                                     "map yet; the goal may be judged on the old one"),
+                               ) if x)) else {})})  # fmt: skip
             out = dict(rec)
         self._publish()
         return out
@@ -1406,6 +1419,8 @@ class SceneRepair:
         _kind, t = self._deciding.pop(q["id"], (kind, self.clock()))
         if (self._held or {}).get("id") == q["id"]:  # gone meanwhile: nothing to keep
             self._held_done[q["id"]] = kind
+            while len(self._held_done) > 50:
+                self._held_done.popitem(last=False)
         self._answered_qs.append((t, q))  # changes received after the answer are new
         done = {"confirm": "confirmed", "decline": "declined"}.get(kind)
         for r in self._recs.values():

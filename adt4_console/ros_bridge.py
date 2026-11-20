@@ -1408,7 +1408,8 @@ class RosBridge:
 
     def _on_manipulation_request(self, robot: str, msg) -> None:
         try:
-            self.manipulation.receive_request(robot, msg)
+            plan_id = (self._plan[robot].plan or {}).get("plan_id") if robot in self._plan else None
+            self.manipulation.receive_request(robot, msg, plan_id=plan_id)
         except Exception:  # noqa: BLE001
             log.exception("manipulation request from %s", robot)
 
@@ -1650,11 +1651,12 @@ class RosBridge:
             self.goals.on_result(robot, res)
             status = str(res["status"] or "").upper()
             manip = getattr(self, "manipulation", None)
-            if manip is not None and status and status != "SUCCESS":
-                # a grasp it asked for is no longer waited on
-                manip.withdraw(
-                    robot, f"{res['action_type'] or 'action'} {status.lower()}"
-                )
+            # only a Pick asks for a grasp: its end (pre-empted / failed) means
+            # the grasp it asked for is no longer waited on; a Gaze or Follow
+            # that fails, or an older plan's late result, leaves a request alone
+            if (manip is not None and status and status != "SUCCESS"
+                    and str(res["action_type"] or "").upper() == "PICK"):  # fmt: skip
+                manip.withdraw(robot, f"pick {status.lower()}", plan_id=res["plan_id"] or None)
         self._plan[robot].results.append(res)
         self._publish_plan(robot)
 
@@ -2001,11 +2003,15 @@ class RosBridge:
             busy = set(self.goals.busy_robots())
         except Exception:  # noqa: BLE001 -- no tracker: nothing is known to run
             busy = set()
+        items = list(self._plan.items())
+        # a team goal is recorded on the robot it was sent through, which may
+        # have got no work of its own: the newest goal counts while any robot works
+        newest = max(((getattr(st, "active_goal", None) or {}).get("t") or 0 for _r, st in items), default=0)
         best = None
-        for robot, st in list(self._plan.items()):
+        for robot, st in items:
             ag = getattr(st, "active_goal", None) or {}
             old = (ag.get("request") or "").strip()
-            if not old or robot not in busy:
+            if not old or not (robot in busy or ((ag.get("t") or 0) >= newest and busy)):
                 continue
             old_objs = re.findall(r"\bo\d+\b", str(ag.get("pddl") or "").lower())
             if not objs & set(old_objs):
@@ -2019,10 +2025,12 @@ class RosBridge:
             return old
         if old in new:
             return new  # it already says it all (and adds to it): keep the new words
-        room = 600 - len(new) - 4
-        if room < 40:
-            return new
-        old = old if len(old) <= room else old[: room - 3] + "..."
+        # 600 chars in all: the mission's words first (at least 200 of them), then
+        # the newest words (their end: the operator's latest message)
+        keep_old = min(len(old), max(200, 600 - len(new) - 4))
+        old = old if keep_old == len(old) else old[: keep_old - 3] + "..."
+        room = 600 - len(old) - 4
+        new = new if len(new) <= room else "..." + new[-(room - 3):]
         return f"{old} // {new}"
 
     def _send_pddl_goal(
