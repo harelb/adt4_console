@@ -203,6 +203,14 @@ def test_awcd_change_set_attribution_and_clear():
     )
     assert set(st["robots"]) == {"euclid", "hamilton"}
     assert st["robots"]["hamilton"] == {"t": 100.0, "added": 1, "removed": 1}
+    # each robot's raw report, for the Layers "raw robot reports" overlay
+    raw = st["raw"]["hamilton"]
+    assert raw["frame_id"] == "map" and raw["t"] == 100.0
+    assert [(c["kind"], c["id"], c["key"], c["robots"]) for c in raw["changes"]] == [
+        ("removed", 42, "hamilton:r42", ["hamilton"]),
+        ("added", 5, "hamilton:a5", ["hamilton"]),
+    ]
+    assert "reconciled" not in st["raw"]
     # a base station clear: robots' reports dropped; the reconciled set follows
     # when the base station republishes it (an empty set here)
     cs.forget(["euclid"])
@@ -212,7 +220,7 @@ def test_awcd_change_set_attribution_and_clear():
         "reconciled_changes"
     )
     cs.forget()
-    assert cs.state()["robots"] == {}
+    assert cs.state()["robots"] == {} and cs.state()["raw"] == {}
 
 
 def test_changes_route(settings):
