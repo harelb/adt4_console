@@ -355,6 +355,24 @@ class ManipulationApprovalService:
                 "requests": requests,
             }
 
+    def withdraw(self, robot: str, why: str) -> int:
+        """Close the robot's pending request: its action ended without it (the
+        sequence was pre-empted or failed), and the executor waits no more. The
+        protocol has no cancel message, so the console closes it itself."""
+        n = 0
+        with self._lock:
+            for request in self._requests.values():
+                if request["robot"] == robot and request["status"] == "pending":
+                    request["status"], request["withdrawn"] = "withdrawn", why
+                    self._drop_media(request)
+                    n += 1
+            if n and self._current.get(robot) is not None:
+                self._current.pop(robot, None)
+        if n:
+            log.info("withdrew %d manipulation request(s) of %s: %s", n, robot, why)
+            self._notify()
+        return n
+
     def _notify(self) -> None:
         if self.hub is None:
             return

@@ -79,7 +79,7 @@ def test_a_change_described_without_a_goal_is_asked_for_again():
     )
     out = c.recheck("hamilton", {"pddl": "(object-in-place o749 t6792)"}, "report")
     assert out["goal"] == NEW and not out.get("unsure")
-    assert len(seen) == 2 and "you did not call the goal tool" in seen[1] and SAID in seen[1]
+    assert len(seen) == 2 and "did not call the goal tool" in seen[1] and SAID in seen[1]
 
 
 def test_no_goal_even_when_asked_again_is_unsure():
@@ -114,8 +114,12 @@ def test_an_unsure_recheck_card_never_says_the_goal_stays():
 
 
 # ------------------------------------------------ the mission's request kept
-def _bridge(active):
-    b = NS(_plan={r: NS(active_goal=g) for r, g in active.items()})
+def _bridge(active, busy=None):
+    """active: {robot: active goal}; busy: the robots still running a goal
+    (default: every robot with an active goal)."""
+    busy = [r for r, g in active.items() if g] if busy is None else busy
+    b = NS(_plan={r: NS(active_goal=g) for r, g in active.items()},
+           goals=NS(busy_robots=lambda: dict.fromkeys(busy, "g")))  # fmt: skip
     return lambda goal, request: RosBridge._carried_request(b, goal, request)
 
 

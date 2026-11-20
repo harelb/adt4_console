@@ -435,13 +435,11 @@ def test_routes_and_edit_hook(client):
     r = client.post(
         f"/api/plan/scene_repair/{rid}/confirm", json={"variant": "original"}
     )
+    # GOAL names only the retired O20: sending it again cannot plan (Nov 20 sim:
+    # "it names o291, which the scene graph does not have"), so nothing is sent
+    assert r.status_code == 409 and "nothing is left" in r.text and sent == []
     assert (
-        r.status_code == 200
-        and r.json()["status"] == "confirmed"
-        and sent == [("hamilton", GOAL)]
-    )
-    assert (
-        client.post(f"/api/plan/scene_repair/{rid}/decline", json={}).status_code == 409
+        client.post(f"/api/plan/scene_repair/{rid}/decline", json={}).status_code == 200
     )
     assert (
         client.post(
@@ -2000,7 +1998,8 @@ def test_per_question_records_are_bounded():
         sr.decline(_pending(sr)[0]["id"])
     assert list(sr._held_done) == ["q29"] and len(sr._answered_qs) <= 20
     sr.on_replan_pending("")
-    assert not sr._held_done and not sr._deciding
+    # an empty message (or a planner restart) keeps the answered ids, bounded
+    assert list(sr._held_done) == ["q29"] and not sr._deciding
 
 
 def test_no_region_lookup_unless_a_region_is_named():

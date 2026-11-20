@@ -1648,6 +1648,13 @@ class RosBridge:
         # both executor topic spellings may carry the same result: count it once
         if res not in self._plan[robot].results:
             self.goals.on_result(robot, res)
+            status = str(res["status"] or "").upper()
+            manip = getattr(self, "manipulation", None)
+            if manip is not None and status and status != "SUCCESS":
+                # a grasp it asked for is no longer waited on
+                manip.withdraw(
+                    robot, f"{res['action_type'] or 'action'} {status.lower()}"
+                )
         self._plan[robot].results.append(res)
         self._publish_plan(robot)
 
@@ -1955,8 +1962,9 @@ class RosBridge:
             # a drawn area is a polygon only the console has; the robots plan Room nodes
             raise ValueError("a drawn mission area (area1, ...) cannot be sent to the robots: plan it in the "
                              "mission planner (GRSTAPS-X), or name a map region (r...)")  # fmt: skip
-        out = self._send_pddl_goal(robot, goal, plugin, constraints, route, engine)
+        # judged before sending: "still running" is about the goals before this one
         request = self._carried_request(goal, request)
+        out = self._send_pddl_goal(robot, goal, plugin, constraints, route, engine)
         self._plan[robot].active_goal = {
             "pddl": goal, "constraints": list(constraints or []), "engine": engine, "route": route,
             "plugin": plugin, "t": time.time(), "via": out.get("via"),
@@ -1971,34 +1979,46 @@ class RosBridge:
         return out
 
     def _carried_request(self, goal: str, request):
-        """The operator's words for a goal that continues an active one.
+        """The operator's words for a goal that continues a running one.
 
-        A goal that keeps an object of a robot's active goal (a repair or a
-        change of the same mission) keeps that goal's request in front of its own:
-        on 2026-11-19 a repair goal sent from the chat carried only the last chat
-        messages ("one cone / propose plan repairing"), so a bag added later in
-        building facade 2 was rechecked against a request about cones, and
-        "visit all bags at building facade 2" was lost. A goal that shares no
-        object with any active goal is a new request and keeps only its own words."""
+        A goal that changes a mission still running keeps that mission's
+        request in front of its own: on 2026-11-19 a repair goal sent from the
+        chat carried only the last chat messages ("one cone / propose plan
+        repairing"), so a bag added later in building facade 2 was rechecked
+        against a request about cones, and "visit all bags at building facade
+        2" was lost. It continues the mission when a robot the new goal
+        involves is still running a goal with a request, and the new goal
+        shares an object with it. A goal after the mission ended, or sharing
+        no object with it, is a new request and keeps only its own words. (A
+        repair confirmed on a plan repair card is sent with the mission's
+        request already, whatever objects it names.)"""
         new = (str(request).strip() if request else "") or ""
-        objs = set(re.findall(r"\bo\d+\b", (goal or "").lower()))
+        text = (goal or "").lower()
+        objs = set(re.findall(r"\bo\d+\b", text))
         if not objs:
             return new or None
+        try:
+            busy = set(self.goals.busy_robots())
+        except Exception:  # noqa: BLE001 -- no tracker: nothing is known to run
+            busy = set()
         best = None
-        for st in list(self._plan.values()):
-            ag = st.active_goal or {}
+        for robot, st in list(self._plan.items()):
+            ag = getattr(st, "active_goal", None) or {}
             old = (ag.get("request") or "").strip()
-            if not old or not objs & set(re.findall(r"\bo\d+\b", str(ag.get("pddl") or "").lower())):
+            if not old or robot not in busy:
+                continue
+            old_objs = re.findall(r"\bo\d+\b", str(ag.get("pddl") or "").lower())
+            if not objs & set(old_objs):
                 continue
             if best is None or (ag.get("t") or 0) > (best.get("t") or 0):
                 best = ag
         if best is None:
             return new or None
         old = best["request"].strip()
-        if not new or old in new:
+        if not new or new in old:
             return old
-        if new in old:
-            return old
+        if old in new:
+            return new  # it already says it all (and adds to it): keep the new words
         room = 600 - len(new) - 4
         if room < 40:
             return new

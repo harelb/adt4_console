@@ -372,6 +372,7 @@ def _region_row(svc, sym: str, xy=None) -> dict | None:
 
 
 _REGIONS_CACHE: dict = {}
+_REGIONS_LOCK = threading.Lock()
 
 
 def _region_names(svc) -> list[dict]:
@@ -380,16 +381,21 @@ def _region_names(svc) -> list[dict]:
     if t is None:
         return []
     key = (t.id, getattr(getattr(svc, "scene_repair", None), "map_version", None))
-    if key not in _REGIONS_CACHE:
-        try:
-            rows = t.query(
-                "MATCH (r:Room) WHERE r.name IS NOT NULL RETURN r.nodeSymbol AS symbol, r.name AS name"
-            )
-        except Exception:  # noqa: BLE001
-            return []
+    with _REGIONS_LOCK:  # several recheck threads read it at once
+        hit = _REGIONS_CACHE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        rows = t.query(
+            "MATCH (r:Room) WHERE r.name IS NOT NULL RETURN r.nodeSymbol AS symbol, r.name AS name"
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    out = [dict(r) for r in rows]
+    with _REGIONS_LOCK:
         _REGIONS_CACHE.clear()
-        _REGIONS_CACHE[key] = [dict(r) for r in rows]
-    return _REGIONS_CACHE[key]
+        _REGIONS_CACHE[key] = out
+    return out
 
 
 def relocalized_xy(svc, robot: str):

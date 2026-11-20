@@ -114,6 +114,46 @@ def rewrite_goal(pddl: str, old: str, new: str) -> str:
     return pat.sub(sym_key(new), pddl)
 
 
+def _conjuncts(pddl: str) -> list[str]:
+    """The top-level conjuncts of ``(and ...)``, or ``[pddl]`` for any other goal."""
+    text = (pddl or "").strip()
+    if not re.match(r"\(\s*and\b", text, re.IGNORECASE):
+        return [text] if text else []
+    body, out, depth, start = (
+        text[text.index("and") + 3 : text.rindex(")")],
+        [],
+        0,
+        None,
+    )
+    for i, ch in enumerate(body):
+        if ch == "(":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0 and start is not None:
+                out.append(body[start : i + 1])
+    return out
+
+
+def drop_removed(pddl: str, gone) -> str | None:
+    """``pddl`` without the top-level tasks that name a removed symbol (the
+    planner cannot read a goal naming one): the goal itself when it names
+    none, None when nothing would be left."""
+    keys = {sym_key(g) for g in gone if g}
+    if not keys:
+        return pddl
+    named = lambda c: any(rewrite_goal(c, k, "__gone__") != c for k in keys)
+    parts = _conjuncts(pddl)
+    left = [c for c in parts if not named(c)]
+    if len(left) == len(parts):
+        return pddl
+    if not left:
+        return None
+    return left[0] if len(left) == 1 else "(and " + " ".join(left) + ")"
+
+
 def _xy(p):
     if p is None:
         return None
@@ -470,10 +510,15 @@ class SceneRepair:
         with self._lock:
             # an answered id again (our answer was lost): its cards stay answered
             # and waiting; only the same answer can be re-sent. Other ids are gone.
-            keep = held["id"] if held else None
-            self._held_done = collections.OrderedDict(
-                (k, v) for k, v in self._held_done.items() if k == keep
-            )
+            # An empty message (no question now, or a planner restarting) keeps
+            # the answered ids: a republished copy is still not asked again.
+            if held is not None:
+                keep = held["id"]
+                self._held_done = collections.OrderedDict(
+                    (k, v) for k, v in self._held_done.items() if k == keep
+                )
+            while len(self._held_done) > 50:
+                self._held_done.popitem(last=False)
             self._held = held
         self._publish()  # the hub only: nothing here publishes on ROS
 
@@ -519,8 +564,10 @@ class SceneRepair:
             elif r.get("held"):
                 if r["held"].get("id") in self._deciding:
                     continue  # being answered: _answer_held marks it
-                if r["status"] == "pending" and (
-                    r["origin"] == "planner" or _covered(r, r["held"])
+                if (
+                    r["status"] == "pending"
+                    and not r.get("unsure")
+                    and (r["origin"] == "planner" or _covered(r, r["held"]))
                 ):
                     # the question went (answered, carried, released): so does a
                     # card that asks only about its changes
@@ -857,14 +904,21 @@ class SceneRepair:
             )  # fmt: skip
         if res.get("unsure"):
             # it said the goal changes but proposed none (even when asked again):
-            # the operator decides; never written as "the goal stays the same"
-            return self._recommend(
+            # the operator decides; never written as "the goal stays the same".
+            # The rules' own findings (a goal object removed, ...) stay on it.
+            why = [(r, None, "high") for r, _w, p in q["findings"] if p == "high"]
+            rec = self._recommend(
                 robot, goal, batch,
-                [((f"the recheck says the goal may need to change but proposed no new goal: "
-                   f"{text or 'no reason given'}. Review it, and ask the chat for the new goal "
-                   "if it is right"), None, "high")],
+                why + [((f"the recheck says the goal may need to change but proposed no new goal: "
+                         f"{text or 'no reason given'}. Ask the chat for the new goal, or decline"),
+                        None, "high")],
                 proposed=goal["pddl"], llm=False,
             )  # fmt: skip
+            with self._lock:
+                if rec["id"] in self._recs:
+                    self._recs[rec["id"]]["unsure"] = True
+            rec["unsure"] = True
+            return rec
         # The LLM keeps the goal. Still asked, as without it: an edit; a goal or
         # plan object removed or moved (high); a relevant new object (the same
         # goal may plan differently now).
@@ -1058,11 +1112,17 @@ class SceneRepair:
             self._supersede(robot, rid, "a newer recommendation")
             self._recs[rid] = rec
             while len(self._recs) > self._max_recs and self._held is None:
-                self._recs.popitem(last=False)  # as main: no question held
+                # as main (no question held), but never a card being confirmed
+                old = next((k for k, r in self._recs.items()
+                            if r["status"] != "confirming"), None)  # fmt: skip
+                if old is None:
+                    break
+                del self._recs[old]
             while len(self._recs) > self._max_recs:
                 # the oldest card, but never this one or one that asks the held
                 # question (those may exceed the limit)
                 old = next((k for k, r in self._recs.items() if k != rid
+                            and r["status"] != "confirming"
                             and not (r.get("held") and r["status"] in ("pending", "confirming"))
                             and not (r.get("result") or {}).get("waiting")), None)  # fmt: skip
                 if old is None:
@@ -1151,7 +1211,34 @@ class SceneRepair:
                 q = self._claim(rec, "goal")
             rec["status"] = "confirming"
             goal = rec["goal"]
+            if rec.get("unsure"):
+                rec["status"] = "pending"
+                if was:  # the claim goes; nothing was sent
+                    self._deciding.pop(was, None)
+                raise NotPending(
+                    f"recommendation {rid}: the recheck proposed no new goal, and confirming "
+                    "would only send the current goal again; ask the chat for the new goal, or decline"
+                )
             pddl = rec["proposed_goal"] if variant == "proposed" else goal["pddl"]
+            # a goal sent from here never names what was removed: the planner
+            # cannot read it ("names o291, which the scene graph does not
+            # have"). (Answering the planner's held question, above, leaves the
+            # dropping to the planner.)
+            gone = {
+                c["symbol"]
+                for c in rec.get("changes") or []
+                if c.get("kind") == "removed"
+            }
+            kept = drop_removed(pddl, gone)
+            if kept is None:
+                rec["status"] = "pending"
+                if was:  # the claim goes; nothing was sent
+                    self._deciding.pop(was, None)
+                raise NotPending(
+                    f"recommendation {rid}: nothing is left of the goal without the removed "
+                    f"{', '.join(sorted(gone))}; ask the chat for a new goal, or decline"
+                )
+            pddl = kept
             if (
                 variant == "proposed"
                 and rec.get("llm")

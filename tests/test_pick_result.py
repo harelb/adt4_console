@@ -241,7 +241,6 @@ def test_the_answer_is_one_json_string_on_the_robots_topic():
     [
         {"subscribers": 0},
         {"via": "fleetlink", "error": "topic not relayed", "delivered": False},
-        {"via": "fleetlink", "delivered": False},
     ],
 )
 def test_an_answer_that_did_not_arrive_is_a_503(out):
@@ -299,3 +298,11 @@ def test_the_bridge_hands_questions_to_the_service():
     bridge._on_pick_result_request(
         "euclid", Obj(data=question("q2"))
     )  # logged, not raised
+
+
+def test_a_relayed_answer_not_yet_acked_closes_the_question():
+    """2026-11-19 and the sim: the robot acted on the answer while the console
+    said 503 "try again". A late ack is not a lost answer; a lost one is asked again."""
+    publish = ros_answer_publisher(FakeRos({"via": "fleetlink", "delivered": False}))
+    assert publish("euclid", {"request_id": "r", "result": "picked"})["unconfirmed"] is True
+
